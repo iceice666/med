@@ -10,6 +10,9 @@ framework behind Zed.
   comments, and the selection grown node by node
 - LSP: diagnostics, completion, hover, signature help, go to definition,
   references, rename, code actions, formatting
+- No key is built in. The vim layout and the editor's own keys are
+  init-file programs in [`examples/`](examples) like everything else
+  there, to load as they are or change
 - Panels written in the editor's own Lisp. The file tree, the fuzzy file
   finder with project-wide search, a lazygit-style git screen and the
   which-key list of the keys that can come next are four of them, in
@@ -41,6 +44,24 @@ Environment: `MED_FONT`, `MED_FONT_SIZE` (default 14), `MED_NO_LSP`,
 `MED_CONFIG_DIR` (default `$XDG_CONFIG_HOME/med`, else `~/.config/med`).
 
 ## Keys
+
+med binds no key by itself: with no init file, no key does anything
+but `:`, which opens the command line for as long as nothing at all is
+bound in normal mode, and the status bar says so. There,
+`:install_default_config` writes every file of [`examples/`](examples)
+to the configuration directory and runs its `init.lisp`; it leaves files
+that are there already alone and says which, and
+`:install_default_config!` overwrites them.
+
+The keys below are the ones of [`examples/vim.lisp`](examples/vim.lisp)
+(vim's) and [`examples/keys.lisp`](examples/keys.lisp) (the rest), which
+an init file loads, in that order:
+
+```lisp
+; ~/.config/med/init.lisp
+(load "/path/to/med/examples/vim.lisp")
+(load "/path/to/med/examples/keys.lisp")
+```
 
 Editing is vim: modes (`v`, `V` and the block of `ctrl-v`, with `I`, `A`
 and `c` on every line of it), counts, operators (`d c y > < gu gU g~ gc`),
@@ -106,14 +127,16 @@ Where a file has a syntax tree:
 
 ## The example panels
 
-An editor with no init file is the editor alone. The file tree, the
-picker, the git screen and the list of keys that can come next are
-programs in [`examples/`](examples), and an init file loads the ones it
-wants:
+An editor with no init file is the editor alone, without even its keys.
+The file tree, the picker, the git screen and the list of keys that can
+come next are programs in [`examples/`](examples), and an init file
+loads the ones it wants:
 
 ```lisp
 ; ~/.config/med/init.lisp
-(load "/path/to/med/examples/init.lisp")   ; all of them, or one by one:
+(load "/path/to/med/examples/init.lisp")   ; all of them, keys too, or one by one:
+(load "/path/to/med/examples/vim.lisp")
+(load "/path/to/med/examples/keys.lisp")
 (load "/path/to/med/examples/tree.lisp")
 ```
 
@@ -123,6 +146,8 @@ there. Each brings its commands and its keys:
 
 | File | Key | Action |
 | --- | --- | --- |
+| `vim.lisp` | | vim's keys, in every mode: the [Keys](#keys) above |
+| `keys.lisp` | | the language server's, the tabs', flash's, the `space` leader keys and the `⌘` shortcuts |
 | `tree.lisp` | `space e` / `⌘⇧E` | focus file tree (`j k h l`, `enter`, `R` refresh, `q` back) |
 | | `⌘B` | show/hide file tree |
 | `picker.lisp` | `space f` / `⌘P` | find file |
@@ -154,15 +179,19 @@ No key is wired to behaviour directly. Everything the editor can do is a
 named command, and keys are bound to names in tables:
 
 - The vim engine's commands (`motion.word_forward`, `operator.delete`,
-  `insert.newline`, … — `med_vim::command_names()`) and its stock layout,
-  `Keymap::vim()` in `med-vim/src/keymap.rs`. Counts, registers and
-  operator + motion are grammar, and work with whatever keys are bound.
+  `insert.newline`, … — `med_vim::command_names()`). Counts, registers
+  and operator + motion are grammar, and work with whatever keys are
+  bound. Its stock layout is `examples/vim.lisp`; `Keymap::vim()` in
+  `med-vim/src/keymap.rs` is the same table, kept for the tests.
 - The application's commands (`workspace.*`, `editor.*`), registered by
   each view in `Commands`, and the ones programs define (`tree.*`, `git.*`
   and `picker.*` are the examples').
-- `med/src/defaults.rs`: the editor keys that reach outside the buffer
-  (`gd`, the `space` leader keys), the keys of flash, the `⌘` shortcuts, and the names ex
-  commands go by (`:w` is `workspace.save`).
+- `examples/keys.lisp`: the editor keys that reach outside the buffer
+  (`gd`, the `space` leader keys), the keys of flash and the `⌘`
+  shortcuts.
+- `med/src/defaults.rs`: the names ex commands go by (`:w` is
+  `workspace.save`), the one table that is built in, and the copy of
+  `examples/` that `:install_default_config` writes.
 
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
 can also be run by its full name, as in `:workspace.find_file`.
@@ -462,4 +491,5 @@ there are no macros yet.
 | `med-lisp` | scripting language |
 | `med` | the GPUI application |
 
-`examples/` has the panels that are written in Lisp rather than built in.
+`examples/` has the keys and the panels, which are written in Lisp rather
+than built in.
