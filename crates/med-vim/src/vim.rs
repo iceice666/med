@@ -377,6 +377,34 @@ impl Pending {
     }
 }
 
+/// A half-typed command, as [`Vim::pending_keys`] describes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingKeys {
+    /// The table the next key is looked up in.
+    pub mode: MapMode,
+    /// The start of a binding typed so far (`g`, `<Space>`), in key
+    /// notation: what [`Keymap::next_keys`](crate::Keymap::next_keys)
+    /// takes. Empty after a count or an operator, when any binding of
+    /// `mode` can follow.
+    pub keys: String,
+    /// Every key of the command so far (`"a2d`), as
+    /// [`Vim::pending_display`] has it.
+    pub typed: String,
+    /// The next key is not looked up in a table but taken as it is.
+    pub awaiting: Option<Awaiting>,
+}
+
+/// What a command takes its next key as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Awaiting {
+    /// The name of a register, after `"`.
+    Register,
+    /// A character to find or to replace with, after `f` or `r`.
+    Char,
+    /// What kind of text object, after `i` or `a`.
+    TextObject,
+}
+
 struct CmdLine {
     kind: char,
     text: String,
@@ -454,6 +482,24 @@ impl Vim {
     /// True while a multi-key command is half typed.
     pub fn has_pending(&self) -> bool {
         !self.pending.is_idle()
+    }
+
+    /// What a half-typed command is waiting for, for a host that shows
+    /// which keys can come next. `None` when no command is half typed.
+    pub fn pending_keys(&self) -> Option<PendingKeys> {
+        if self.pending.is_idle() {
+            return None;
+        }
+        Some(PendingKeys {
+            mode: self.map_mode(),
+            keys: format_keys(&self.pending.seq),
+            typed: self.pending_display(),
+            awaiting: self.pending.awaiting.map(|awaiting| match awaiting {
+                Await::Register => Awaiting::Register,
+                Await::Find { .. } | Await::Replace => Awaiting::Char,
+                Await::TextObject { .. } => Awaiting::TextObject,
+            }),
+        })
     }
 
     /// The visual selection as `start..end` chars, if any.

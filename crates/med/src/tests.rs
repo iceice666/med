@@ -631,7 +631,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1141,6 +1141,274 @@ fn panels_take_the_keyboard(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "abc def\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let error = |source: &str, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| crate::script::eval(source, cx).unwrap_err().to_string())
+    };
+    let wait = |milliseconds: u64, cx: &mut VisualTestContext| {
+        cx.executor()
+            .advance_clock(Duration::from_millis(milliseconds));
+        cx.run_until_parked();
+    };
+
+    // The keys that can follow others: a command with what it says of
+    // itself, the start of longer bindings, keys that stand for keys.
+    lisp(
+        r#"(do (defcommand "user.find" "Find something" (fn () (set! found (+ found 1))))
+               (def found 0)
+               (unbind 'normal "<Space>q")
+               (unbind 'normal "<Space>w")
+               (bind 'normal "<Space>f" "user.find")
+               (bind 'normal "<Space>gg" "user.find")
+               (bind-keys 'normal "<Space>y" "y$"))"#,
+        cx,
+    );
+    assert_eq!(
+        lisp(r#"(bindings 'normal "<space>")"#, cx),
+        "((:key \"f\" :keys \"<Space>f\" :command \"user.find\" \
+           :description \"Find something\" :to nil :prefix false) \
+          (:key \"g\" :keys \"<Space>g\" :command nil \
+           :description nil :to nil :prefix true) \
+          (:key \"y\" :keys \"<Space>y\" :command nil \
+           :description nil :to \"y$\" :prefix false))"
+    );
+    // The engine's own commands go by their names alone. In the order of
+    // their notation.
+    assert_eq!(
+        lisp(
+            r#"(map (fn (next) (list (get next :key) (get next :command)))
+                    (bindings 'normal "z"))"#,
+            cx
+        ),
+        r#"(("-" "view.bottom") ("." "view.center") ("<CR>" "view.top") ("b" "view.bottom") ("t" "view.top") ("z" "view.center"))"#
+    );
+    // With no keys, the first key of every binding.
+    assert_eq!(
+        lisp(
+            r#"(get (car (filter (fn (next) (= (get next :key) "<Space>")) (bindings 'normal)))
+                    :prefix)"#,
+            cx
+        ),
+        "true"
+    );
+    assert_eq!(lisp(r#"(bindings 'normal "q")"#, cx), "nil");
+    assert_eq!(lisp(r#"(bindings 'normal "<Space>f")"#, cx), "nil");
+    assert_eq!(
+        error("(bindings 'app)", cx),
+        "1:1: the shortcuts in app are the window system's, and cannot be listed"
+    );
+    assert!(error("(bindings 'nomal)", cx).starts_with("1:1: nomal is neither a mode"));
+
+    // A program is told what a half-typed command waits for, and when it
+    // waits no more.
+    lisp(
+        "(do (def seen nil)
+             (add-hook 'keys-pending (fn (pending) (set! seen (cons pending seen)))))",
+        cx,
+    );
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("seen", cx),
+        r#"((:tables ("normal") :keys "<Space>" :typed "<Space>" :awaiting nil))"#
+    );
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(car seen)", cx),
+        r#"(:tables ("normal") :keys "<Space>g" :typed "<Space>g" :awaiting nil)"#
+    );
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(list (car seen) (length seen) found)", cx),
+        "(nil 3 1)"
+    );
+    // A key that is a command by itself is nothing to wait for.
+    cx.simulate_keystrokes("l h");
+    cx.run_until_parked();
+    assert_eq!(lisp("(length seen)", cx), "3");
+
+    // After an operator any motion can follow; some keys are taken as
+    // they are.
+    lisp("(set! seen nil)", cx);
+    cx.simulate_keystrokes("d");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(car seen)", cx),
+        r#"(:tables ("operator") :keys "" :typed "d" :awaiting nil)"#
+    );
+    cx.simulate_keystrokes("i");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(car seen)", cx),
+        r#"(:tables ("operator") :keys "" :typed "di" :awaiting text-object)"#
+    );
+    cx.simulate_keystrokes("w");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list (car seen) (length seen))", cx), "(nil 3)");
+    assert_eq!(text(&ws, cx), " def\n");
+
+    // The wait for a longer binding ends by itself, unless it is told not
+    // to, or to take another time over it.
+    lisp("(set! seen nil)", cx);
+    cx.simulate_keystrokes("space");
+    wait(999, cx);
+    assert_eq!(lisp("(length seen)", cx), "1");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    wait(1, cx);
+    assert_eq!(lisp("(list (car seen) (length seen))", cx), "(nil 2)");
+    assert_eq!(cursor(&ws, cx), (1, 2));
+
+    lisp("(set-option 'key-timeout nil)", cx);
+    cx.simulate_keystrokes("space");
+    wait(60_000, cx);
+    assert_eq!(lisp("(get (car seen) :keys)", cx), "\"<Space>\"");
+    assert_eq!(cursor(&ws, cx), (1, 2));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list (car seen) (length seen))", cx), "(nil 4)");
+    assert_eq!(cursor(&ws, cx), (1, 2));
+
+    lisp("(set-option 'key-timeout 50)", cx);
+    cx.simulate_keystrokes("space");
+    wait(50, cx);
+    assert_eq!(cursor(&ws, cx), (1, 3));
+    assert_eq!(
+        error("(set-option 'key-timeout -1)", cx),
+        "1:1: -1 is no time to wait, in milliseconds"
+    );
+    lisp("(set-option 'key-timeout 1000)", cx);
+
+    // A function is called later, unless that is called off first.
+    lisp(
+        "(do (def fired nil)
+             (def slow (after 200 (fn () (set! fired (cons 'slow fired)))))
+             (def quick (after 100 (fn () (set! fired (cons 'quick fired))))))",
+        cx,
+    );
+    wait(150, cx);
+    assert_eq!(lisp("fired", cx), "(quick)");
+    assert_eq!(
+        lisp("(list (cancel slow) (cancel slow))", cx),
+        "(true false)"
+    );
+    assert_eq!(
+        lisp("(list (cancel quick) (cancel nil))", cx),
+        "(false false)"
+    );
+    wait(500, cx);
+    assert_eq!(lisp("fired", cx), "(quick)");
+    assert_eq!(
+        error("(after -1 (fn () 1))", cx),
+        "1:1: -1 is no time to wait, in milliseconds"
+    );
+    assert_eq!(error("(after 10 5)", cx), "1:1: expected a function, got 5");
+
+    // Together: the keys that can come next, shown once the user has
+    // hesitated, and put away when the command is done with.
+    lisp(
+        r#"(do (def hints nil)
+               (def hint-timer nil)
+               (defpanel 'hints :at 'bottom
+                 (fn (panel)
+                   (col (map (fn (next) (text (get next :keys))) hints))))
+               (add-hook 'keys-pending
+                 (fn (pending)
+                   (cancel hint-timer)
+                   (hide-panel 'hints)
+                   (when (and pending (not (= (get pending :keys) "")))
+                     (set! hint-timer
+                       (after 300
+                         (fn ()
+                           (set! hints (bindings (car (get pending :tables))
+                                                 (get pending :keys)))
+                           (show-panel 'hints))))))))"#,
+        cx,
+    );
+    cx.simulate_keystrokes("space");
+    wait(299, cx);
+    assert!(!shown("hints", cx));
+    wait(1, cx);
+    assert!(shown("hints", cx));
+    assert_eq!(
+        lisp("(map (fn (next) (get next :keys)) hints)", cx),
+        r#"("<Space>f" "<Space>g" "<Space>y")"#
+    );
+    // The keyboard is still the editor's.
+    cx.simulate_keystrokes("f");
+    cx.run_until_parked();
+    assert!(!shown("hints", cx));
+    assert_eq!(lisp("found", cx), "2");
+    // Typed without hesitating, nothing is shown at all.
+    cx.simulate_keystrokes("space f");
+    wait(500, cx);
+    assert!(!shown("hints", cx));
+    assert_eq!(lisp("found", cx), "3");
+    // Escape is the editor's while they are up: it abandons the command,
+    // and with that they go.
+    cx.simulate_keystrokes("space");
+    wait(300, cx);
+    assert!(shown("hints", cx));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("hints", cx));
+    assert_eq!(lisp("(car seen)", cx), "nil");
+    wait(500, cx);
+    assert!(!shown("hints", cx));
+
+    // A panel's keys are followed as an editor's are: in its tables.
+    lisp("(set! seen nil)", cx);
+    cx.simulate_keystrokes(":");
+    cx.simulate_input(
+        "eval (do (defpanel 'screen :at 'full \
+           :contexts '(screen.deep elsewhere screen) \
+           (fn (panel) (text \"screen\"))) \
+         (bind 'screen \"gg\" \"user.find\") \
+         (bind 'screen.deep \"gd\" \"user.find\") \
+         (focus-panel 'screen))",
+    );
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(shown("screen", cx));
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(car seen)", cx),
+        r#"(:tables ("screen.deep" "screen") :keys "g" :typed "g" :awaiting nil)"#
+    );
+    assert_eq!(
+        lisp(
+            r#"(map (fn (table) (map (fn (next) (get next :keys)) (bindings table "g")))
+                    (get (car seen) :tables))"#,
+            cx
+        ),
+        r#"(("gd") ("gg"))"#
+    );
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(list (car seen) (length seen) found)", cx),
+        "(nil 2 4)"
+    );
+    // A key that is no binding ends the wait too.
+    cx.simulate_keystrokes("g x");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(list (car seen) (length seen) found)", cx),
+        "(nil 4 4)"
+    );
+
+    // Running the init file again calls off what was to be called.
+    lisp("(after 100 (fn () (set! fired 'late)))", cx);
+    cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
+    wait(500, cx);
+    assert_eq!(lisp("fired", cx), "(quick)");
+}
+
+#[gpui::test]
 fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("a.txt", "a\n"),
@@ -1195,7 +1463,7 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     };
     assert_eq!(
         error("(add-hook 'closed (fn () 1))", cx),
-        "1:1: closed is not a hook (opened files-changed locations)"
+        "1:1: closed is not a hook (opened files-changed locations keys-pending)"
     );
     assert!(
         error("(load \"/nowhere/at/all.lisp\")", cx).starts_with("1:1: /nowhere/at/all.lisp: ")

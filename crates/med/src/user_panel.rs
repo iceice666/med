@@ -436,7 +436,10 @@ impl PanelView {
         }
         self.focus_handle.focus(window, cx);
         self.wants_input = true;
-        self.keys.clear();
+        if !self.keys.is_empty() {
+            self.keys.clear();
+            self.report_pending(Value::Nil, window, cx);
+        }
         cx.notify();
     }
 
@@ -589,7 +592,24 @@ impl PanelView {
         };
         let contexts = self.contexts(cx);
         let contexts: Vec<&str> = contexts.iter().map(String::as_str).collect();
-        match self.keys.press(key, &contexts, cx) {
+        let was_pending = !self.keys.is_empty();
+        let press = self.keys.press(key, &contexts, cx);
+        // What the keys typed so far wait for, when that has changed.
+        if press == Press::Pending {
+            // The tables that can have bindings: a panel's own.
+            let panels = cx.global::<UserPanels>();
+            let tables: Vec<&str> = contexts
+                .iter()
+                .copied()
+                .filter(|table| panels.has_context(table))
+                .collect();
+            let keys = self.keys.display();
+            let pending = script::pending_value(&tables, &keys, &keys, None);
+            self.report_pending(pending, window, cx);
+        } else if was_pending {
+            self.report_pending(Value::Nil, window, cx);
+        }
+        match press {
             // Not ours: let it travel on, to an input or out of the panel.
             Press::Unbound => return,
             Press::Pending => {}
@@ -608,6 +628,17 @@ impl PanelView {
             }
         }
         cx.stop_propagation();
+    }
+
+    /// Tell the programs that asked what the keys typed so far wait for,
+    /// once the panel is done with the key.
+    fn report_pending(&self, pending: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = self.workspace.clone();
+        window.defer(cx, move |window, cx| {
+            workspace
+                .update(cx, |_, cx| script::keys_pending(pending, window, cx))
+                .ok();
+        });
     }
 
     /// Call a function of the panel's program.

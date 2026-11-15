@@ -12,16 +12,13 @@ use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
 use med_core::Buffer;
-use med_vim::{Clipboard, Ctx, Effect, Key, Mode, Scroll, Viewport, Vim};
+use med_vim::{Clipboard, Ctx, Effect, Key, Mode, PendingKeys, Scroll, Viewport, Vim};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// Lines kept between the cursor and the top/bottom edge.
 const SCROLL_OFF: usize = 3;
-/// How long a key that is a binding by itself waits to become a longer
-/// one (`space` before `space f`); vim's `timeoutlen`.
-const KEY_TIMEOUT: Duration = Duration::from_millis(1000);
 const COMPLETION_ROWS: usize = 10;
 
 /// A diagnostic in buffer coordinates (char offsets).
@@ -45,6 +42,9 @@ pub enum EditorEvent {
     /// A key is about to be handled: what the status bar says about the
     /// last one is stale.
     KeyPress,
+    /// What the keys typed so far wait for is no longer what it was:
+    /// `None` when no command is half typed any more.
+    Pending(Option<PendingKeys>),
     /// Title, dirty state, cursor or mode changed.
     Changed,
     OpenLocation {
@@ -98,6 +98,8 @@ pub struct Editor {
     completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
     key_timeout: Option<Task<()>>,
+    /// What the keys typed so far waited for when that was last told.
+    pending_keys: Option<PendingKeys>,
     hover: Option<SharedString>,
     request_task: Option<Task<()>>,
     drag_anchor: Option<usize>,
@@ -272,6 +274,7 @@ impl Editor {
             completion: None,
             completion_task: None,
             key_timeout: None,
+            pending_keys: None,
             hover: None,
             request_task: None,
             drag_anchor: None,
@@ -431,6 +434,7 @@ impl Editor {
     pub fn goto_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.vim.set_cursor(offset, &self.buf);
         self.center_cursor();
+        self.report_pending(cx);
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
@@ -495,14 +499,30 @@ impl Editor {
         self.arm_key_timeout(cx);
     }
 
+    /// Say so when what the keys typed so far wait for has changed.
+    fn report_pending(&mut self, cx: &mut Context<Self>) {
+        let pending = self.vim.pending_keys();
+        if pending != self.pending_keys {
+            self.pending_keys = pending.clone();
+            cx.emit(EditorEvent::Pending(pending));
+        }
+    }
+
     /// While the keys typed could still grow into a longer binding, give
     /// the next key a moment to arrive, then settle for what there is.
+    /// With no `key-timeout`, they wait for the next key instead.
     fn arm_key_timeout(&mut self, cx: &mut Context<Self>) {
-        if !self.vim.wants_timeout(&cx.global::<VimGlobal>().0) {
+        // Headless, there may be no settings.
+        let timeout = match cx.try_global::<Settings>() {
+            Some(settings) => settings.key_timeout,
+            None => Some(Settings::KEY_TIMEOUT),
+        };
+        let wanted = self.vim.wants_timeout(&cx.global::<VimGlobal>().0);
+        let Some(timeout) = timeout.filter(|_| wanted) else {
             self.key_timeout = None;
             return;
-        }
-        let timer = cx.background_executor().timer(KEY_TIMEOUT);
+        };
+        let timer = cx.background_executor().timer(timeout);
         self.key_timeout = Some(cx.spawn(async move |this, cx| {
             timer.await;
             this.update(cx, |this, cx| {
@@ -646,6 +666,7 @@ impl Editor {
             self.completion = None;
         }
         self.ensure_cursor_visible();
+        self.report_pending(cx);
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }

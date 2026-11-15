@@ -412,6 +412,71 @@ fn pending_display_and_selection() {
     assert_eq!(h.vim.selection(&h.buf), Some((0, 8)));
 }
 
+#[test]
+fn says_what_a_half_typed_command_waits_for() {
+    let mut h = Harness::new("|abc def");
+    let pending = |h: &Harness| {
+        let pending = h.vim.pending_keys()?;
+        Some((pending.mode, pending.keys, pending.typed, pending.awaiting))
+    };
+    let text = String::from;
+    assert_eq!(pending(&h), None);
+
+    // The start of a binding: what follows is looked up after it.
+    h.keys("g");
+    assert_eq!(
+        pending(&h),
+        Some((MapMode::Normal, text("g"), text("g"), None))
+    );
+    h.keys("<esc>");
+    assert_eq!(pending(&h), None);
+
+    // After a count and an operator, any motion: no keys of one yet.
+    h.keys("2d");
+    assert_eq!(
+        pending(&h),
+        Some((MapMode::Operator, text(""), text("2d"), None))
+    );
+    h.keys("g");
+    assert_eq!(
+        pending(&h),
+        Some((MapMode::Operator, text("g"), text("2dg"), None))
+    );
+    h.keys("<esc>");
+
+    // Keys taken as they are, not looked up.
+    for (keys, mode, awaiting) in [
+        ("\"", MapMode::Normal, Awaiting::Register),
+        ("f", MapMode::Normal, Awaiting::Char),
+        ("r", MapMode::Normal, Awaiting::Char),
+        ("di", MapMode::Operator, Awaiting::TextObject),
+    ] {
+        h.keys(keys);
+        assert_eq!(
+            pending(&h),
+            Some((mode, text(""), text(keys), Some(awaiting))),
+            "{keys}"
+        );
+        h.keys("<esc>");
+        assert_eq!(pending(&h), None, "{keys}");
+    }
+
+    // A visual selection has a table of its own.
+    h.keys("vg");
+    assert_eq!(pending(&h).map(|pending| pending.0), Some(MapMode::Visual));
+    h.keys("<esc><esc>");
+
+    // In insert mode, a key held back as the start of a binding.
+    h.shared.keymap.bind(MapMode::Insert, "jk", "insert.escape");
+    h.keys("ij");
+    assert_eq!(
+        pending(&h),
+        Some((MapMode::Insert, text("j"), text("j"), None))
+    );
+    h.keys("k");
+    assert_eq!(pending(&h), None);
+}
+
 fn command(name: &str, count: Option<usize>) -> Effect {
     Effect::Command {
         name: name.to_string(),

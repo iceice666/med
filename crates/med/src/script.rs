@@ -10,7 +10,7 @@
 //! (bind 'tree "x" "tree.close")        ; a panel's keys
 //! (bind-keys 'normal "Y" "y$")         ; keys typed in place of others
 //! (unbind 'normal "gt")
-//! (set-option 'font-size 16)           ; also font-family and lsp
+//! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -23,6 +23,9 @@
 //! (focus-editor)
 //! (load "tree.lisp")                   ; another file, from beside this one
 //! (add-hook 'files-changed refresh)    ; be told of something: HOOKS
+//! (bindings 'normal "<Space>")         ; the keys that can follow others
+//! (def timer (after 300 show))         ; call a function in 300 ms
+//! (cancel timer)                       ; or not after all
 //! (defpanel 'notes :at 'right ...)     ; a panel: user_panel.rs, panel.rs
 //! (list-dir path) (git 'status ...)    ; the project's files: host.rs
 //! ```
@@ -41,22 +44,24 @@
 //! with the result, and returns at once.
 
 use crate::commands::{Args, Commands, Handler, RunCommand};
+use crate::host::record;
 use crate::keymap::PanelKeymaps;
 use crate::user_panel::UserPanels;
 use crate::workspace::Workspace;
 use crate::{Settings, VimGlobal};
 use gpui::{
     Action, AnyWindowHandle, App, AppContext as _, Context, Global, KeyBinding,
-    KeyBindingContextPredicate, NoAction, SharedString, WeakEntity, Window,
+    KeyBindingContextPredicate, NoAction, SharedString, Task, WeakEntity, Window,
 };
 use med_lisp::{Arity, Call, Error, ErrorKind, Interp, Value};
-use med_vim::MapMode;
+use med_vim::{Awaiting, Bound, MapMode, NextKey, PendingKeys, format_keys, parse_keys};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 /// A program that never ends must not take the window with it: it is
 /// stopped after this many steps, a fraction of a second.
@@ -72,7 +77,13 @@ const DRAW_STEP_LIMIT: u64 = 200_000;
 /// - `locations`: there is a list of places to choose from (the
 ///   references to a name); the function is called with the list, each
 ///   place a `(:path :file :line :col :text)`.
-const HOOKS: &[&str] = &["opened", "files-changed", "locations"];
+/// - `keys-pending`: the keys typed so far started a command, went on
+///   with one, or are done with it. The function is called with what the
+///   command waits for, `(:tables :keys :typed :awaiting)` as
+///   [`pending_value`] makes it, or with nil once nothing is half typed.
+const HOOKS: &[&str] = &["opened", "files-changed", "locations", KEYS_PENDING];
+
+const KEYS_PENDING: &str = "keys-pending";
 
 /// The key table of the shortcuts the window system handles (`cmd-s`).
 const APP_TABLE: &str = "app";
@@ -98,6 +109,10 @@ pub struct Script {
     drawing: bool,
     /// The functions to call when something happens, by what happens.
     hooks: HashMap<&'static str, Vec<Value>>,
+    /// What `after` is waiting to call, by the number it gave `cancel`.
+    timers: HashMap<i64, Task<()>>,
+    /// The number the last timer got.
+    last_timer: i64,
     /// The files being loaded, the innermost last: `load` looks beside it.
     loading: Vec<PathBuf>,
     /// The init file that was run, to run again.
@@ -147,6 +162,8 @@ pub fn init(cx: &mut App) {
         origin: None,
         drawing: false,
         hooks: HashMap::new(),
+        timers: HashMap::new(),
+        last_timer: 0,
         loading: Vec::new(),
         init_file: None,
         app_keys: HashSet::new(),
@@ -154,11 +171,13 @@ pub fn init(cx: &mut App) {
     });
 }
 
-/// Forget the panels and hooks that programs defined, as before the init
-/// file is run again.
+/// Forget the panels and hooks that programs defined, and what they were
+/// waiting to do, as before the init file is run again.
 fn reset_panels(cx: &mut App) {
     crate::user_panel::reset(cx);
-    cx.global_mut::<Script>().hooks.clear();
+    let script = cx.global_mut::<Script>();
+    script.hooks.clear();
+    script.timers.clear();
 }
 
 /// Call a layout's function while its panel is being drawn.
@@ -342,6 +361,54 @@ pub fn run_hook(
     true
 }
 
+/// What the `keys-pending` hook is called with while a command is half
+/// typed:
+/// - `:tables`: the key tables the next key is looked up in, the first to
+///   know it deciding: a mode for an editor, its contexts for a panel.
+/// - `:keys`: the start of a binding typed so far, as `bindings` takes
+///   it. Empty after a count or an operator.
+/// - `:typed`: every key of the command so far (`"a2d`).
+/// - `:awaiting`: `'register`, `'char` or `'text-object` when the next
+///   key is not looked up but taken as it is (after `"`, `f`, `di`).
+pub(crate) fn pending_value(
+    tables: &[&str],
+    keys: &str,
+    typed: &str,
+    awaiting: Option<&str>,
+) -> Value {
+    record([
+        (
+            "tables",
+            Value::list(tables.iter().copied().map(Value::from)),
+        ),
+        ("keys", Value::from(keys)),
+        ("typed", Value::from(typed)),
+        ("awaiting", awaiting.map_or(Value::Nil, Value::symbol)),
+    ])
+}
+
+/// [`pending_value`] of an editor's half-typed command.
+pub(crate) fn editor_pending(pending: &PendingKeys) -> Value {
+    let mode = MODES.iter().find(|(_, mode)| *mode == pending.mode);
+    let awaiting = pending.awaiting.map(|awaiting| match awaiting {
+        Awaiting::Register => "register",
+        Awaiting::Char => "char",
+        Awaiting::TextObject => "text-object",
+    });
+    pending_value(
+        &[mode.map_or("normal", |(name, _)| name)],
+        &pending.keys,
+        &pending.typed,
+        awaiting,
+    )
+}
+
+/// Tell the programs that asked what the keys typed so far wait for:
+/// `pending` is a [`pending_value`], or nil when they wait for nothing.
+pub fn keys_pending(pending: Value, window: &Window, cx: &mut Context<Workspace>) {
+    run_hook(KEYS_PENDING, vec![pending], window, cx);
+}
+
 /// Call a command's function. While it runs, the names in [`INVOCATION`]
 /// say how it was invoked; a command that runs another gets them back
 /// afterwards.
@@ -389,8 +456,9 @@ fn in_file(path: &Path, error: &Error) -> String {
 }
 
 /// Run the init file at `path`, if there is one. The panels and hooks it
-/// defined last time are forgotten first, in case it no longer defines
-/// them; the keys and options it set are not undone.
+/// defined last time are forgotten first, and its timers called off, in
+/// case it no longer defines them; the keys and options it set are not
+/// undone.
 pub fn run_init(path: &Path, cx: &mut App) -> bool {
     reset_panels(cx);
     if !path.is_file() {
@@ -446,33 +514,40 @@ enum Table {
     App,
 }
 
+/// The table `value` names.
+fn table(value: &Value, cx: &App) -> Result<Table, Error> {
+    let name = name(value)?;
+    let panels = cx.global::<UserPanels>();
+    if let Some((_, mode)) = MODES.iter().find(|(mode, _)| *mode == name) {
+        Ok(Table::Mode(*mode))
+    } else if name == APP_TABLE {
+        Ok(Table::App)
+    } else if panels.has_context(&name) {
+        Ok(Table::Panel(name))
+    } else {
+        let modes: Vec<&str> = MODES.iter().map(|(mode, _)| *mode).collect();
+        let panels: Vec<&str> = panels.names().collect();
+        Err(failed(format!(
+            "{name} is neither a mode ({}), {APP_TABLE}, nor a panel ({})",
+            modes.join(" "),
+            panels.join(" ")
+        )))
+    }
+}
+
 /// The tables `value` names: one name, or a list of them.
 fn tables(value: &Value, cx: &App) -> Result<Vec<Table>, Error> {
     let names = match value {
         Value::Pair(_) => value.to_vec()?,
         one => vec![one.clone()],
     };
-    let mut tables = Vec::new();
-    for value in &names {
-        let name = name(value)?;
-        let panels = cx.global::<UserPanels>();
-        if let Some((_, mode)) = MODES.iter().find(|(mode, _)| *mode == name) {
-            tables.push(Table::Mode(*mode));
-        } else if name == APP_TABLE {
-            tables.push(Table::App);
-        } else if panels.has_context(&name) {
-            tables.push(Table::Panel(name));
-        } else {
-            let modes: Vec<&str> = MODES.iter().map(|(mode, _)| *mode).collect();
-            let panels: Vec<&str> = panels.names().collect();
-            return Err(failed(format!(
-                "{name} is neither a mode ({}), {APP_TABLE}, nor a panel ({})",
-                modes.join(" "),
-                panels.join(" ")
-            )));
-        }
-    }
-    Ok(tables)
+    names.iter().map(|name| table(name, cx)).collect()
+}
+
+/// A time a program gives in milliseconds.
+fn milliseconds(value: &Value) -> Result<Duration, Error> {
+    Duration::try_from_secs_f64(value.as_float()? / 1000.)
+        .map_err(|_| failed(format!("{value} is no time to wait, in milliseconds")))
 }
 
 /// Keys as a program writes them, in vim notation.
@@ -584,6 +659,104 @@ fn define_functions(interp: &mut Interp) {
         Ok(Value::Bool(removed))
     });
 
+    // (bindings table [keys]): the keys that can come after `keys` in a
+    // mode's table or a panel's, or with no keys the first key of every
+    // binding, in the order of their notation. Each is `(:key :keys
+    // :command :description :to :prefix)`: the key and the keys with it,
+    // the command they are bound to with what it says of itself (nil for
+    // the vim engine's own) or else the keys they stand for, and whether
+    // longer bindings go on from there.
+    interp.define_native("bindings", Arity::between(1, 2), |call, args| {
+        let typed = match args.get(1) {
+            None | Some(Value::Nil) => String::new(),
+            Some(keys) => format_keys(&parse_keys(keys.as_str()?)),
+        };
+        let cx = app(call)?;
+        let next: Vec<NextKey<Bound>> = match table(&args[0], cx)? {
+            Table::Mode(mode) => cx.global::<VimGlobal>().0.keymap.next_keys(mode, &typed),
+            Table::Panel(panel) => {
+                let next = cx.global::<PanelKeymaps>().next_keys(&panel, &typed);
+                let command = |command: &SharedString| Bound::Command(command.to_string());
+                next.into_iter()
+                    .map(|next| NextKey {
+                        key: next.key,
+                        value: next.value.map(command),
+                        prefix: next.prefix,
+                    })
+                    .collect()
+            }
+            Table::App => {
+                return Err(failed(format!(
+                    "the shortcuts in {APP_TABLE} are the window system's, and cannot be listed"
+                )));
+            }
+        };
+        let commands = cx.global::<Commands>();
+        let text = |text: Option<&str>| text.map_or(Value::Nil, Value::from);
+        Ok(Value::list(next.iter().map(|next| {
+            let key = format_keys(std::slice::from_ref(&next.key));
+            let (command, to) = match &next.value {
+                Some(Bound::Command(command)) => (Some(command.as_str()), None),
+                Some(Bound::Keys(keys)) => (None, Some(format_keys(keys))),
+                None => (None, None),
+            };
+            let known = command.and_then(|command| commands.get(command));
+            record([
+                ("key", Value::from(key.as_str())),
+                ("keys", Value::from(format!("{typed}{key}"))),
+                ("command", text(command)),
+                (
+                    "description",
+                    text(known.map(|known| known.description.as_ref())),
+                ),
+                ("to", text(to.as_deref())),
+                ("prefix", Value::Bool(next.prefix)),
+            ])
+        })))
+    });
+
+    // (after milliseconds function): call the function, with nothing,
+    // once that long from now. What it gives is for `cancel`.
+    interp.define_native("after", 2, |call, args| {
+        let delay = milliseconds(&args[0])?;
+        if !matches!(args[1], Value::Fn(_) | Value::Native(_)) {
+            return Err(Error::new(
+                ErrorKind::Type,
+                format!("expected a function, got {}", args[1]),
+            ));
+        }
+        let callback = args[1].clone();
+        let cx = app(call)?;
+        let origin = origin(cx);
+        let script = cx.global_mut::<Script>();
+        script.last_timer += 1;
+        let id = script.last_timer;
+        let timer = cx.background_executor().timer(delay);
+        let task = cx.spawn(async move |cx| {
+            timer.await;
+            cx.update(|cx| {
+                // No longer one to cancel.
+                if let Some(task) = cx.global_mut::<Script>().timers.remove(&id) {
+                    task.detach();
+                }
+                call_back(origin, callback, Vec::new(), cx);
+            });
+        });
+        cx.global_mut::<Script>().timers.insert(id, task);
+        Ok(Value::Int(id))
+    });
+
+    // (cancel timer): do not call what `after` was to call. Whether it
+    // was still to be called; nil is a timer that never was.
+    interp.define_native("cancel", 1, |call, args| {
+        let id = match &args[0] {
+            Value::Nil => return Ok(Value::Bool(false)),
+            timer => timer.as_int()?,
+        };
+        let timers = &mut app(call)?.global_mut::<Script>().timers;
+        Ok(Value::Bool(timers.remove(&id).is_some()))
+    });
+
     // (set-option name value)
     interp.define_native("set-option", 2, |call, args| {
         let (option, value) = (name(&args[0])?, &args[1]);
@@ -614,9 +787,17 @@ fn define_functions(interp: &mut Interp) {
                     ));
                 }
             },
+            // How long a key that is a binding by itself waits to become
+            // a longer one, in milliseconds; nil for as long as it takes.
+            "key-timeout" => {
+                settings.key_timeout = match value {
+                    Value::Nil => None,
+                    time => Some(milliseconds(time)?),
+                };
+            }
             other => {
                 return Err(failed(format!(
-                    "{other} is not an option (font-size font-family lsp)"
+                    "{other} is not an option (font-size font-family lsp key-timeout)"
                 )));
             }
         }

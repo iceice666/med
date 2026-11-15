@@ -7,7 +7,7 @@
 
 use crate::editor::translate_key;
 use gpui::{App, Global, Keystroke, SharedString};
-use med_vim::{Key, KeyTrie, Lookup, Mode, parse_keys};
+use med_vim::{Key, KeyTrie, Lookup, Mode, NextKey, format_keys, parse_keys};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -41,6 +41,15 @@ impl PanelKeymaps {
         Some(command.as_ref())
     }
 
+    /// The keys that can come after `keys` in `context`, with the command
+    /// each is then bound to.
+    pub fn next_keys(&self, context: &str, keys: &str) -> Vec<NextKey<&SharedString>> {
+        match self.contexts.get(context) {
+            Some(trie) => trie.next_keys(&parse_keys(keys)),
+            None => Vec::new(),
+        }
+    }
+
     /// The first of `contexts` that has anything to say about `keys`
     /// decides.
     fn lookup(&self, contexts: &[&str], keys: &[Key]) -> Lookup<SharedString> {
@@ -69,6 +78,16 @@ pub struct KeySequence(Vec<Key>);
 impl KeySequence {
     pub fn clear(&mut self) {
         self.0.clear();
+    }
+
+    /// No binding has been started.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The keys typed so far, in vim notation.
+    pub fn display(&self) -> String {
+        format_keys(&self.0)
     }
 
     /// Add `key` and look the sequence up in `contexts`, most specific

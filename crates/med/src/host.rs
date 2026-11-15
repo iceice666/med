@@ -61,7 +61,7 @@ fn path_value(path: &Path) -> Value {
 }
 
 /// A list that goes name, value, name, value.
-fn record<const N: usize>(fields: [(&str, Value); N]) -> Value {
+pub(crate) fn record<const N: usize>(fields: [(&str, Value); N]) -> Value {
     Value::list(
         fields
             .into_iter()

@@ -18,6 +18,7 @@ pub mod workspace;
 use commands::RunCommand;
 use gpui::*;
 use std::path::PathBuf;
+use std::time::Duration;
 use workspace::Workspace;
 
 #[derive(Clone)]
@@ -27,6 +28,14 @@ pub struct Settings {
     pub font_size: f32,
     /// Start language servers for opened files.
     pub lsp: bool,
+    /// How long a key that is a binding by itself waits to become a longer
+    /// one (`space` before `space f`), vim's `timeoutlen`; `None` to wait
+    /// for the next key however long it takes.
+    pub key_timeout: Option<Duration>,
+}
+
+impl Settings {
+    pub const KEY_TIMEOUT: Duration = Duration::from_millis(1000);
 }
 
 impl Global for Settings {}
@@ -107,6 +116,7 @@ pub fn init(cx: &mut App) {
             .and_then(|s| s.parse().ok())
             .unwrap_or(14.),
         lsp: std::env::var_os("MED_NO_LSP").is_none(),
+        key_timeout: Some(Settings::KEY_TIMEOUT),
     });
     init_globals(cx);
     defaults::bind_app_keys(cx);

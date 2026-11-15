@@ -207,6 +207,45 @@ impl<T: Clone> KeyTrie<T> {
         }
         best
     }
+
+    /// The keys that can come after `keys`, in the order of their
+    /// notation. None when `keys` start no binding; with no `keys`, the
+    /// first key of every binding.
+    pub fn next_keys(&self, keys: &[Key]) -> Vec<NextKey<&T>> {
+        let Some(node) = self.node(keys) else {
+            return Vec::new();
+        };
+        let mut next: Vec<NextKey<&T>> = node
+            .children
+            .iter()
+            .map(|(key, child)| NextKey {
+                key: key.clone(),
+                value: child.value.as_ref(),
+                prefix: !child.children.is_empty(),
+            })
+            .collect();
+        next.sort_by_cached_key(|next| format_keys(std::slice::from_ref(&next.key)));
+        next
+    }
+}
+
+/// A key that can follow the ones typed so far: see [`KeyTrie::next_keys`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct NextKey<T> {
+    pub key: Key,
+    /// What the keys are bound to with this one, if that is a binding.
+    pub value: Option<T>,
+    /// Longer bindings go on from this key.
+    pub prefix: bool,
+}
+
+/// What keys are bound to, as a host that lists bindings sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Bound {
+    /// A command, by name: the engine's or the host's.
+    Command(String),
+    /// Other keys, typed in their place.
+    Keys(Vec<Key>),
 }
 
 /// Which table a binding lives in.
@@ -295,6 +334,28 @@ impl Keymap {
             Action::Host(name) => Some(name),
             Action::Keys(_) => None,
         }
+    }
+
+    /// The keys that can come after `keys` in `mode`, with what each is
+    /// then bound to: what there is to show someone who has typed `keys`
+    /// and wonders what next.
+    pub fn next_keys(&self, mode: MapMode, keys: &str) -> Vec<NextKey<Bound>> {
+        let bound = |action: &Action| match action {
+            Action::Builtin(builtin) => {
+                command::name(*builtin).map(|name| Bound::Command(name.to_string()))
+            }
+            Action::Host(name) => Some(Bound::Command(name.to_string())),
+            Action::Keys(keys) => Some(Bound::Keys(keys.to_vec())),
+        };
+        self.maps[mode as usize]
+            .next_keys(&parse_keys(keys))
+            .into_iter()
+            .map(|next| NextKey {
+                key: next.key,
+                value: next.value.and_then(bound),
+                prefix: next.prefix,
+            })
+            .collect()
     }
 
     pub(crate) fn lookup(&self, mode: MapMode, keys: &[Key]) -> Lookup<Action> {
@@ -508,6 +569,23 @@ mod tests {
         assert_eq!(trie.longest_prefix(&parse_keys("gx")), Some((1, 1)));
         assert_eq!(trie.longest_prefix(&parse_keys("q")), None);
 
+        let next = |keys: &str| -> Vec<(String, Option<i32>, bool)> {
+            trie.next_keys(&parse_keys(keys))
+                .into_iter()
+                .map(|next| (format_keys(&[next.key]), next.value.copied(), next.prefix))
+                .collect()
+        };
+        assert_eq!(
+            next(""),
+            [
+                ("g".to_string(), Some(1), true),
+                ("x".to_string(), Some(3), false)
+            ]
+        );
+        assert_eq!(next("g"), [("d".to_string(), Some(2), false)]);
+        assert_eq!(next("x"), []);
+        assert_eq!(next("q"), []);
+
         assert_eq!(trie.remove(&parse_keys("gd")), Some(2));
         assert_eq!(trie.lookup(&parse_keys("g")), Lookup::Found(1));
         assert_eq!(trie.remove(&parse_keys("g")), Some(1));
@@ -527,5 +605,39 @@ mod tests {
                 assert_eq!(keymap.command(*mode, keys), Some(*command), "{keys}");
             }
         }
+    }
+
+    #[test]
+    fn lists_the_keys_that_can_follow() {
+        let mut keymap = Keymap::vim();
+        keymap.bind(MapMode::Normal, "gx", "host.open_link");
+        keymap.bind_keys(MapMode::Normal, "gY", "y$");
+        let after_g = keymap.next_keys(MapMode::Normal, "g");
+        let found = |key: char| {
+            let next = after_g.iter().find(|next| next.key == Key::Char(key));
+            next.unwrap_or_else(|| panic!("no g{key}")).clone()
+        };
+        assert_eq!(
+            found('g').value,
+            Some(Bound::Command("motion.goto_first_line".into()))
+        );
+        assert_eq!(
+            found('x').value,
+            Some(Bound::Command("host.open_link".into()))
+        );
+        assert_eq!(found('Y').value, Some(Bound::Keys(parse_keys("y$"))));
+        assert!(!found('g').prefix);
+        // In the order of their notation, whatever order they were bound in.
+        let keys: Vec<String> = after_g
+            .iter()
+            .map(|next| format_keys(std::slice::from_ref(&next.key)))
+            .collect();
+        assert!(keys.is_sorted(), "{keys:?}");
+
+        // `g` is no binding of its own, only the start of some.
+        let first = keymap.next_keys(MapMode::Normal, "");
+        let g = first.iter().find(|next| next.key == Key::Char('g'));
+        assert_eq!(g.map(|g| (g.value.clone(), g.prefix)), Some((None, true)));
+        assert_eq!(keymap.next_keys(MapMode::Insert, "g"), []);
     }
 }

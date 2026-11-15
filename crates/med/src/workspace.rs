@@ -364,6 +364,10 @@ impl Workspace {
             // causes arrive ahead of its `Changed`, and one of them may be
             // the message to show.
             EditorEvent::KeyPress => self.message = None,
+            EditorEvent::Pending(pending) => {
+                let pending = pending.as_ref().map(script::editor_pending);
+                script::keys_pending(pending.unwrap_or(med_lisp::Value::Nil), window, cx);
+            }
             EditorEvent::Changed => cx.notify(),
             EditorEvent::Message(message) => self.set_message(message.clone(), cx),
             EditorEvent::Ex(command) => self.run_ex(command, window, cx),
