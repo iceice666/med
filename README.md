@@ -58,6 +58,37 @@ Git screen (as in lazygit): `1`–`5` or `tab` switch panel, `j`/`k` move,
 branch, `s` stash, `g` pop stash, `p` pull, `P` push, `f` fetch, `enter` open
 file, `q` close.
 
+## Commands and key bindings
+
+No key is wired to behaviour directly. Everything the editor can do is a
+named command, and keys are bound to names in tables:
+
+- The vim engine's commands (`motion.word_forward`, `operator.delete`,
+  `insert.newline`, … — `med_vim::command_names()`) and its stock layout,
+  `Keymap::vim()` in `med-vim/src/keymap.rs`. Counts, registers and
+  operator + motion are grammar, and work with whatever keys are bound.
+- The application's commands (`workspace.*`, `editor.*`, `tree.*`, `git.*`),
+  registered by each view in `Commands`.
+- `med/src/defaults.rs`: the editor keys that reach outside the buffer
+  (`gd`, the `space` leader keys), the file tree's and git screen's keys, the
+  `⌘` shortcuts, and the names ex commands go by (`:w` is `workspace.save`).
+
+Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
+can also be run by its full name, as in `:workspace.find_file`.
+
+There is no configuration file yet; the tables are changed in code:
+
+```rust
+let keymap = &mut cx.global_mut::<med::VimGlobal>().0.keymap;
+keymap.bind(MapMode::Normal, "<Space>n", "workspace.next_tab");
+keymap.bind(MapMode::Insert, "jk", "insert.escape");
+keymap.bind_keys(MapMode::Normal, "Y", "y$");
+cx.global_mut::<PanelKeymaps>().bind("git.files", "x", "git.discard");
+```
+
+A key that is a binding by itself and also starts longer ones (`space`, which
+moves right) waits a second for the rest before acting.
+
 ## Layout
 
 | Crate | What |
