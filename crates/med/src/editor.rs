@@ -542,6 +542,12 @@ impl Editor {
         }
     }
 
+    /// The empty buffer that stands in when no file is open: no file, no
+    /// program's text, never typed in. The next file opened takes its place.
+    pub fn is_pristine(&self) -> bool {
+        self.path.is_none() && self.scratch.is_none() && self.buf.version() == 0
+    }
+
     /// Whether there is anything to lose: a program's text that it does not
     /// write anywhere is never unsaved.
     pub fn is_dirty(&self) -> bool {

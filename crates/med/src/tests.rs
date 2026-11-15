@@ -2115,12 +2115,44 @@ fn programs_read_and_edit_the_file(cx: &mut TestAppContext) {
         eval("(set-cursor 0 1)", cx),
         "1:1: set-cursor: expected a place, (line column) counted from 1, got (0 1)"
     );
-    // With no file there is nothing to ask about.
+    // With no file there is an empty buffer, which is no file.
     cx.simulate_keystrokes(":");
     cx.simulate_input("bd!");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    assert!(ws.read_with(cx, |ws, _| ws.active_editor().is_none()));
+    assert_eq!(active_file(&ws, cx), None);
+    assert_eq!(eval("(current-file)", cx), "nil");
+}
+
+#[gpui::test]
+fn an_empty_buffer_stands_in_for_no_file(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    let (ws, cx) = open(&project, &[], cx);
+    let tabs = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, _| ws.tabs.len())
+    };
+    assert_eq!(tabs(&ws, cx), 1);
+    assert_eq!(active_file(&ws, cx), None);
+
+    // The keys have an editor to go to: `:e` opens a file, which takes
+    // the empty buffer's place.
+    cx.simulate_keystrokes(": e space a . t x t enter");
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    assert_eq!(tabs(&ws, cx), 1);
+
+    // Closing the last file leaves an empty buffer again.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("bd");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(tabs(&ws, cx), 1);
+    assert_eq!(active_file(&ws, cx), None);
+
+    // Typed in, it is kept: the next file gets a tab of its own.
+    cx.simulate_keystrokes("i h i escape");
+    assert_eq!(text(&ws, cx), "hi\n");
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    assert_eq!(tabs(&ws, cx), 2);
 }
 
 #[gpui::test]

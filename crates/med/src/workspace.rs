@@ -123,7 +123,7 @@ impl Workspace {
             this.open_path(&file, window, cx);
         }
         if this.tabs.is_empty() {
-            this.focus_handle.focus(window, cx);
+            this.open_empty(window, cx);
         } else {
             this.activate(0, window, cx);
         }
@@ -542,9 +542,27 @@ impl Workspace {
         cx.notify();
     }
 
+    /// An unnamed, empty buffer, so that with no file open the keys still
+    /// have an editor to go to (`:e`, the leader keys…).
+    fn open_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let lsp = self.lsp.clone();
+        let editor = cx.new(|cx| Editor::new(None, "", Some(lsp), cx));
+        self.add_tab(editor, window, cx);
+    }
+
     fn add_tab(&mut self, editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
         self._subscriptions
             .push(cx.subscribe_in(&editor, window, Self::on_editor_event));
+        // The empty buffer there for want of a file gives way to the first
+        // thing opened, as in vim.
+        if self
+            .active_editor()
+            .is_some_and(|tab| tab.read(cx).is_pristine())
+        {
+            self.tabs[self.active] = editor;
+            self.activate(self.active, window, cx);
+            return;
+        }
         let index = (self.active + 1).min(self.tabs.len());
         self.tabs.insert(index, editor);
         self.activate(index, window, cx);
@@ -566,6 +584,11 @@ impl Workspace {
         }
         editor.update(cx, |editor, cx| editor.close(cx));
         self.tabs.remove(index);
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.open_empty(window, cx);
+            return true;
+        }
         let next = if index < self.active || self.active >= self.tabs.len() {
             self.active.saturating_sub(1)
         } else {
@@ -1347,8 +1370,9 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.quit",
         "Close the tab, and the application with the last one",
         W(|ws, args, window, cx| {
-            ws.close_tab(ws.active, args.bang, window, cx);
-            if ws.tabs.is_empty() {
+            // Closing the last tab leaves an empty one; quitting it quits.
+            let last = ws.tabs.len() <= 1;
+            if ws.close_tab(ws.active, args.bang, window, cx) && last {
                 cx.quit();
             }
         }),
@@ -1358,8 +1382,9 @@ pub(crate) fn register(commands: &mut Commands) {
         "Write the file, then close its tab",
         W(|ws, args, window, cx| {
             if ws.save_active(args, window, cx) {
+                let last = ws.tabs.len() <= 1;
                 ws.close_tab(ws.active, true, window, cx);
-                if ws.tabs.is_empty() {
+                if last {
                     cx.quit();
                 }
             }
