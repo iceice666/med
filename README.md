@@ -5,13 +5,18 @@ framework behind Zed.
 
 - Own editing core: rope buffer with grouped undo (`med-core`), a vim engine
   that runs with no UI attached (`med-vim`)
-- Tree-sitter syntax highlighting for ~35 languages
-- LSP: diagnostics, completion, hover, go to definition, references
+- Tree-sitter syntax highlighting for ~35 languages, and text objects and
+  motions that go by the syntax tree: functions, types, arguments,
+  comments, and the selection grown node by node
+- LSP: diagnostics, completion, hover, signature help, go to definition,
+  references, rename, code actions, formatting
 - Panels written in the editor's own Lisp. The file tree, the fuzzy file
   finder with project-wide search, a lazygit-style git screen and the
   which-key list of the keys that can come next are four of them, in
   [`examples/`](examples): not built in, and yours to load, change or
   replace
+- Programs in that Lisp read the file being edited, edit it, mark it up
+  and are told when it changes
 
 ## Build and run
 
@@ -37,8 +42,10 @@ Environment: `MED_FONT`, `MED_FONT_SIZE` (default 14), `MED_NO_LSP`,
 
 ## Keys
 
-Editing is vim: modes, counts, operators (`d c y > < gu gU g~ gc`), motions,
-text objects (`iw i" i( i{ ip` …), registers, `.`, `/ ? n N * #`, `:s`,
+Editing is vim: modes (`v`, `V` and the block of `ctrl-v`, with `I`, `A`
+and `c` on every line of it), counts, operators (`d c y > < gu gU g~ gc`),
+motions, text objects (`iw i" i( i{ ip` …), registers, marks (`ma`, `'a`,
+`` `a ``, `''`), macros (`qa` … `q`, `@a`, `@@`), `.`, `/ ? n N * #`, `:s`,
 `:w :q :wq :e :bn :bp :bd :wa :qa`. The unnamed register is the system
 clipboard.
 
@@ -46,10 +53,33 @@ clipboard.
 | --- | --- |
 | `gd` / `gr` / `K` | definition / references / hover |
 | `]d` / `[d` | next / previous diagnostic |
+| `space r` | rename: the new name is typed after `:rename` |
+| `space a` | code actions, for the cursor or the selection: `j` `k`, `enter` or a number |
+| `space =`, `:format` | format the file |
+| `ctrl-s` (insert) | the signature of what is being called; it comes up by itself after `(` |
 | `ctrl-n` `ctrl-p` `tab` | completion menu: next, previous, accept |
 | `ctrl-o` / `ctrl-i` | jump back / forward |
 | `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |
 | `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
+
+Surround, as in nvim-surround: `ys` and a motion or text object, then the
+delimiter (`ysiw)`, `yss"` for the line), `ds"` to take one away, `cs"'`
+to change it, and `S` on a selection. A closing bracket, or `b` `r` `B`
+`a`, is the pair as it is; an opening one has a blank inside each.
+
+Brackets and quotes close as they are typed, the closing one is stepped
+over, and backspace between the two takes both; `(set-option 'auto-pairs
+false)` turns that off.
+
+Where a file has a syntax tree:
+
+| Key | Action |
+| --- | --- |
+| `if` `af`, `it` `at` | a function, a type: its body, or all of it |
+| `ia` `aa` | an argument or parameter, with its comma |
+| `ic` `ac` | a comment, lines that follow each other as one |
+| `]f` `[f`, `]t` `[t`, `]a` `[a`, `]c` `[c` | the next / previous of each |
+| `]x` / `[x` | select the node around the cursor, then the one around that; and back |
 
 ## The example panels
 
@@ -75,8 +105,8 @@ there. Each brings its commands and its keys:
 | `picker.lisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |
-
 | `which-key.lisp` | | the keys that can come next, after a pause |
+| `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
 
 With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
 lists what can follow at the bottom of the window once nothing has been
@@ -125,7 +155,8 @@ run at startup, or from the command line with `:eval`:
 (bind 'git.files "x" "git.discard")           ; a panel's keys
 (bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
 (unbind 'normal "gt")
-(set-option 'font-size 16)                    ; also font-family, lsp, key-timeout
+(set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
+                                              ; auto-pairs, format-on-save
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -286,7 +317,8 @@ at once.
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or
 `workspace.sync` was run), `locations` (a list of places to choose
-from, such as the references to a name) and `keys-pending` (below).
+from, such as the references to a name), `keys-pending` (below), and the
+ones about the file being edited (further below).
 
 ### The keys being typed
 
@@ -300,7 +332,7 @@ then with
 | `:tables` | the key tables the next key is looked up in, the first to know it deciding: `("normal")`, or a panel's, `("git.files" "git")` |
 | `:keys` | the start of a binding typed so far, `"<Space>"`; `""` after a count or an operator, when any binding of the table can follow |
 | `:typed` | every key of the command so far, `"2dg"` |
-| `:awaiting` | `'register`, `'char` or `'text-object` when the next key is not looked up but taken as it is (after `"`, `f` or `r`, `di`) |
+| `:awaiting` | `'register`, `'char`, `'text-object` or `'mark` when the next key is not looked up but taken as it is (after `"`, `f` or `r`, `di`, `m`) |
 
 `(bindings table keys)` lists what can follow, in the order of the keys'
 notation, each `(:key :keys :command :description :to :prefix)`: the key
@@ -318,6 +350,56 @@ lists the first key of every binding. The `app` table cannot be listed.
     (when pending
       (set! timer (after 300 (fn () (message (get pending :typed) " …")))))))
 ```
+
+## The file being edited
+
+A program reads the file in the tab that is up, edits it, and marks it.
+A place is a `(line column)`, both counted from 1; the end of a range is
+the place just past it.
+
+| Function | Gives, or does |
+| --- | --- |
+| `(cursor)`, `(set-cursor line column)` | where the cursor is; puts it elsewhere |
+| `(mode)` | `'normal` `'insert` `'visual` `'visual-line` `'visual-block` `'command` |
+| `(selection)` | `(:start :end :text :kind)`, or `nil` |
+| `(line-count)`, `(buffer-line n)` | how many lines; the text of one |
+| `(buffer-text [start end])` | all the text, or what is between two places |
+| `(visible-lines)` | the first and the last line on screen |
+| `(insert text)` | text at the cursor |
+| `(edit start end text)` | text in place of what is between two places: one step to undo |
+| `(feed-keys keys)` | types keys, as the keyboard would: `"ciwfoo<Esc>"` |
+| `(diagnostics)` | the file's: `((:line :col :end-line :end-col :severity :message)...)` |
+| `(all-diagnostics)` | every file's, as places: `((:path :file :line :col :text :severity)...)` |
+| `(decorate group decorations)` | the group's marks on the file, in place of the ones it had |
+
+A decoration is a list of names and values. With `:line` it is a line's:
+`:sign` puts a character beside the number, `:text` words after the end,
+`:bg` a color behind it all. With `:start` and `:end` it is that text's,
+which gets `:bg` and `:color`. `:color` is also the color of a sign or of
+the words. Decorations stay on their text as lines come and go around
+it.
+
+```lisp
+(decorate 'review
+  (list (list :line 12 :sign "?" :color 'warning)
+        (list :line 12 :text "is this still needed" :color 'muted-foreground)
+        (list :start '(14 5) :end '(14 11) :bg 'warning)))
+(decorate 'review nil)                  ; and none
+```
+
+And it is told what happens, with `add-hook`:
+
+| Hook | When, and what the function is called with |
+| --- | --- |
+| `buffer-entered` | another file is the one being edited: its path, or `nil` |
+| `buffer-changed` | its text changed |
+| `cursor-moved` | the cursor is somewhere else |
+| `mode-changed` | the editor went into another mode: the mode |
+| `diagnostics-changed` | a language server has news of a file: its path |
+
+[`examples/todo.lisp`](examples/todo.lisp) is a short program made of
+these: it reads the text once it has changed, puts a sign on the lines
+that say TODO, and has two commands that move the cursor.
 
 ## Scripting language
 
