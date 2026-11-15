@@ -232,7 +232,14 @@ the mode and the owner, `T` touches, `Z` compresses and uncompresses, `!`
 runs a shell command (`*` alone in it for all the files, `?` for each),
 and `=` diffs; `+` makes a directory. What asks for a name, or for a y,
 asks in a popup. `s` lists newest first, `(` hides the details, `g r`
-reads the disk again, `q` closes the listing.
+reads the disk again, `q` closes the listing. With `(set!
+dired-dwim-target true)`, as in Emacs, `C`, `R`, `S` and `H` offer the
+directory of the listing in the next pane, so that two listings side by
+side copy and move between them; every listing up reads the disk again
+after. A listing is in one pane: in a new one (`ctrl-w v`), `space -`
+lists the project's root, taking it from the pane that had it, and
+`enter` goes down from there; `space -` back in a file's pane lists its
+directory.
 
 `i` (or `C-x C-q`) edits the names, as wdired. Change a name and `:w`
 (or `C-x C-s`) renames the file; a name with `/` in it moves it, into
@@ -642,7 +649,8 @@ A tab is in one pane, so that a file has one buffer: opening a tab that
 another pane has (`open-scratch`, `open-file`, `:e`) brings it over, and
 that pane shows the tab before it. `(panes)` says what each pane shows,
 from the top left, and `(with-pane n f)` calls `f` with the `n`th of them
-(from 0) as the one being edited, the keys staying where they are.
+(from 0) as the one being edited, the keys staying where they are: dired
+reads every listing up again with it.
 
 ## Scripting language
 

@@ -24,7 +24,9 @@
 ;
 ; What is done is done to the marked files, or else to the one on the
 ; line:
-;   C R       copy, or rename and move: to a name, or into a directory
+;   C R       copy, or rename and move: to a name, or into a directory;
+;             with `dired-dwim-target`, the directory offered is that of
+;             the listing in the next pane, if one shows another
 ;   S H       a symbolic link to each, or a hard one
 ;   % C  % R  copy or rename by a regular expression and its replacement
 ;   D         delete; x deletes the flagged ones: to the trash, unless
@@ -45,6 +47,7 @@
 ; names in two goes. C-c C-k gives the changes up.
 
 (def dired-delete-forever false)   ; D and x: true to skip the trash
+(def dired-dwim-target false)      ; C R S H: true to offer the next pane's listing
 
 (defkeys 'dired)
 (defkeys 'wdired)
@@ -87,11 +90,34 @@
 (defn dired-tab-name (dir)
   (if (ends-with? dir "/") dir (str dir "/")))
 
+; The directory of a listing, by the name of its tab; nil for another tab.
+(defn dired-dir-of (name)
+  (when (and name (starts-with? name "/") (ends-with? name "/") (dir? name))
+    (if (= name "/") name (dired-bare name))))
+
 ; The directory of the listing being edited, or nil.
 (defn dired-here ()
-  (let ((name (scratch-name)))
-    (when (and name (starts-with? name "/") (ends-with? name "/") (dir? name))
-      (if (= name "/") name (dired-bare name)))))
+  (dired-dir-of (scratch-name)))
+
+; The directories listed in the other panes, from the pane after this one
+; round.
+(defn dired-shown-elsewhere ()
+  (let ((before nil) (after nil) (past false))
+    (map (fn (pane)
+           (let ((dir (dired-dir-of (get pane :scratch))))
+             (cond ((get pane :focused) (set! past true))
+                   ((nil? dir) nil)
+                   (past (set! after (cons dir after)))
+                   (true (set! before (cons dir before))))))
+         (panes))
+    (append (reverse after) (reverse before))))
+
+; Where C, R, S and H offer to put the files of `dir`, with
+; `dired-dwim-target`, as Emacs's: the first other directory listed in
+; another pane, or nil.
+(defn dired-dwim-dir (dir)
+  (when dired-dwim-target
+    (first (filter (fn (other) (not (= other dir))) (dired-shown-elsewhere)))))
 
 ; A line's name, without the / that says it is a directory.
 (defn dired-bare (text)
@@ -436,11 +462,19 @@
                             (if at (+ at 1) line))
                           line))))
 
-; After something done in the background: the listing may be gone, or
-; another tab up.
-(defn dired-refresh-if-up (dir)
-  (when (and (= (dired-here) dir) (not (dired-editing? dir)))
-    (dired-refresh dir)))
+; Read the disk again for every listing a pane shows, but one whose names
+; are being edited: what was done may show in a listing beside this one,
+; and after something done in the background the listing may be gone, or
+; another tab up. In its pane, so that the keyboard stays where it is,
+; in a panel or in another pane.
+(defn dired-refresh-shown ()
+  (let ((index 0))
+    (map (fn (pane)
+           (let ((dir (dired-dir-of (get pane :scratch))))
+             (when (and dir (dired-known? dir) (not (dired-editing? dir)))
+               (with-pane index (fn () (dired-refresh dir)))))
+           (set! index (+ index 1)))
+         (panes))))
 
 ; ---- asking
 
@@ -520,9 +554,9 @@
 
 ; ---- doing things
 
-; Say how it went, with the listing read again if it is up.
+; Say how it went, with the listings that are up read again.
 (defn dired-finish (dir what done problems)
-  (dired-refresh-if-up dir)
+  (dired-refresh-shown)
   (message what " " done
            (if problems (str ", failed " (length problems) ": " (first problems)) "")))
 
@@ -585,7 +619,8 @@
 (defn dired-to (dir verb preposition act)
   (let ((files (dired-targets dir)))
     (when files
-      (dired-ask (str verb " " (dired-say-files files) " " preposition ":") (dired-tab-name dir)
+      (dired-ask (str verb " " (dired-say-files files) " " preposition ":")
+                 (dired-tab-name (or (dired-dwim-dir dir) dir))
         (fn (text)
           (let ((to (dired-destinations dir files text)))
             (if (get to :problem)
@@ -664,7 +699,7 @@
           (unless (= (trim command) "")
             (spawn "sh" (list "-c" (dired-shell-script (trim command) (dired-names files))) dir
               (fn (ran problem)
-                (dired-refresh-if-up dir)
+                (dired-refresh-shown)
                 (if problem (message problem) (dired-show-output "shell" ran))))))))))
 
 ; ---- writing the names, as wdired
@@ -995,10 +1030,7 @@
         (message "The listing is not edited: i edits the names")))))
 
 (add-hook 'files-changed
-  (fn ()
-    (let ((dir (dired-here)))
-      (when (and dir (dired-known? dir))
-        (dired-refresh-if-up dir)))))
+  (fn () (dired-refresh-shown)))
 
 ; ---- keys
 

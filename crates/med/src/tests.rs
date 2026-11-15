@@ -4070,3 +4070,136 @@ fn programs_see_the_panes_and_work_in_them(cx: &mut TestAppContext) {
     let said = eval_here(&ws, "(with-pane 5 (fn () 1))", cx);
     assert!(said.contains("no pane 5"), "{said}");
 }
+
+#[gpui::test]
+fn dired_offers_the_listing_in_the_next_pane(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("left/a.txt", "a\n"),
+        ("left/b.txt", "b\n"),
+        ("right/c.txt", "c\n"),
+    ]);
+    let (ws, cx) = open_with(&[DIRED], &project, &["left/a.txt"], cx);
+    let (left, right) = (project.path("left"), project.path("right"));
+    let offered = |cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        assert!(shown("dired-prompt", cx));
+        eval_here(&ws, "(input-text 'dired-prompt 'text)", cx)
+    };
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "a.txt\nb.txt\n");
+
+    // A listing beside it, in a pane of its own.
+    cx.simulate_keystrokes("ctrl-w v");
+    eval_here(
+        &ws,
+        &format!("(dired-show \"{}\" nil)", right.display()),
+        cx,
+    );
+    let (left_tab, right_tab) = (
+        format!("{}/", left.display()),
+        format!("{}/", right.display()),
+    );
+    assert_eq!(panes(&ws, cx), [left_tab.clone(), format!("{right_tab}*")]);
+
+    // As in Emacs, by default R offers the listing's own directory.
+    cx.simulate_keystrokes("ctrl-w h R");
+    assert_eq!(offered(cx), format!("{left_tab:?}"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // With dired-dwim-target, the other pane's; enter moves the file there,
+    // and both listings show it, the keys staying in this one.
+    lisp("(set! dired-dwim-target true)", cx);
+    cx.simulate_keystrokes("R");
+    assert_eq!(offered(cx), format!("{right_tab:?}"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(project.path("right/a.txt").is_file());
+    assert!(!project.path("left/a.txt").exists());
+    assert_eq!(text(&ws, cx), "b.txt\n");
+    assert_eq!(panes(&ws, cx), [format!("{left_tab}*"), right_tab.clone()]);
+    let there = eval_here(&ws, "(with-pane 1 (fn () (lines (buffer-text))))", cx);
+    assert_eq!(there, r#"("a.txt" "c.txt")"#);
+
+    // C copies back the same way; with no other listing up, a listing
+    // offers its own directory again.
+    // The cursor stayed on c.txt there, which is the second line now.
+    cx.simulate_keystrokes("ctrl-w l");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("g g C");
+    assert_eq!(offered(cx), format!("{left_tab:?}"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(project.read("left/a.txt"), "a\n");
+    cx.simulate_keystrokes("ctrl-w o");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("C");
+    assert_eq!(offered(cx), format!("{right_tab:?}"));
+}
+
+#[gpui::test]
+fn two_listings_side_by_side_by_keys(cx: &mut TestAppContext) {
+    let project = Project::new(&[("x.txt", "x\n"), ("sub/y.txt", "y\n")]);
+    let (ws, cx) = open_with(&[DIRED, TREE], &project, &["x.txt"], cx);
+    lisp("(set! dired-dwim-target true)", cx);
+    let root = format!("{}/", project.0.display());
+    let sub = format!("{}/", project.path("sub").display());
+
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(panes(&ws, cx), [format!("{root}*")]);
+
+    // In a new pane, space - has no file to go from: it lists the root,
+    // which comes over from the pane it was in. enter goes down from there.
+    cx.simulate_keystrokes("ctrl-w v space -");
+    cx.run_until_parked();
+    assert_eq!(panes(&ws, cx), ["x.txt".to_string(), format!("{root}*")]);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(panes(&ws, cx), ["x.txt".to_string(), format!("{sub}*")]);
+
+    // Back on the left, space - lists x.txt's directory again.
+    cx.simulate_keystrokes("ctrl-w h space -");
+    cx.run_until_parked();
+    assert_eq!(panes(&ws, cx), [format!("{root}*"), sub.clone()]);
+    cx.simulate_keystrokes("R");
+    cx.run_until_parked();
+    assert_eq!(
+        eval_here(&ws, "(input-text 'dired-prompt 'text)", cx),
+        format!("{sub:?}")
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // A click in the other pane gives it the keys, before any key does:
+    // a shortcut that is no key of the editor's acts on it too.
+    let width = cx.update(|window, _| f32::from(window.viewport_size().width));
+    cx.simulate_click(point(px(width - 40.), px(TITLE + 60.)), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(panes(&ws, cx), [root.clone(), format!("{sub}*")]);
+    // Past the file tree, at the left, which is 260 wide.
+    cx.simulate_click(point(px(300.), px(TITLE + 60.)), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(panes(&ws, cx), [format!("{root}*"), sub.clone()]);
+
+    // Reading the disk again goes into the other listing's pane, and the
+    // keyboard stays where it was: here in the file tree.
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert_eq!(eval_here(&ws, "(panel-focused? 'tree)", cx), "true");
+    fs::write(project.path("sub/z.txt"), "z\n").unwrap();
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_command(
+            "workspace.sync",
+            &crate::commands::Args::default(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(eval_here(&ws, "(panel-focused? 'tree)", cx), "true");
+    assert_eq!(panes(&ws, cx), [format!("{root}*"), sub.clone()]);
+    let there = eval_here(&ws, "(with-pane 1 (fn () (lines (buffer-text))))", cx);
+    assert_eq!(there, r#"("y.txt" "z.txt")"#);
+}
