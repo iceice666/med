@@ -442,6 +442,10 @@ at once.
 | `(list-dir path [all])` | what is in a directory: `((:name :path :dir)...)`, without what git ignores unless `all` |
 | `(path-name p)`, `(path-parent p)`, `(path-join a b...)` | parts of paths |
 | `(file-exists? path)`, `(dir? path)` | whether anything is there; a directory |
+| `(file-info path)` | what is there, a link and not what it points to: `(:name :path :kind :dir :size :modified :mode :links :uid :gid :target)`, or `nil` |
+| `(regex-match pattern text)` | the first match and each group's, or `nil` |
+| `(regex-replace pattern text replacement)` | every match replaced, `$1` and `${name}` being a group's |
+| `(spawn program arguments dir function)` | runs a program, in `dir` or the project for `nil`; the function gets `(:status :out :err)` and `nil`, or `nil` and why it could not be run |
 | `(walk-files function)` | every file of the project, as paths from its root |
 | `(fuzzy query list limit)` | the texts a few letters mean, best first |
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
@@ -457,8 +461,11 @@ is the project's:
 | Function | Does |
 | --- | --- |
 | `(rename-file from to)` | moves a file or a directory, never into the place of another; the tabs that had it go with it |
-| `(delete-file path)` | puts a file or a directory in the trash |
+| `(copy-file from to [function])` | copies a file, or a directory with all in it, links as links, never into the place of another; given a function, in the background, and it gets what `copy-file` would give |
+| `(delete-file path [forever])` | puts a file or a directory in the trash, or does away with it |
 | `(make-dir path)` | a directory, and the ones it is in |
+| `(make-link target path [hard])` | a symbolic link at `path` to `target`, as written, or a hard one |
+| `(set-file-mode path mode)` | permissions, as chmod: `493` or `"755"` |
 
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or
