@@ -67,6 +67,17 @@ delimiter (`ysiw)`, `yss"` for the line), `ds"` to take one away, `cs"'`
 to change it, and `S` on a selection. A closing bracket, or `b` `r` `B`
 `a`, is the pair as it is; an opening one has a blank inside each.
 
+To go to text on screen, as in flash.nvim: `s`, then some of the text.
+Every place that has it is marked and gets a letter, the nearest ones the
+letters easiest to type, and the rest of the text is dimmed. The letter
+goes to its place, `enter` to the first place after the cursor; backspace
+takes a character back and escape gives up, as does text that is nowhere
+on screen. A letter that could be more of the text is never a label, and
+small letters are capitals as well until a capital is typed. In visual
+mode the selection goes there. After an operator the key is `z`, `s` being
+surround's, and what is found goes with its first character: `dzfoa`. The
+command is `motion.flash`; what `s` is in vim, `cl` still is.
+
 Brackets and quotes close as they are typed, the closing one is stepped
 over, and backspace between the two takes both; `(set-option 'auto-pairs
 false)` turns that off.
@@ -138,7 +149,7 @@ named command, and keys are bound to names in tables:
   each view in `Commands`, and the ones programs define (`tree.*`, `git.*`
   and `picker.*` are the examples').
 - `med/src/defaults.rs`: the editor keys that reach outside the buffer
-  (`gd`, the `space` leader keys), the `⌘` shortcuts, and the names ex
+  (`gd`, the `space` leader keys), `s` and `z`, the `⌘` shortcuts, and the names ex
   commands go by (`:w` is `workspace.save`).
 
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
@@ -332,7 +343,7 @@ then with
 | `:tables` | the key tables the next key is looked up in, the first to know it deciding: `("normal")`, or a panel's, `("git.files" "git")` |
 | `:keys` | the start of a binding typed so far, `"<Space>"`; `""` after a count or an operator, when any binding of the table can follow |
 | `:typed` | every key of the command so far, `"2dg"` |
-| `:awaiting` | `'register`, `'char`, `'text-object` or `'mark` when the next key is not looked up but taken as it is (after `"`, `f` or `r`, `di`, `m`) |
+| `:awaiting` | `'register`, `'char`, `'text-object`, `'mark` or `'flash` when the next key is not looked up but taken as it is (after `"`, `f` or `r`, `di`, `m`, `s`) |
 
 `(bindings table keys)` lists what can follow, in the order of the keys'
 notation, each `(:key :keys :command :description :to :prefix)`: the key
