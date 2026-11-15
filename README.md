@@ -157,6 +157,8 @@ there. Each brings its commands and its keys:
 | `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
 | `dired.lisp` | `space -` | the file's directory as text to edit |
 | | `enter` / `-` | in a listing: open the line's file or directory / go up |
+| `statusline.lisp` | | the status bar, as a layout to change: the one the window draws without it |
+| `titlebar.lisp` | | the title bar: what is being edited, the project and its branch |
 
 With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
 lists what can follow at the bottom of the window once nothing has been
@@ -296,7 +298,7 @@ its place.
 ```
 
 `defpanel` takes a name, the options `:at` (`'left`, `'right`, `'bottom`,
-`'popup` or `'full`), `:width`, `:shown` (up from the start) and
+`'popup`, `'full`, or `'status` and `'title` for [the bars](#the-bars)), `:width`, `:shown` (up from the start) and
 `:contexts` (below), and a layout. `show-panel`, `hide-panel` and `toggle-panel` put it up and
 away, and `panel-shown?` asks. A popup is as tall as what is in it, and a
 click beside it or escape puts it away. A panel at the bottom is as tall as
@@ -305,6 +307,51 @@ there under a `'full` panel; it takes no key and no click from what is
 above it, which makes it the place for what is shown while a command is
 being typed. `set-layout` gives a panel that is already defined another
 layout.
+
+### The bars
+
+The status bar and the title bar are the window's own until a program
+gives one a layout: a panel at `'status` is drawn in place of the status
+bar, and one at `'title` in the title bar, which can still be dragged to
+move the window and double-clicked to zoom it, and on macOS starts after
+the window's buttons. Such a panel is up once it is defined;
+`hide-panel` gives the window its own bar back, and so does a layout
+that fails, which the status bar then says, until the panel is given a
+layout again. With several up, the one defined last is drawn.
+
+```lisp
+(defpanel 'mine :at 'status
+  (fn (panel)
+    (row :width 'full :height 24 :padding-x 8 :gap 12 :align 'center :bg 'status-bar
+      (text (or (get panel :cmdline) (get panel :path) "") :grow true)
+      (text (str (get panel :line) ":" (get panel :col))))))
+```
+
+Besides what every panel has, a bar's `panel` has what the window's bars
+show, `nil` where there is nothing to show:
+
+| Name | Is |
+| --- | --- |
+| `:title` | the window's title, `"src/main.rs — med"` |
+| `:mode`, `:mode-label` | the mode, as `(mode)` has it, and as the status bar names it: `'normal`, `"NORMAL"` |
+| `:path`, `:scratch` | the file being edited, from the project's root; the name of a tab that is no file |
+| `:modified` | whether it has changes that are not written |
+| `:line`, `:col` | where the cursor is, counted from 1 |
+| `:language` | `"rust"`, or `"text"` |
+| `:cmdline` | the command line while it is typed, `":wq"` or `"/foo"` |
+| `:message` | what was last said, until the next key |
+| `:diagnostic` | the first line of the diagnostic at the cursor |
+| `:pending` | the keys of a command typed so far, `"2d"` |
+| `:recording` | the register a macro is being recorded into |
+| `:errors`, `:warnings` | how many diagnostics of each, in every file |
+| `:lsp` | what the file's language server is doing |
+| `:branch` | the branch the project is on |
+
+With no file open there is no `:mode` and nothing that comes from a
+file. A status bar that leaves out `:cmdline` has `:` typed blind.
+[`examples/statusline.lisp`](examples/statusline.lisp) is the window's own
+status bar, and the colors of the bars are `'status-bar`, `'title-bar`,
+`'title-bar-border` and `'tab-bar`.
 
 ### Layouts
 
