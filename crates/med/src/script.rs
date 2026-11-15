@@ -9,6 +9,10 @@
 //! (bind '(normal visual) "gh" "editor.hover")
 //! (bind 'tree "x" "tree.close")        ; a panel's keys
 //! (bind-keys 'normal "Y" "y$")         ; keys typed in place of others
+//! (defkeys 'listing)                   ; a table for buffers to be in
+//! (bind 'listing "<CR>" "user.open")   ; in normal mode there; also
+//!                                      ; listing.visual, .operator, .insert
+//! (set-buffer-keys '(listing))         ; the tab up is in it
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save
@@ -403,7 +407,8 @@ pub fn run_hook(
 /// What the `keys-pending` hook is called with while a command is half
 /// typed:
 /// - `:tables`: the key tables the next key is looked up in, the first to
-///   know it deciding: a mode for an editor, its contexts for a panel.
+///   know it deciding: for an editor the buffer's tables and its mode
+///   last, for a panel its contexts.
 /// - `:keys`: the start of a binding typed so far, as `bindings` takes
 ///   it. Empty after a count or an operator.
 /// - `:typed`: every key of the command so far (`"a2d`).
@@ -437,12 +442,15 @@ pub(crate) fn editor_pending(pending: &PendingKeys) -> Value {
         Awaiting::Mark => "mark",
         Awaiting::Flash => "flash",
     });
-    pending_value(
-        &[mode.map_or("normal", |(name, _)| name)],
-        &pending.keys,
-        &pending.typed,
-        awaiting,
-    )
+    let mode = mode.map_or(MapMode::Normal, |(_, mode)| *mode);
+    let mut tables: Vec<String> = pending
+        .tables
+        .iter()
+        .map(|table| buffer_table_name(table, mode))
+        .collect();
+    tables.push(mode_name(mode).to_string());
+    let tables: Vec<&str> = tables.iter().map(String::as_str).collect();
+    pending_value(&tables, &pending.keys, &pending.typed, awaiting)
 }
 
 /// Tell the programs that asked what the keys typed so far wait for:
@@ -550,11 +558,40 @@ fn name(value: &Value) -> Result<String, Error> {
     }
 }
 
-/// Keys are bound in an editor mode, in a panel, or for the whole window.
+/// Keys are bound in an editor mode, in a table of buffers' own for a
+/// mode, in a panel, or for the whole window.
 enum Table {
     Mode(MapMode),
+    Buffer(String, MapMode),
     Panel(String),
     App,
+}
+
+fn mode_name(mode: MapMode) -> &'static str {
+    MODES
+        .iter()
+        .find(|(_, other)| *other == mode)
+        .map_or("normal", |(name, _)| name)
+}
+
+/// What a program calls a buffers' table in a mode: `listing` in normal
+/// mode, `listing.insert` in insert mode.
+fn buffer_table_name(table: &str, mode: MapMode) -> String {
+    match mode {
+        MapMode::Normal => table.to_string(),
+        other => format!("{table}.{}", mode_name(other)),
+    }
+}
+
+/// The buffers' table `name` is, and its mode.
+fn buffer_table(name: &str, cx: &App) -> Option<(String, MapMode)> {
+    let keymap = &cx.global::<VimGlobal>().0.keymap;
+    if keymap.has_table(name) {
+        return Some((name.to_string(), MapMode::Normal));
+    }
+    let (table, mode) = name.rsplit_once('.')?;
+    let (_, mode) = MODES.iter().find(|(other, _)| *other == mode)?;
+    keymap.has_table(table).then(|| (table.to_string(), *mode))
 }
 
 /// The table `value` names.
@@ -565,13 +602,21 @@ fn table(value: &Value, cx: &App) -> Result<Table, Error> {
         Ok(Table::Mode(*mode))
     } else if name == APP_TABLE {
         Ok(Table::App)
+    } else if let Some((table, mode)) = buffer_table(&name, cx) {
+        Ok(Table::Buffer(table, mode))
     } else if panels.has_context(&name) {
         Ok(Table::Panel(name))
     } else {
         let modes: Vec<&str> = MODES.iter().map(|(mode, _)| *mode).collect();
         let panels: Vec<&str> = panels.names().collect();
+        let mut buffers: Vec<&str> = cx.global::<VimGlobal>().0.keymap.table_names().collect();
+        buffers.sort();
+        let buffers = match buffers.is_empty() {
+            true => String::new(),
+            false => format!(" a table of defkeys ({}),", buffers.join(" ")),
+        };
         Err(failed(format!(
-            "{name} is neither a mode ({}), {APP_TABLE}, nor a panel ({})",
+            "{name} is neither a mode ({}), {APP_TABLE},{buffers} nor a panel ({})",
             modes.join(" "),
             panels.join(" ")
         )))
@@ -652,6 +697,10 @@ fn define_functions(interp: &mut Interp) {
                     let keymap = &mut cx.global_mut::<VimGlobal>().0.keymap;
                     keymap.bind(mode, keys, command);
                 }
+                Table::Buffer(table, mode) => {
+                    let keymap = &mut cx.global_mut::<VimGlobal>().0.keymap;
+                    keymap.bind_in(Some(&table), mode, keys, command);
+                }
                 Table::Panel(panel) => {
                     cx.global_mut::<PanelKeymaps>().bind(&panel, keys, command);
                 }
@@ -677,6 +726,10 @@ fn define_functions(interp: &mut Interp) {
                     let keymap = &mut cx.global_mut::<VimGlobal>().0.keymap;
                     keymap.bind_keys(mode, keys, to);
                 }
+                Table::Buffer(table, mode) => {
+                    let keymap = &mut cx.global_mut::<VimGlobal>().0.keymap;
+                    keymap.bind_keys_in(Some(&table), mode, keys, to);
+                }
                 Table::Panel(panel) => {
                     return Err(failed(format!(
                         "keys stand for other keys only in an editor mode, not in {panel}"
@@ -692,6 +745,65 @@ fn define_functions(interp: &mut Interp) {
         Ok(Value::Nil)
     });
 
+    // (defkeys name): a table of keys for buffers to be in, looked up
+    // before the mode's: `name` in normal mode, `name.visual`,
+    // `name.operator` and `name.insert` in the others. A buffer is put in
+    // it with `set-buffer-keys`.
+    interp.define_native("defkeys", 1, |call, args| {
+        let given = name(&args[0])?;
+        let cx = app(call)?;
+        let taken = MODES.iter().any(|(mode, _)| *mode == given)
+            || given == APP_TABLE
+            || cx.global::<UserPanels>().has_context(&given);
+        if given.is_empty() || given.contains('.') || given.contains(char::is_whitespace) {
+            return Err(failed(format!("{given:?} is no name for a table of keys")));
+        }
+        if taken {
+            return Err(failed(format!("{given} is a table of keys already")));
+        }
+        cx.global_mut::<VimGlobal>().0.keymap.define_table(&given);
+        Ok(Value::from(given))
+    });
+
+    // (set-buffer-keys tables): the tab up looks keys up in these tables
+    // of `defkeys`, the first first, before its mode's; nil for none.
+    interp.define_native("set-buffer-keys", 1, |call, args| {
+        let names = match &args[0] {
+            Value::Nil => Vec::new(),
+            Value::Pair(_) => args[0].to_vec()?,
+            one => vec![one.clone()],
+        };
+        let names = names.iter().map(name).collect::<Result<Vec<_>, _>>()?;
+        let cx = app(call)?;
+        let keymap = &cx.global::<VimGlobal>().0.keymap;
+        if let Some(unknown) = names.iter().find(|name| !keymap.has_table(name)) {
+            return Err(failed(format!("{unknown} is no table of defkeys")));
+        }
+        let set = in_workspace(cx, |workspace, _, cx| {
+            let editor = workspace.active_editor()?.clone();
+            editor.update(cx, |editor, _| editor.vim.tables = names);
+            Some(())
+        });
+        match set.flatten() {
+            Some(()) => Ok(Value::Nil),
+            None => Err(failed("set-buffer-keys: there is no tab up")),
+        }
+    });
+
+    // (buffer-keys): the tables the tab up looks keys up in first.
+    interp.define_native("buffer-keys", 0, |call, _| {
+        let cx = app(call)?;
+        let tables = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| {
+                Some(workspace.active_editor()?.read(cx).vim.tables.clone())
+            };
+            origin.workspace.read_with(cx, read).ok().flatten()
+        });
+        Ok(Value::list(
+            tables.unwrap_or_default().into_iter().map(Value::from),
+        ))
+    });
+
     // (unbind table keys): whether there was anything to remove.
     interp.define_native("unbind", 2, |call, args| {
         let keys = keys(&args[1])?;
@@ -700,6 +812,10 @@ fn define_functions(interp: &mut Interp) {
         for table in tables(&args[0], cx)? {
             removed |= match table {
                 Table::Mode(mode) => cx.global_mut::<VimGlobal>().0.keymap.unbind(mode, keys),
+                Table::Buffer(table, mode) => {
+                    let keymap = &mut cx.global_mut::<VimGlobal>().0.keymap;
+                    keymap.unbind_in(Some(&table), mode, keys)
+                }
                 Table::Panel(panel) => cx.global_mut::<PanelKeymaps>().unbind(&panel, keys),
                 Table::App => {
                     let bound = cx.global_mut::<Script>().app_keys.remove(keys);
@@ -729,6 +845,10 @@ fn define_functions(interp: &mut Interp) {
         let cx = app(call)?;
         let next: Vec<NextKey<Bound>> = match table(&args[0], cx)? {
             Table::Mode(mode) => cx.global::<VimGlobal>().0.keymap.next_keys(mode, &typed),
+            Table::Buffer(table, mode) => {
+                let keymap = &cx.global::<VimGlobal>().0.keymap;
+                keymap.next_keys_in(Some(&table), mode, &typed)
+            }
             Table::Panel(panel) => {
                 let next = cx.global::<PanelKeymaps>().next_keys(&panel, &typed);
                 let command = |command: &SharedString| Bound::Command(command.to_string());

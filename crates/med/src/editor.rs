@@ -520,8 +520,11 @@ impl Editor {
             lsp.update(cx, |store, cx| store.open(&path, lang, text, cx));
         }
         self.path = Some(path);
-        // Written under a name, a program's text is a file from then on.
-        self.scratch = None;
+        // Written under a name, a program's text is a file from then on,
+        // and its keys are the program's no longer.
+        if self.scratch.take().is_some() {
+            self.vim.tables.clear();
+        }
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }

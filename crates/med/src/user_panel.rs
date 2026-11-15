@@ -257,6 +257,12 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         let width = width.unwrap_or(if at == At::Popup { 480. } else { 260. });
 
         let cx = script::app(call)?;
+        // Its keys would go to the buffers' table of that name.
+        if cx.global::<crate::VimGlobal>().0.keymap.has_table(&name) {
+            return Err(failed(format!(
+                "{name} is a table of defkeys already, and no name for a panel"
+            )));
+        }
         let name = SharedString::from(name);
         let panel = UserPanel {
             name: name.clone(),

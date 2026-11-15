@@ -2817,3 +2817,84 @@ fn a_listing_keeps_what_is_not_written(cx: &mut TestAppContext) {
     assert_eq!(project.read("sp "), "s\n");
     assert_eq!(text(&ws, cx), "dir/\nb.txt\nsp \n");
 }
+
+#[gpui::test]
+fn programs_give_buffers_keys_of_their_own(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\ntwo\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let error = |source: &str, cx: &mut VisualTestContext| match cx
+        .update(|_, cx| crate::script::eval(source, cx))
+    {
+        Ok(value) => panic!("{source}: {value}"),
+        Err(error) => error.to_string(),
+    };
+    assert_eq!(lisp("(defkeys 'mine)", cx), "\"mine\"");
+    // Run again, an init file defines it again.
+    assert_eq!(lisp("(defkeys 'mine)", cx), "\"mine\"");
+    assert!(error("(defkeys 'normal)", cx).contains("a table of keys already"));
+    assert!(error("(defkeys 'a.b)", cx).contains("no name for a table"));
+    assert!(
+        error("(bind 'nope.insert \"x\" \"motion.down\")", cx)
+            .contains("a table of defkeys (mine)")
+    );
+
+    lisp(
+        r#"(do (bind 'mine "x" "motion.down")
+               (bind 'mine.insert "<CR>" "insert.escape")
+               (defcommand "user.mine" "Have my keys" (fn () (set-buffer-keys '(mine))))
+               (defcommand "user.none" "Have none" (fn () (set-buffer-keys nil))))"#,
+        cx,
+    );
+    assert_eq!(
+        lisp(
+            r#"(map (fn (next) (get next :command)) (bindings 'mine))"#,
+            cx
+        ),
+        r#"("motion.down")"#
+    );
+
+    // Until the tab is in the table, x is vim's.
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "ne\ntwo\n");
+    cx.simulate_keystrokes(": u s e r . m i n e enter");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("x");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    assert_eq!(text(&ws, cx), "ne\ntwo\n");
+    cx.simulate_keystrokes("i enter");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert!(lisp("(unbind 'mine \"x\")", cx) == "true");
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "ne\nwo\n");
+
+    cx.simulate_keystrokes(": u s e r . n o n e enter");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("i enter escape");
+    assert_eq!(text(&ws, cx), "ne\n\nwo\n");
+
+    // A panel cannot take the name: its keys would go to the table.
+    assert!(
+        error("(defpanel 'mine (fn (panel) (col)))", cx).contains("a table of defkeys already")
+    );
+
+    // A program's tab written as a file is the program's no longer, keys
+    // and all.
+    lisp(
+        r#"(do (bind 'mine "x" "motion.down")
+               (defcommand "user.scratch" "A tab of mine"
+                 (fn () (open-scratch "mine" "one\ntwo")
+                        (set-buffer-keys '(mine))
+                        (message (buffer-keys)))))"#,
+        cx,
+    );
+    cx.simulate_keystrokes(": u s e r . s c r a t c h enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), r#"("mine")"#);
+    cx.simulate_keystrokes("x");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes(": w space x . t x t enter");
+    cx.run_until_parked();
+    assert_eq!(project.read("x.txt"), "one\ntwo\n");
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "one\nwo\n");
+}
