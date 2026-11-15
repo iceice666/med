@@ -10,6 +10,7 @@
 
 use crate::command::{Action, Await, Builtin, Cmd, InsertCmd};
 use crate::ex::{self, RangeCtx};
+use crate::flash::{Flash, FlashMatch};
 use crate::keymap::{Keymap, Lookup, MapMode, format_keys, parse_keys};
 use crate::motion::{self, Find, WS, class, first_non_blank, leading_ws};
 use crate::textobj::{self, ObjRange};
@@ -376,6 +377,8 @@ pub(crate) enum Motion {
         kind: char,
         forward: bool,
     },
+    /// To a place `motion.flash` found, and with an operator onto it.
+    Flash(usize),
 }
 
 impl Motion {
@@ -393,6 +396,7 @@ impl Motion {
                 | Motion::WordSearch { .. }
                 | Motion::Mark { .. }
                 | Motion::Syntax { .. }
+                | Motion::Flash(_)
         )
     }
 }
@@ -431,6 +435,9 @@ struct Pending {
     seq: Vec<Key>,
     /// Every key of the command so far, for display.
     typed: Vec<Key>,
+    /// `motion.flash` is looking for text: keys are that text, or the
+    /// label of a place to go to.
+    flash: Option<Flash>,
 }
 
 impl Pending {
@@ -441,6 +448,7 @@ impl Pending {
             && self.register.is_none()
             && self.awaiting.is_none()
             && self.seq.is_empty()
+            && self.flash.is_none()
     }
 
     fn count(&self) -> Option<usize> {
@@ -480,6 +488,8 @@ pub enum Awaiting {
     TextObject,
     /// The name of a mark, after `m`, `'` or `` ` ``.
     Mark,
+    /// More of the text `motion.flash` looks for, or the label of a place.
+    Flash,
 }
 
 struct CmdLine {
@@ -617,11 +627,12 @@ impl Vim {
         if self.pending.is_idle() {
             return None;
         }
+        let flash = self.pending.flash.as_ref().map(|_| Awaiting::Flash);
         Some(PendingKeys {
             mode: self.map_mode(),
             keys: format_keys(&self.pending.seq),
             typed: self.pending_display(),
-            awaiting: self.pending.awaiting.map(|awaiting| match awaiting {
+            awaiting: flash.or(self.pending.awaiting.map(|awaiting| match awaiting {
                 Await::Register | Await::RecordRegister | Await::PlayRegister => Awaiting::Register,
                 Await::Find { .. }
                 | Await::Replace
@@ -631,8 +642,15 @@ impl Vim {
                 | Await::SurroundChangeTo(_) => Awaiting::Char,
                 Await::TextObject { .. } => Awaiting::TextObject,
                 Await::SetMark | Await::Mark { .. } => Awaiting::Mark,
-            }),
+            })),
         })
+    }
+
+    /// The places on screen `motion.flash` has found so far, in the order
+    /// of the text, for a host to mark; `None` when it is not looking.
+    pub fn flash(&self) -> Option<&[FlashMatch]> {
+        let flash = self.pending.flash.as_ref()?;
+        Some(&flash.matches)
     }
 
     /// The register keys are being recorded into, after `q`.
@@ -951,6 +969,12 @@ impl Vim {
                 self.pending.typed.push(key.clone());
                 self.map_key(key, cx, fx);
             }
+            // Every key is `motion.flash`'s while it looks for text.
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+                if self.pending.flash.is_some() =>
+            {
+                self.flash_key(key, cx, fx);
+            }
             Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
                 // Escape always abandons a half-typed command, whatever
                 // the keymap says; then it is looked up like any other key.
@@ -1081,6 +1105,11 @@ impl Vim {
             Action::Builtin(Builtin::Cmd(Cmd::Redo)) => self.undo(true, cx),
             Action::Builtin(Builtin::Cmd(Cmd::Record)) => self.record_key(cx),
             Action::Builtin(Builtin::Cmd(Cmd::Surround)) => self.surround_key(trigger),
+            // The count means nothing to it; an operator waits for where
+            // it goes.
+            Action::Builtin(Builtin::Cmd(Cmd::Flash)) => {
+                self.pending.flash = Some(Flash::new(self.pending.typed.len()));
+            }
             Action::Builtin(builtin) => {
                 cx.buf.begin(self.cursor);
                 match builtin {
@@ -1171,6 +1200,50 @@ impl Vim {
                 self.reset_pending();
             }
         }
+    }
+
+    /// A key while `motion.flash` looks for text. A label goes to its
+    /// place and `enter` to the first place after the cursor, as a motion:
+    /// with an operator, onto it. Any other character is more of the text,
+    /// backspace takes the last one back, and escape, or text that is
+    /// nowhere on screen, gives up.
+    fn flash_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        let Some(mut flash) = self.pending.flash.take() else {
+            return;
+        };
+        match key {
+            Key::Char(c) if flash.labelled(c).is_none() => flash.pattern.push(c),
+            Key::Backspace | Key::Ctrl('h') if !flash.pattern.is_empty() => {
+                flash.pattern.pop();
+            }
+            key => {
+                let to = match key {
+                    Key::Char(c) => flash.labelled(c),
+                    Key::Enter | Key::Ctrl('j' | 'm') => flash.target(),
+                    _ => None,
+                };
+                match to {
+                    Some(to) => {
+                        cx.buf.begin(self.cursor);
+                        self.run_motion(Motion::Flash(to), cx, fx);
+                        cx.buf.end();
+                    }
+                    None => self.reset_pending(),
+                }
+                return;
+            }
+        }
+        flash.update(cx.buf, cx.viewport, self.cursor);
+        if flash.matches.is_empty() && !flash.pattern.is_empty() {
+            self.message = Some(format!("Pattern not found: {}", flash.pattern));
+            self.reset_pending();
+            return;
+        }
+        // The keys typed so far, as they are shown: the text as it now is.
+        self.pending.typed.truncate(flash.typed);
+        let pattern = flash.pattern.chars().map(Key::Char);
+        self.pending.typed.extend(pattern);
+        self.pending.flash = Some(flash);
     }
 
     // ---- macros --------------------------------------------------------
@@ -1535,6 +1608,9 @@ impl Vim {
                 }
                 out(pos, false, false)
             }
+            // An operator takes the first character of what was found
+            // along with what lies before it.
+            Motion::Flash(pos) => out(pos.min(buf.max_offset()), true, false),
         }
     }
 
@@ -2158,7 +2234,7 @@ impl Vim {
             Cmd::Expand => self.expand_selection(cx),
             Cmd::Shrink => self.shrink_selection(),
             // `exec` runs these itself: they keep something pending.
-            Cmd::Record | Cmd::Surround => {}
+            Cmd::Record | Cmd::Surround | Cmd::Flash => {}
             Cmd::SwapEnds => {
                 if visual {
                     std::mem::swap(&mut self.anchor, &mut self.cursor);

@@ -1,8 +1,8 @@
 //! What is bound out of the box: the tables a configuration will edit.
 //!
 //! The vim layout itself is [`med_vim::Keymap::vim`]; this adds the keys
-//! that reach beyond the buffer, the app shortcuts and the ex command
-//! names. Every right-hand side is a command name from [`Commands`] or the
+//! that reach beyond the buffer, the ones of `motion.flash`, the app
+//! shortcuts and the ex command names. Every right-hand side is a command name from [`Commands`] or the
 //! engine's [`med_vim::command_names`]. A panel's keys, and the keys that
 //! bring it up, are bound by the program that defines the panel.
 
@@ -10,10 +10,11 @@ use crate::VimGlobal;
 use crate::commands::{Commands, RunCommand};
 use crate::keymap::PanelKeymaps;
 use gpui::{App, KeyBinding};
-use med_vim::MapMode::{self, Insert, Normal, Visual};
+use med_vim::MapMode::{self, Insert, Normal, Operator, Visual};
 
 const NV: &[MapMode] = &[Normal, Visual];
 const N: &[MapMode] = &[Normal];
+const O: &[MapMode] = &[Operator];
 const I: &[MapMode] = &[Insert];
 
 /// Editor keys, on top of the vim layout: modes, key sequence, command.
@@ -34,6 +35,11 @@ pub const EDITOR_KEYS: &[(&[MapMode], &str, &str)] = &[
     (I, "<C-p>", "editor.complete"),
     (I, "<C-Space>", "editor.complete"),
     (I, "<C-s>", "editor.signature_help"),
+    // To text on screen, by typing some of it and then its label. In place
+    // of vim's `s`, which `cl` and `c` also are; after an operator `s` is
+    // surround's, so there it is `z`.
+    (NV, "s", "motion.flash"),
+    (O, "z", "motion.flash"),
     (NV, "<Space>a", "editor.code_action"),
     (N, "<Space>=", "editor.format"),
     // Leader keys. `space` alone still moves right, after a pause.

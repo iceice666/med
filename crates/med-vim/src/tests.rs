@@ -955,3 +955,111 @@ fn expands_and_shrinks_the_selection() {
         Some("No syntax tree for this file")
     );
 }
+
+/// `motion.flash` on the keys med gives it: `s`, and `z` after an operator.
+fn flash_harness(text: &str) -> Harness {
+    let mut h = Harness::new(text);
+    for mode in [MapMode::Normal, MapMode::Visual] {
+        h.shared.keymap.bind(mode, "s", "motion.flash");
+    }
+    h.shared.keymap.bind(MapMode::Operator, "z", "motion.flash");
+    h
+}
+
+fn flash_labels(h: &Harness) -> Vec<(usize, Option<char>)> {
+    let found = h.vim.flash().expect("flash is looking for text");
+    found.iter().map(|m| (m.start, m.label)).collect()
+}
+
+#[test]
+fn flash_goes_to_a_label() {
+    let mut h = flash_harness("|one two\nthree two\n");
+    h.keys("s");
+    assert_eq!(flash_labels(&h), []);
+    assert_eq!(
+        h.vim.pending_keys().and_then(|pending| pending.awaiting),
+        Some(Awaiting::Flash)
+    );
+    // The nearest first; `w` and `h` come after a `t`, so are no labels.
+    h.keys("t");
+    assert_eq!(
+        flash_labels(&h),
+        [(4, Some('a')), (8, Some('s')), (14, Some('d'))]
+    );
+    // A place keeps its label as the text gets longer.
+    h.keys("w");
+    assert_eq!(flash_labels(&h), [(4, Some('a')), (14, Some('d'))]);
+    assert_eq!(h.vim.pending_display(), "stw");
+    assert_eq!(h.state(), "|one two\nthree two");
+
+    h.keys("d");
+    assert_eq!(h.state(), "one two\nthree |two");
+    assert!(h.vim.flash().is_none());
+    assert!(!h.vim.has_pending());
+    // A jump, to come back from.
+    assert_eq!(h.effects, [Effect::Jump { from: 0 }]);
+    assert_eq!(h.keys("``").state(), "|one two\nthree two");
+}
+
+#[test]
+fn flash_keys_that_are_not_text() {
+    // Enter: the first place after the cursor.
+    let mut h = flash_harness("one |two\nthree two\n");
+    assert_eq!(h.keys("stw<CR>").state(), "one two\nthree |two");
+    // And around to the first there is.
+    assert_eq!(h.keys("son<CR>").state(), "|one two\nthree two");
+
+    // Backspace takes a character back, and with none left gives up.
+    h.keys("stw<BS>");
+    assert_eq!(h.vim.pending_display(), "st");
+    assert_eq!(flash_labels(&h).len(), 3);
+    h.keys("<BS>");
+    assert_eq!(h.vim.pending_display(), "s");
+    assert_eq!(flash_labels(&h), []);
+    h.keys("<BS>");
+    assert!(!h.vim.has_pending());
+    assert_eq!(h.state(), "|one two\nthree two");
+
+    // Escape gives up, and leaves a selection as it was.
+    h.keys("vstw<Esc>");
+    assert!(!h.vim.has_pending());
+    assert_eq!(h.vim.mode, Mode::Visual);
+    assert_eq!(h.keys("<Esc>").state(), "|one two\nthree two");
+
+    // Text that is nowhere on screen gives up as well.
+    h.keys("stq");
+    assert!(!h.vim.has_pending());
+    assert_eq!(h.vim.message.as_deref(), Some("Pattern not found: tq"));
+    assert_eq!(h.state(), "|one two\nthree two");
+    // A digit is text like any other, not a count.
+    let mut h = flash_harness("|a1 b2 c2\n");
+    h.keys("s2");
+    assert_eq!(flash_labels(&h), [(4, Some('a')), (7, Some('s'))]);
+    assert_eq!(h.keys("s").state(), "a1 b2 c|2");
+}
+
+#[test]
+fn flash_is_a_motion() {
+    // After an operator, up to and with the first character found.
+    let mut h = flash_harness("|one two three\n");
+    h.keys("dzth");
+    assert_eq!(flash_labels(&h), [(8, Some('s'))]);
+    assert_eq!(h.keys("s").state(), "|hree");
+    // Backwards too.
+    let mut h = flash_harness("one two |three\n");
+    assert_eq!(h.keys("dzons").state(), "|hree");
+    // Nothing is done when it gives up.
+    let mut h = flash_harness("|one two three\n");
+    assert_eq!(h.keys("dzth<Esc>").state(), "|one two three");
+    assert!(!h.vim.has_pending());
+
+    // In visual mode the selection goes there.
+    let mut h = flash_harness("|one two three\n");
+    h.keys("vsths");
+    assert_eq!(h.vim.mode, Mode::Visual);
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 9)));
+    assert_eq!(h.keys("d").state(), "|hree");
+
+    // Unbound, `s` is vim's own.
+    check("|abc", "sx<esc>", "|xbc");
+}

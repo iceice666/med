@@ -2389,3 +2389,59 @@ fn chooses_a_code_action_and_shows_a_signature(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     assert_eq!(shown(cx), None);
 }
+
+#[gpui::test]
+fn flash_goes_to_text_on_screen(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one two\nthree two\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let labels = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            let found = editor.vim.flash()?;
+            Some(found.iter().filter_map(|m| m.label).collect::<String>())
+        })
+    };
+    lisp(
+        "(do (def seen nil)
+             (add-hook 'keys-pending (fn (pending) (set! seen (cons pending seen)))))",
+        cx,
+    );
+
+    // `s`, some of the text, and the label of the place: both lines are
+    // on screen, and drawn with their labels on.
+    cx.simulate_keystrokes("s");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(car seen)", cx),
+        r#"(:tables ("normal") :keys "" :typed "s" :awaiting flash)"#
+    );
+    cx.simulate_keystrokes("t w");
+    cx.run_until_parked();
+    assert_eq!(labels(cx).as_deref(), Some("ad"));
+    assert_eq!(lisp("(get (car seen) :typed)", cx), r#""stw""#);
+    cx.simulate_keystrokes("d");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 7));
+    assert_eq!(labels(cx), None);
+    assert_eq!(lisp("(car seen)", cx), "nil");
+    // It was a jump.
+    cx.simulate_keystrokes("ctrl-o");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // After an operator it is `z`, `s` being surround's there.
+    cx.simulate_keystrokes("d z t h");
+    cx.run_until_parked();
+    assert_eq!(labels(cx).as_deref(), Some("s"));
+    cx.simulate_keystrokes("s");
+    assert_eq!(text(&ws, cx), "hree two\n");
+    cx.simulate_keystrokes("y s i w )");
+    assert_eq!(text(&ws, cx), "(hree) two\n");
+
+    // The key is a binding like any other.
+    lisp(
+        r#"(do (unbind 'normal "s") (bind 'normal "gs" "motion.flash"))"#,
+        cx,
+    );
+    cx.simulate_keystrokes("g s t w enter");
+    assert_eq!(cursor(&ws, cx), (1, 8));
+}

@@ -389,9 +389,9 @@ pub fn run_hook(
 /// - `:keys`: the start of a binding typed so far, as `bindings` takes
 ///   it. Empty after a count or an operator.
 /// - `:typed`: every key of the command so far (`"a2d`).
-/// - `:awaiting`: `'register`, `'char`, `'text-object` or `'mark` when the
-///   next key is not looked up but taken as it is (after `"`, `f`, `di`,
-///   `m`).
+/// - `:awaiting`: `'register`, `'char`, `'text-object`, `'mark` or
+///   `'flash` when the next key is not looked up but taken as it is (after
+///   `"`, `f`, `di`, `m`, `s`).
 pub(crate) fn pending_value(
     tables: &[&str],
     keys: &str,
@@ -417,6 +417,7 @@ pub(crate) fn editor_pending(pending: &PendingKeys) -> Value {
         Awaiting::Char => "char",
         Awaiting::TextObject => "text-object",
         Awaiting::Mark => "mark",
+        Awaiting::Flash => "flash",
     });
     pending_value(
         &[mode.map_or("normal", |(name, _)| name)],

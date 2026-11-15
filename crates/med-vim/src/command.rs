@@ -110,6 +110,9 @@ pub(crate) enum Cmd {
     Expand,
     /// Go back to what was selected before the last `Expand`.
     Shrink,
+    /// Look for text on screen as it is typed, and go to a place that has
+    /// it by the label the place is given.
+    Flash,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -257,6 +260,9 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ("motion.prev_line", motion(Motion::PrevLine)),
     ("motion.current_line", motion(Motion::CurLine)),
     ("motion.column", motion(Motion::Column)),
+    // The keys after it are text to look for on screen, then the label of
+    // the place to go to.
+    ("motion.flash", cmd(Cmd::Flash)),
     // Marks: the next key names one.
     ("mark.set", Builtin::Await(Await::SetMark)),
     (

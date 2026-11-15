@@ -12,7 +12,7 @@ use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
 use med_core::Buffer;
-use med_vim::{Clipboard, Ctx, Effect, Key, Mode, PendingKeys, Scroll, Viewport, Vim};
+use med_vim::{Clipboard, Ctx, Effect, FlashMatch, Key, Mode, PendingKeys, Scroll, Viewport, Vim};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -1643,6 +1643,10 @@ impl Editor {
             .unwrap_or(theme.secondary.opacity(0.5));
         let diag_colors = [theme.danger, theme.warning, theme.info, muted];
         let search_bg = theme.warning.opacity(0.35);
+        // What `motion.flash` found: the place `enter` goes to stands out
+        // among the others, and a label from everything.
+        let flash_target_bg = theme.warning.opacity(0.7);
+        let (label_bg, label_fg) = (theme.danger, theme.background);
         let scrollbar_color = theme.scrollbar_thumb;
         let family = settings
             .font_family
@@ -1724,6 +1728,7 @@ impl Editor {
                 .map(|s| s.regex.clone())
         };
         let tab_width = self.vim_lang.tab_width;
+        let flash = self.vim.flash();
         // Decorations, with the colors they come to in this theme.
         struct Mark {
             start: usize,
@@ -1759,6 +1764,7 @@ impl Editor {
             lines: Vec::new(),
             gutter: Vec::new(),
             front: Vec::new(),
+            labels: Vec::new(),
         };
 
         for line in first..last {
@@ -1813,6 +1819,19 @@ impl Editor {
                     for slot in &mut color_at[mark.start.max(ls) - ls..mark.end.min(le) - ls] {
                         *slot = Some(color);
                     }
+                }
+            }
+            // While `motion.flash` looks for text, the text is dimmed but
+            // for the places that have it.
+            let found: Vec<&FlashMatch> = flash
+                .iter()
+                .flat_map(|found| found.iter())
+                .filter(|m| m.start >= ls && m.end <= le)
+                .collect();
+            if flash.is_some() {
+                color_at.fill(Some(muted));
+                for m in &found {
+                    color_at[m.start - ls..m.end - ls].fill(Some(fg));
                 }
             }
 
@@ -1921,6 +1940,24 @@ impl Editor {
                     let to = from + text[m.start()..m.end()].chars().count();
                     frame.text_back.push(span(from, to, false, search_bg));
                 }
+            }
+            for m in &found {
+                let color = if m.target { flash_target_bg } else { search_bg };
+                frame
+                    .text_back
+                    .push(span(m.start - ls, m.end - ls, false, color));
+                // Its label, over the character after it.
+                let Some(label) = m.label else {
+                    continue;
+                };
+                let origin = point(line_x + x_of(m.end - ls), y);
+                let cell = Bounds::new(origin, size(char_width, line_height));
+                frame.front.push(fill(cell, label_bg));
+                let mut run = plain(label.len_utf8(), label_fg);
+                run.font.weight = FontWeight::BOLD;
+                let label =
+                    text_system.shape_line(label.to_string().into(), font_size, &[run], None);
+                frame.labels.push((origin, label));
             }
             for &(s, e) in &selections {
                 let (a, b) = (s.max(ls), e.min(le + 1));
@@ -2252,8 +2289,11 @@ struct Frame {
     text_back: Vec<PaintQuad>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     gutter: Vec<(Point<Pixels>, ShapedLine)>,
-    /// Drawn over the text: bar cursor, scroll indicator.
+    /// Drawn over the text: bar cursor, scroll indicator, and what is
+    /// behind a label.
     front: Vec<PaintQuad>,
+    /// The labels of `motion.flash`, over all of it.
+    labels: Vec<(Point<Pixels>, ShapedLine)>,
 }
 
 impl Frame {
@@ -2282,6 +2322,10 @@ impl Frame {
                         }
                         for quad in self.front {
                             window.paint_quad(quad);
+                        }
+                        for (origin, line) in &self.labels {
+                            let _ =
+                                line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
                         }
                     },
                 );
