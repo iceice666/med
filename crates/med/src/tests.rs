@@ -74,6 +74,7 @@ impl Drop for Project {
 const TREE: &str = include_str!("../../../examples/tree.lisp");
 const PICKER: &str = include_str!("../../../examples/picker.lisp");
 const GIT: &str = include_str!("../../../examples/git.lisp");
+const WHICH_KEY: &str = include_str!("../../../examples/which-key.lisp");
 
 fn open<'a>(
     project: &Project,
@@ -1498,7 +1499,10 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
             panels.names().map(String::from).collect::<Vec<_>>()
         })
     };
-    assert_eq!(panels(cx), ["tree", "picker", "git", "git-prompt"]);
+    assert_eq!(
+        panels(cx),
+        ["tree", "picker", "git", "git-prompt", "which-key"]
+    );
 
     // The leader keys work from the tree as they do from an editor.
     cx.simulate_keystrokes("space e");
@@ -1534,7 +1538,10 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
         ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default()),
         format!("Ran {}", init.display())
     );
-    assert_eq!(panels(cx), ["tree", "picker", "git", "git-prompt"]);
+    assert_eq!(
+        panels(cx),
+        ["tree", "picker", "git", "git-prompt", "which-key"]
+    );
     assert_eq!(lisp("(length tree-entries)", cx), "2");
     cx.simulate_keystrokes("space g");
     cx.run_until_parked();
@@ -1544,6 +1551,165 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("q");
     cx.run_until_parked();
     assert!(!shown("git", cx));
+}
+
+#[gpui::test]
+fn shows_the_keys_that_can_come_next(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\ntwo\nthree\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open_with(&[TREE, WHICH_KEY], &project, &["a.txt"], cx);
+    let wait = |milliseconds: u64, cx: &mut VisualTestContext| {
+        cx.executor()
+            .advance_clock(Duration::from_millis(milliseconds));
+        cx.run_until_parked();
+    };
+    // What is listed for a key: what it does, and what goes on from it.
+    let listed = |key: &str, cx: &mut VisualTestContext| {
+        let find = format!(
+            r#"(let ((item (car (filter (fn (item) (= (get item :key) "{key}"))
+                                        which-key-items))))
+                 (list (get item :label) (get item :group)))"#
+        );
+        lisp(&find, cx)
+    };
+
+    // Nothing until the user has hesitated over a half-typed command.
+    cx.simulate_keystrokes("j g");
+    wait(299, cx);
+    assert!(!shown("which-key", cx));
+    wait(1, cx);
+    assert!(shown("which-key", cx));
+    assert_eq!(lisp("which-key-typed", cx), "\"g\"");
+    // A command of the editor's says what it does; one of the engine's
+    // has its name.
+    assert_eq!(
+        listed("r", cx),
+        r#"("List the references to the symbol under the cursor" nil)"#
+    );
+    assert_eq!(listed("g", cx), r#"("motion.goto_first_line" nil)"#);
+    // The next key is the editor's, and the list goes when it is done.
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    // Typed without a pause, nothing is shown at all.
+    cx.simulate_keystrokes("j g g");
+    wait(1000, cx);
+    assert!(!shown("which-key", cx));
+    assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // A key that is a command by itself waits for the next one, however
+    // long that takes, and escape gives up on it.
+    cx.simulate_keystrokes("space");
+    wait(60_000, cx);
+    assert!(shown("which-key", cx));
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    assert_eq!(
+        listed("w", cx),
+        r#"("Write the file; given a name, write it under that name" nil)"#
+    );
+    assert_eq!(
+        listed("e", cx),
+        r#"("Go to the file tree, or back from it" nil)"#
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // Keys that only start longer bindings are a group: so many keys, or
+    // the name it was given. Keys that stand for keys say which.
+    lisp(
+        r#"(do (bind 'normal "<Space>gs" "workspace.save")
+               (bind 'normal "<Space>gq" "workspace.close_tab")
+               (bind 'normal "<Space>t" "workspace.next_tab")
+               (bind 'normal "<Space>tt" "workspace.prev_tab")
+               (bind-keys 'normal "<Space>y" "y$"))"#,
+        cx,
+    );
+    cx.simulate_keystrokes("space");
+    wait(300, cx);
+    assert_eq!(listed("g", cx), r#"(nil "+2 keys")"#);
+    assert_eq!(listed("t", cx), r#"("Go to the next tab" "+1 keys")"#);
+    assert_eq!(listed("y", cx), r#"("→ y$" nil)"#);
+    // Once up, the list follows the keys without waiting again.
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert!(shown("which-key", cx));
+    assert_eq!(lisp("which-key-typed", cx), "\"<Space>g\"");
+    assert_eq!(
+        lisp("(map (fn (item) (get item :key)) which-key-items)", cx),
+        r#"("q" "s")"#
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    lisp(r#"(which-key-name "<Space>g" "go")"#, cx);
+    cx.simulate_keystrokes("space");
+    wait(300, cx);
+    assert_eq!(listed("g", cx), r#"(nil "+go")"#);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+
+    // How it is laid out: down the columns, then across, and each key
+    // drawn without complaint.
+    assert_eq!(
+        lisp("(which-key-split 4 2 '(1 2 3 4 5))", cx),
+        "((1 2) (3 4) (5) nil)"
+    );
+    lisp("(map which-key-entry which-key-items)", cx);
+
+    // A key that is taken as it is has nothing to list, nor has a count,
+    // nor an operator: any motion can follow that.
+    for keys in ["f", "\"", "2", "d"] {
+        cx.simulate_keystrokes(keys);
+        wait(1000, cx);
+        assert!(!shown("which-key", cx), "{keys}");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+    }
+    // The start of a motion after an operator has.
+    cx.simulate_keystrokes("d g");
+    wait(300, cx);
+    assert!(shown("which-key", cx));
+    assert_eq!(lisp("which-key-typed", cx), "\"dg\"");
+    assert_eq!(listed("g", cx), r#"("motion.goto_first_line" nil)"#);
+    assert_eq!(listed("r", cx), "(nil nil)");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    // Every motion is listed for an operator if that is wanted.
+    lisp("(set! which-key-after-operator true)", cx);
+    cx.simulate_keystrokes("d");
+    wait(300, cx);
+    assert!(shown("which-key", cx));
+    assert_eq!(listed("w", cx), r#"("motion.word_forward" nil)"#);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(text(&ws, cx), "one\ntwo\nthree\n");
+
+    // Not while text is typed, though a key is held back there too.
+    lisp(r#"(bind 'insert "jk" "insert.escape")"#, cx);
+    cx.simulate_keystrokes("i");
+    cx.simulate_input("j");
+    wait(1000, cx);
+    assert!(!shown("which-key", cx));
+    cx.simulate_input("k");
+    cx.run_until_parked();
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert_eq!(text(&ws, cx), "one\ntwo\nthree\n");
+
+    // A panel with the keyboard has its keys listed as an editor has.
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert!(shown("tree", cx));
+    cx.simulate_keystrokes("j g");
+    wait(300, cx);
+    assert!(shown("which-key", cx));
+    assert_eq!(listed("g", cx), r#"("Select the first entry" nil)"#);
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(lisp("tree-selected", cx), "0");
 }
 
 #[gpui::test]
