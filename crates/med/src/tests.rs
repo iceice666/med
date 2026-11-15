@@ -75,6 +75,7 @@ const TREE: &str = include_str!("../../../examples/tree.lisp");
 const PICKER: &str = include_str!("../../../examples/picker.lisp");
 const GIT: &str = include_str!("../../../examples/git.lisp");
 const WHICH_KEY: &str = include_str!("../../../examples/which-key.lisp");
+const TODO: &str = include_str!("../../../examples/todo.lisp");
 
 fn open<'a>(
     project: &Project,
@@ -2119,6 +2120,42 @@ fn programs_decorate_the_file(cx: &mut TestAppContext) {
             .starts_with("1:1: bg: no-such is not a color of the theme")
     );
     assert_eq!(decoration_lines(&ws, "other", cx), [2]);
+}
+
+#[gpui::test]
+fn the_todo_example_marks_lines(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n// TODO: two\nthree\n// FIXME four\n")]);
+    let (ws, cx) = open_with(&[TODO], &project, &["a.txt"], cx);
+    assert_eq!(decoration_lines(&ws, "todo", cx), [3, 1]);
+    assert_eq!(lisp("todo-lines", cx), "(2 4)");
+
+    cx.simulate_keystrokes("] shift-t");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("] shift-t");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (4, 1));
+    // Around the end of the file, and back the other way.
+    cx.simulate_keystrokes("] shift-t");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("[ shift-t");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (4, 1));
+
+    // It follows the text as it changes.
+    cx.simulate_keystrokes("d d g g shift-o");
+    cx.simulate_input("NOTE zero");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "NOTE zero\none\n// TODO: two\nthree\n");
+    // Once the typing has paused; until then the signs stay on their text.
+    assert_eq!(lisp("todo-lines", cx), "(2 4)");
+    assert_eq!(decoration_lines(&ws, "todo", cx), [3, 2]);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(lisp("todo-lines", cx), "(1 3)");
+    assert_eq!(decoration_lines(&ws, "todo", cx), [2, 0]);
 }
 
 #[gpui::test]

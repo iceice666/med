@@ -1,5 +1,6 @@
-; An init file that has all the panels of this directory: the file tree,
-; the picker, the git screen and the keys that can come next. Put a line
+; An init file that has everything in this directory: the file tree, the
+; picker, the git screen, the keys that can come next, and the signs on
+; the lines that say TODO. Put a line
 ; like this in your own `init.lisp`, with the path of your checkout:
 ;
 ;   (load "/path/to/med/examples/init.lisp")
@@ -11,6 +12,7 @@
 (load "picker.lisp")
 (load "git.lisp")
 (load "which-key.lisp")
+(load "todo.lisp")
 
 ; The leader keys of an editor work from the tree as well.
 (bind 'tree "<Space>f" "picker.files")

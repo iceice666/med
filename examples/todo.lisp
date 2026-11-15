@@ -1,0 +1,71 @@
+; Todo: a sign beside every line that says TODO, FIXME or NOTE, and keys
+; to go from one to the next.
+;
+;   (load "todo.lisp")
+;
+; `]T` and `[T` go to the next and the previous one, around the ends of
+; the file. It is a small program, and shows what one can do with the
+; file being edited: read it, mark it, and be told when it changes.
+
+; What to look for, the sign a line that has it gets, and the color of
+; the sign. The first that a line has is the one that counts.
+(def todo-words '(("FIXME" "!" danger) ("TODO" "T" warning) ("NOTE" "N" info)))
+
+(def todo-delay 150)             ; how long after an edit to look again, in ms
+
+(def todo-lines nil)             ; the numbers of the lines that have one
+(def todo-timer nil)             ; the wait before looking again
+
+; The first of `words` that a line has, or nil.
+(defn todo-word (line words)
+  (cond
+    ((nil? words) nil)
+    ((contains? line (car (car words))) (car words))
+    (true (todo-word line (cdr words)))))
+
+; A decoration for every line of the file that has a word, last line first.
+(defn todo-scan ()
+  (let ((number 0))
+    (reduce
+      (fn (marks line)
+        (set! number (+ number 1))
+        (let ((word (todo-word line todo-words)))
+          (if word
+              (cons (list :line number :sign (nth 1 word) :color (nth 2 word))
+                    marks)
+              marks)))
+      nil
+      (lines (buffer-text)))))
+
+(defn todo-refresh ()
+  (let ((marks (todo-scan)))
+    (set! todo-lines (reverse (map (fn (mark) (get mark :line)) marks)))
+    (decorate 'todo marks)))
+
+(add-hook 'buffer-entered (fn (path) (todo-refresh)))
+; Not at every key of something being typed: once the typing pauses.
+(add-hook 'buffer-changed
+  (fn ()
+    (cancel todo-timer)
+    (set! todo-timer (after todo-delay todo-refresh))))
+
+; Go to the first of `lines`, or failing that of `others`.
+(defn todo-go (lines others)
+  (let ((line (or (car lines) (car others))))
+    (if line
+        (set-cursor line 1)
+        (message "No TODO in this file"))))
+
+(defcommand "todo.next" "Go to the next line that says TODO, FIXME or NOTE"
+  (fn ()
+    (let ((here (car (cursor))))
+      (todo-go (filter (fn (line) (> line here)) todo-lines) todo-lines))))
+
+(defcommand "todo.prev" "Go to the previous line that says TODO, FIXME or NOTE"
+  (fn ()
+    (let ((here (car (cursor)))
+          (backwards (reverse todo-lines)))
+      (todo-go (filter (fn (line) (< line here)) backwards) backwards))))
+
+(bind 'normal "]T" "todo.next")
+(bind 'normal "[T" "todo.prev")
