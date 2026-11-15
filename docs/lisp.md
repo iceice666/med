@@ -94,6 +94,7 @@ panel is drawn and describes it.
 | `(text value styles...)` | text |
 | `(rows list styles... function)` | a list that scrolls; the function describes a row |
 | `(input name styles...)` | a line to type in |
+| `(markdown value styles...)` | text read as Markdown: headings, lists, code, tables, links |
 
 Styles are `:name value` pairs: `width` and `height` (pixels or `'full`),
 `grow` (`true`, or a share of the room next to others that grow), `shrink`,
@@ -126,6 +127,10 @@ An `input` keeps its own text. `:placeholder` is shown while it is empty,
 `:on-change` is called with the text whenever something is typed, and
 `:on-submit` on enter. `(input-text panel name)` reads it and `(set-input
 panel name text)` writes it.
+
+`markdown` is as tall as what it shows, unless it is given `:scroll true`:
+then it is as tall as its styles make it (`:grow true`, or a `height`) and
+scrolls the rest.
 
 A layout only describes: it cannot bind keys or run commands while it is
 being drawn, though the functions it gives `on-click` and an input can when

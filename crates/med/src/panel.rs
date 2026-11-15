@@ -29,6 +29,7 @@
 use crate::script;
 use crate::user_panel::{PanelView, UserPanels};
 use gpui::component::input::Input;
+use gpui::component::text::TextView;
 use gpui::component::{ActiveTheme as _, Theme};
 use gpui::prelude::*;
 use gpui::*;
@@ -65,6 +66,13 @@ enum Content {
     },
     /// A line of text to type in.
     Input(InputSpec),
+    /// Text read as Markdown: headings, lists, code, tables, links.
+    /// With `scroll`, the node keeps its own height and scrolls what does
+    /// not fit; without, it is as tall as what it shows.
+    Markdown {
+        text: SharedString,
+        scroll: bool,
+    },
 }
 
 /// An input as a layout described it. The text in it is the panel's.
@@ -417,7 +425,7 @@ impl Node {
                 children.iter().for_each(|child| child.inputs(into));
             }
             Content::Input(spec) => into.push(spec),
-            Content::Text(_) | Content::Rows { .. } => {}
+            Content::Text(_) | Content::Rows { .. } | Content::Markdown { .. } => {}
         }
     }
 }
@@ -498,6 +506,30 @@ pub(crate) fn define_functions(interp: &mut Interp) {
                 format!("text: expected a style, got {extra}"),
             )),
         }
+    });
+
+    // (markdown value styles...): the value, as `str` would show it, read
+    // as Markdown. Besides styles it takes `:scroll`: true keeps the node
+    // the height its styles give it and scrolls the rest.
+    interp.define_native("markdown", Arity::at_least(1), |_, args| {
+        let text = SharedString::from(args[0].display());
+        let mut scroll = false;
+        let mut node = Node::new(Content::Text(SharedString::default()));
+        let rest = node.take_styles(&args[1..], |key, value| {
+            match key {
+                "scroll" => scroll = value.is_truthy(),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })?;
+        if let [extra, ..] = rest {
+            return Err(Error::new(
+                ErrorKind::Raised,
+                format!("markdown: expected a style, got {extra}"),
+            ));
+        }
+        node.content = Content::Markdown { text, scroll };
+        Ok(Value::foreign(node))
     });
 
     // (input name styles...): a line to type in, named so that the panel
@@ -793,6 +825,17 @@ fn build(
         Content::Row(_) => div().flex(),
         Content::Col(_) => div().flex().flex_col(),
         Content::Text(text) => div().child(text.clone()),
+        Content::Markdown { text, scroll } => {
+            // Its own id, so that two in a panel do not share what they
+            // have parsed or how far they are scrolled.
+            let id = ElementId::NamedInteger("markdown".into(), next(&draw.ids) as u64);
+            let view = TextView::markdown(id, text.clone()).scrollable(*scroll);
+            match scroll {
+                // The list it scrolls needs a height to fill.
+                true => div().flex().flex_col().min_h_0().child(view.size_full()),
+                false => div().child(view),
+            }
+        }
     };
     el = node.style.apply(el, theme);
     if let Some(hover) = &node.hover {
@@ -983,6 +1026,18 @@ mod tests {
         col.inputs(&mut inputs);
         let names: Vec<&str> = inputs.iter().map(|spec| spec.name.as_ref()).collect();
         assert_eq!(names, ["a", "b"]);
+
+        let doc = node("(markdown \"# Title\" :grow true :scroll true :padding-x 8)");
+        assert!(matches!(
+            &doc.content,
+            Content::Markdown { text, scroll: true } if text.as_ref() == "# Title"
+        ));
+        assert_eq!(doc.style.grow, Some(1.));
+        let doc = node("(markdown 12)");
+        assert!(matches!(
+            &doc.content,
+            Content::Markdown { text, scroll: false } if text.as_ref() == "12"
+        ));
 
         let click = node("(text \"x\" :on-click (fn () 1))");
         assert!(matches!(click.on_click, Some(Click::Function(_))));

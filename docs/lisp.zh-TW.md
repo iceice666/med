@@ -69,6 +69,7 @@
 | `(text value styles...)` | 文字 |
 | `(rows list styles... function)` | 可捲動的清單；函式描述每一列 |
 | `(input name styles...)` | 一行輸入框 |
+| `(markdown value styles...)` | 以 Markdown 解讀的文字：標題、清單、程式碼、表格、連結 |
 
 樣式是 `:name value` 成對的值：`width` 和 `height`（像素或 `'full`）、`grow`（`true`，或與其他同樣會伸展的元素分配剩餘空間時的比例）、`shrink`、`padding-x` `padding-y` `padding-left` `padding-right`、`gap`、`align` 和 `justify`（`'start` `'center` `'end`，以及 `'between`）、`bg`、`color`、`border` `border-top` `border-right` `border-bottom` `border-left`、`border-color`、`rounded`、`size`（文字大小）、`bold`、`mono`、`nowrap`、`clip`；`hover`，滑鼠懸停時套用的樣式清單，例如 `(list :bg 'list-hover)`；以及 `on-click`，一個命令名稱或函式。顏色可以是主題中的顏色（`'sidebar`、`'muted-foreground`、`'list-active`、`'warning`…）或 `"#rrggbb"`。
 
@@ -79,6 +80,8 @@
 `rows` 只繪製可見範圍內的列，而這些列必須等高。它的函式會以清單中的一個值被呼叫；若函式接受第二個引數，還會傳入該值在清單中的位置。`:reveal` 指定要保持在可見範圍內的列，`:top` 指定要位於頂端的列：兩者任一改變時，清單就會捲動。
 
 `input` 自行保存它的文字。`:placeholder` 在內容為空時顯示，`:on-change` 在每次輸入時以文字被呼叫，`:on-submit` 則在按下 enter 時被呼叫。`(input-text panel name)` 讀取文字，`(set-input panel name text)` 寫入文字。
+
+`markdown` 的高度與它顯示的內容相同，除非給它 `:scroll true`：此時它的高度由樣式決定（`:grow true` 或 `height`），放不下的部分可以捲動。
 
 版面只負責描述：繪製期間它不能綁定按鍵或執行命令，不過它交給 `on-click` 和輸入框的函式在被呼叫時可以。出錯的版面會以其錯誤訊息的形式繪製。
 
