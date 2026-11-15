@@ -1,14 +1,16 @@
 //! The project file tree in the sidebar, driven with vim-style keys.
+//!
+//! This is what the tree holds and does. How it looks is the `file_tree`
+//! layout (`panels/file_tree.json`), which draws from the values handed
+//! out in the [`Host`] implementation below.
 
 use crate::commands::{Args, Commands, Handler};
 use crate::keymap::{KeySequence, Press, panel_key};
-use gpui::component::ActiveTheme as _;
+use crate::panel::{self, Host, Layouts, Vars};
 use gpui::prelude::*;
 use gpui::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-
-const ROW_HEIGHT: f32 = 24.;
 
 pub enum FileTreeEvent {
     Open(PathBuf),
@@ -255,12 +257,18 @@ impl FileTree {
             // Not ours: let it travel on.
             Press::Unbound => return,
             Press::Pending => {}
-            Press::Command(name) => match cx.global::<Commands>().handler(&name) {
-                Some(Handler::FileTree(run)) => run(self, &Args::default(), cx),
-                _ => cx.emit(FileTreeEvent::Command(name)),
-            },
+            Press::Command(name) => self.run_command(name, cx),
         }
         cx.stop_propagation();
+    }
+
+    /// Run a command a key or a click named: here if it is the tree's,
+    /// else by whoever is listening.
+    fn run_command(&mut self, name: SharedString, cx: &mut Context<Self>) {
+        match cx.global::<Commands>().handler(&name) {
+            Some(Handler::FileTree(run)) => run(self, &Args::default(), cx),
+            _ => cx.emit(FileTreeEvent::Command(name)),
+        }
     }
 }
 
@@ -323,94 +331,72 @@ pub(crate) fn register(commands: &mut Commands) {
     );
 }
 
-impl Render for FileTree {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let focused = self.focus_handle.is_focused(window);
-        let (fg, muted, active, hover) = (
-            theme.sidebar_foreground,
-            theme.muted_foreground,
-            theme.list_active,
-            theme.list_hover,
-        );
-        let (modified, added) = (theme.warning, theme.success);
+/// What the `file_tree` layout can draw from. Everywhere: the text
+/// `root_name` and the flag `focused`. In a row of the list `entries`: the
+/// texts `name` and `status` (git's letter for the entry, if any), the
+/// number `depth`, and the flags `selected`, `dir`, `expanded`, `added`
+/// and `modified`.
+impl Host for FileTree {
+    fn vars(&self, window: &Window, _: &App) -> Vars {
         let root_name = self
             .root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.root.display().to_string());
+        Vars::default()
+            .text("root_name", root_name)
+            .flag("focused", self.focus_handle.is_focused(window))
+    }
 
+    fn row_count(&self, _: &str) -> usize {
+        self.entries.len()
+    }
+
+    fn row_vars(&self, _: &str, index: usize, _: &App) -> Vars {
+        let Some(entry) = self.entries.get(index) else {
+            return Vars::default();
+        };
+        let status = self.git_status.get(&entry.path).copied();
+        let added = matches!(status, Some('?' | 'A'));
+        Vars::default()
+            .text("name", entry.name.clone())
+            .text("status", status.map(String::from).unwrap_or_default())
+            .number("depth", entry.depth as f32)
+            .flag("selected", index == self.selected)
+            .flag("dir", entry.is_dir)
+            .flag("expanded", self.expanded.contains(&entry.path))
+            .flag("added", added)
+            .flag("modified", status.is_some() && !added)
+    }
+
+    fn scroll_handle(&self, _: &str) -> Option<&UniformListScrollHandle> {
+        Some(&self.scroll)
+    }
+
+    /// A click on a row selects it before the row's command runs.
+    fn click(
+        &mut self,
+        command: &str,
+        row: Option<(&str, usize)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window, cx);
+        if let Some((_, index)) = row {
+            self.select(index, cx);
+        }
+        self.run_command(SharedString::new(command), cx);
+    }
+}
+
+impl Render for FileTree {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let layout = cx.global::<Layouts>().get("file_tree");
         div()
             .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme.sidebar)
-            .text_color(fg)
             .track_focus(&self.focus_handle)
             .key_context("FileTree")
             .on_key_down(cx.listener(Self::on_key_down))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .h(px(32.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(theme.sidebar_border)
-                    .text_color(if focused { fg } else { muted })
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(root_name),
-            )
-            .child(
-                uniform_list(
-                    "file-tree",
-                    self.entries.len(),
-                    cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .map(|index| {
-                                let entry = &this.entries[index];
-                                let selected = index == this.selected;
-                                let status = this.git_status.get(&entry.path).copied();
-                                let color = match status {
-                                    Some('?') | Some('A') => added,
-                                    Some(_) => modified,
-                                    None => fg,
-                                };
-                                let marker = if !entry.is_dir {
-                                    "  "
-                                } else if this.expanded.contains(&entry.path) {
-                                    "▾ "
-                                } else {
-                                    "▸ "
-                                };
-                                div()
-                                    .id(("tree-row", index))
-                                    .h(px(ROW_HEIGHT))
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .pl(px(10. + entry.depth as f32 * 14.))
-                                    .pr_2()
-                                    .whitespace_nowrap()
-                                    .text_color(color)
-                                    .when(selected && focused, |el| el.bg(active))
-                                    .when(selected && !focused, |el| el.bg(hover))
-                                    .hover(|el| el.bg(hover))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.focus_handle.focus(window, cx);
-                                        this.select(index, cx);
-                                        this.activate(index, cx);
-                                    }))
-                                    .child(div().text_color(muted).child(marker))
-                                    .child(entry.name.clone())
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.scroll)
-                .flex_1()
-                .min_h_0(),
-            )
+            .child(panel::render(&layout, self, window, cx))
     }
 }

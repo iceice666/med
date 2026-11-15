@@ -2,6 +2,7 @@
 //! simulated keystrokes.
 
 use crate::keymap::PanelKeymaps;
+use crate::panel::{Layouts, Node};
 use crate::workspace::Workspace;
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
 use med_vim::{MapMode, Mode};
@@ -271,6 +272,62 @@ fn navigates_the_file_tree(cx: &mut TestAppContext) {
     // Opening a file moved focus to the editor, so vim keys edit again.
     cx.simulate_keystrokes("x");
     assert_eq!(text(&ws, cx), "nner\n");
+}
+
+#[gpui::test]
+fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &[], cx);
+    let click = |y: f32, cx: &mut VisualTestContext| {
+        cx.simulate_click(point(px(40.), px(y)), Modifiers::none());
+        cx.run_until_parked();
+    };
+
+    // The built-in layout: a 32px header, then 24px rows that open on a
+    // click. The second row is b.txt.
+    click(32. + 24. + 12., cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+
+    // A layout of the user's: a button where the header was, taller rows.
+    let layout = Node::parse(
+        r#"{
+            "type": "col",
+            "style": { "width": "full", "height": "full" },
+            "children": [
+                {
+                    "type": "text",
+                    "text": "Find in {root_name}",
+                    "style": { "height": 40 },
+                    "on_click": "workspace.find_file"
+                },
+                {
+                    "type": "list",
+                    "source": "entries",
+                    "style": { "grow": true },
+                    "item": {
+                        "type": "row",
+                        "style": { "height": 30, "width": "full" },
+                        "on_click": "tree.open",
+                        "children": [{ "type": "text", "text": "{name}" }]
+                    }
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    cx.update(|_, cx| {
+        cx.global_mut::<Layouts>().set("file_tree", layout);
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+
+    // Rows are now 30px under a 40px button: the first is a.txt.
+    click(40. + 15., cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    // The button runs a command that is not the tree's own.
+    assert!(ws.read_with(cx, |ws, _| ws.picker.is_none()));
+    click(20., cx);
+    assert!(ws.read_with(cx, |ws, _| ws.picker.is_some()));
 }
 
 #[gpui::test]

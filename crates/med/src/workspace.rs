@@ -6,6 +6,7 @@ use crate::editor::{Editor, EditorEvent};
 use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::git_view::{GitEvent, GitView};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
+use crate::panel::Layouts;
 use crate::picker::{Item, Picker, PickerEvent, PickerMode};
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::*;
@@ -102,6 +103,12 @@ impl Workspace {
         } else {
             this.activate(0, window, cx);
         }
+        // A layout file that was not used should not go unnoticed.
+        this.message = cx
+            .global::<Layouts>()
+            .problems
+            .first()
+            .map(SharedString::from);
         this
     }
 
@@ -948,6 +955,18 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.focus_file_tree",
         "Move to the file tree, or back from it",
         W(|ws, _, window, cx| ws.focus_file_tree(window, cx)),
+    );
+    commands.register(
+        "workspace.reload_panels",
+        "Read the panel layout files again",
+        W(|ws, _, _, cx| {
+            crate::panel::load_user_layouts(cx);
+            let message = match cx.global::<Layouts>().problems.first() {
+                Some(problem) => problem.clone(),
+                None => "Panel layouts reloaded".to_string(),
+            };
+            ws.set_message(message, cx);
+        }),
     );
     commands.register(
         "workspace.toggle_git",

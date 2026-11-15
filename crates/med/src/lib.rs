@@ -7,6 +7,7 @@ pub mod file_tree;
 pub mod git_view;
 pub mod keymap;
 pub mod lsp;
+pub mod panel;
 pub mod picker;
 pub mod syntax;
 #[cfg(test)]
@@ -68,12 +69,13 @@ fn parse_args() -> (PathBuf, Vec<PathBuf>) {
     (root, files)
 }
 
-/// The globals views read: vim state, commands, key tables. Needs no
-/// window system, so headless code can stop here.
+/// The globals views read: vim state, commands, key tables, panel layouts.
+/// Needs no window system, so headless code can stop here.
 pub fn init_globals(cx: &mut App) {
     cx.set_global(VimGlobal(med_vim::Shared::default()));
     commands::init(cx);
     defaults::init(cx);
+    panel::init(cx);
 }
 
 /// Globals and key bindings; everything a window needs before it opens.
@@ -107,6 +109,8 @@ pub fn run() {
         .with_assets(gpui::assets::Assets)
         .run(move |cx| {
             init(cx);
+            // Not in `init`: tests must not depend on what is in $HOME.
+            panel::load_user_layouts(cx);
             cx.activate(true);
 
             let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
