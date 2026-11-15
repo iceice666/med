@@ -29,7 +29,8 @@ Language servers are looked up on `PATH` (rust-analyzer, clangd, gopls,
 pyright, typescript-language-server, nil/nixd, …), so start med from a shell
 that has them.
 
-Environment: `MED_FONT`, `MED_FONT_SIZE` (default 14), `MED_NO_LSP`.
+Environment: `MED_FONT`, `MED_FONT_SIZE` (default 14), `MED_NO_LSP`,
+`MED_CONFIG_DIR` (default `$XDG_CONFIG_HOME/med`, else `~/.config/med`).
 
 ## Keys
 
@@ -88,6 +89,39 @@ cx.global_mut::<PanelKeymaps>().bind("git.files", "x", "git.discard");
 
 A key that is a binding by itself and also starts longer ones (`space`, which
 moves right) waits a second for the rest before acting.
+
+## Panel layouts
+
+How a panel looks is a layout: a JSON tree the panel's view is drawn from.
+The file tree is the first panel done this way. Its layout is
+`crates/med/src/panels/file_tree.json`; a copy at
+`<config>/panels/file_tree.json` replaces it, and `:workspace.reload_panels`
+reads it again while running. A file that cannot be used is reported in the
+status bar and the built-in layout stays.
+
+A node has a `type` and, all optional, a `style`, `when` (styles added
+while flags hold: `{ "if": ["selected", "!focused"], "style": … }`),
+`hover`, `if` (flags that must hold for the node to be there) and
+`on_click` (a command name).
+
+| Type | Also takes |
+| --- | --- |
+| `row`, `col` | `children` |
+| `text` | `text`, with `{name}` for a value of the panel |
+| `list` | `source` (a list of the panel) and `item`, the layout of one row |
+
+Styles: `width` and `height` (pixels or `"full"`), `grow`, `shrink`,
+`padding_x` `padding_y` `padding_left` `padding_right`, `gap`, `align` and
+`justify` (`start` `center` `end`, and `between`), `bg`, `color`,
+`border_top` `border_right` `border_bottom` `border_left`, `border_color`,
+`bold`, `nowrap`. A color is a theme color (`sidebar`, `muted_foreground`,
+`list_active`, `warning`…) or `#rrggbb`. A padding or gap can grow with a
+number of the panel: `{ "base": 10, "step": 14, "times": "depth" }`.
+
+The file tree has the text `root_name` and the flag `focused`; in a row of
+its list `entries`, the texts `name` and `status`, the number `depth` and
+the flags `selected`, `dir`, `expanded`, `added`, `modified`. A click on a
+row selects it, then runs the row's command.
 
 ## Layout
 
