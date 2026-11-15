@@ -784,6 +784,25 @@ impl Render for Workspace {
                 .children(sidebars(At::Right))
         };
 
+        // At the bottom: across the window, as tall as what is in it, and
+        // there whatever takes the editor's place.
+        let bottoms = user_panels
+            .iter()
+            .filter(|(panel, _)| panel.at == At::Bottom)
+            .map(|(_, view)| {
+                div()
+                    .w_full()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(line)
+                    // A click in it leaves the keyboard where it was.
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        window.prevent_default();
+                    })
+                    .child(view.clone())
+            })
+            .collect::<Vec<_>>();
+
         // A popup: over everything, as tall as what is in it, and put away
         // by a click beside it.
         let popups = user_panels
@@ -848,6 +867,7 @@ impl Render for Workspace {
                 }
             }))
             .child(body)
+            .children(bottoms)
             .child(self.render_status(cx))
             .children(popups)
     }

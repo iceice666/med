@@ -16,9 +16,10 @@
 //! (bind 'notes "q" "user.close-notes")
 //! ```
 //!
-//! A panel is at the `'left` or `'right` of the editor, a `'popup` over
-//! it, which a click beside it or escape puts away, or `'full`, in place
-//! of the editor. Its layout is written as in `panel.rs` and gets a
+//! A panel is at the `'left` or `'right` of the editor, at the `'bottom`
+//! of the window, as tall as what is in it, a `'popup` over the editor,
+//! which a click beside it or escape puts away, or `'full`, in place of
+//! the editor. Its layout is written as in `panel.rs` and gets a
 //! `panel` with `:name`, `:file` (the file being edited, or nil), `:root`
 //! and `:focused`.
 //!
@@ -49,6 +50,9 @@ use std::collections::{HashMap, HashSet};
 pub enum At {
     Left,
     Right,
+    /// Across the window above the status bar, as tall as what is in it,
+    /// under whatever else is up: a `Full` panel too.
+    Bottom,
     /// Over the editor, until it is put away.
     Popup,
     /// In place of the editor and the sidebars.
@@ -197,7 +201,7 @@ fn view_of(name: &SharedString, cx: &mut App) -> Result<Entity<PanelView>, Error
 
 pub(crate) fn define_functions(interp: &mut Interp) {
     // (defpanel name options... function): options are :at ('left 'right
-    // 'popup 'full), :width, :shown to have it up from the start, and
+    // 'bottom 'popup 'full), :width, :shown to have it up from the start, and
     // :contexts, the key tables it looks its keys up in.
     interp.define_native("defpanel", Arity::at_least(2), |call, args| {
         let Some(name) = panel::word(&args[0]).filter(|name| !name.is_empty()) else {
@@ -224,6 +228,7 @@ pub(crate) fn define_functions(interp: &mut Interp) {
                     let places = [
                         ("left", At::Left),
                         ("right", At::Right),
+                        ("bottom", At::Bottom),
                         ("popup", At::Popup),
                         ("full", At::Full),
                     ];

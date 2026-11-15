@@ -900,14 +900,39 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("i z escape x");
     assert_eq!(text(&ws, cx), "a\n");
 
+    // At the bottom a panel goes across the window, under the sidebars
+    // and above the status bar, and is as tall as what is in it. The
+    // keyboard is not its concern: escape is still the editor's.
+    let height = cx.update(|window, _| f32::from(window.viewport_size().height));
+    eval(
+        r#"(defpanel 'strip :at 'bottom
+             (fn (panel)
+               (col :width 'full
+                 (text "below" :height 40 :on-click (fn () (set! answer "below"))))))"#,
+        cx,
+    );
+    click(50., height - 26. - 20., cx);
+    assert_eq!(eval("answer", cx), "\"yes\"");
+    eval("(show-panel 'strip)", cx);
+    click(50., height - 26. - 20., cx);
+    assert_eq!(eval("answer", cx), "\"below\"");
+    // Above it the sidebar is as it was.
+    eval("(set! answer nil)", cx);
+    click(50., height - 26. - 60., cx);
+    assert_eq!(eval("answer", cx), "nil");
+    cx.simulate_keystrokes("i z escape x");
+    assert_eq!(text(&ws, cx), "a\n");
+    assert_eq!(eval("(panel-shown? 'strip)", cx), "true");
+    eval("(hide-panel 'strip)", cx);
+
     // Mistakes are explained.
     assert_eq!(
         eval("(show-panel 'nope)", cx),
-        "1:1: nope is not a panel (counter beside letters ask)"
+        "1:1: nope is not a panel (counter beside letters ask strip)"
     );
     assert_eq!(
         eval("(defpanel 'x :at 'top (fn (panel) (col)))", cx),
-        "1:1: at: expected 'left, 'right, 'popup, 'full, got top"
+        "1:1: at: expected 'left, 'right, 'bottom, 'popup, 'full, got top"
     );
     assert_eq!(
         eval("(defpanel 'x :colour 1 (fn (panel) (col)))", cx),
@@ -919,7 +944,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-layout 'x (fn (panel) (col)))", cx),
-        "1:1: x is not a panel (counter beside letters ask)"
+        "1:1: x is not a panel (counter beside letters ask strip)"
     );
 
     // Running the init file again forgets the panels it did not define
