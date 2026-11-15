@@ -11,7 +11,7 @@
 //! (bind-keys 'normal "Y" "y$")         ; keys typed in place of others
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
-//!                                      ; auto-pairs
+//!                                      ; auto-pairs, format-on-save
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -802,6 +802,7 @@ fn define_functions(interp: &mut Interp) {
                     time => Some(milliseconds(time)?),
                 };
             }
+            "format-on-save" => settings.format_on_save = flag(value)?,
             // Close brackets and quotes as they are typed.
             "auto-pairs" => {
                 let on = flag(value)?;
@@ -810,7 +811,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save)"
                 )));
             }
         }

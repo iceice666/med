@@ -33,9 +33,18 @@ pub const EDITOR_KEYS: &[(&[MapMode], &str, &str)] = &[
     (I, "<C-n>", "editor.complete"),
     (I, "<C-p>", "editor.complete"),
     (I, "<C-Space>", "editor.complete"),
+    (I, "<C-s>", "editor.signature_help"),
+    (NV, "<Space>a", "editor.code_action"),
+    (N, "<Space>=", "editor.format"),
     // Leader keys. `space` alone still moves right, after a pause.
     (N, "<Space>w", "workspace.save"),
     (N, "<Space>q", "workspace.close_tab"),
+];
+
+/// Editor keys that stand for other keys: modes, key sequence, the keys.
+pub const EDITOR_KEYS_FOR_KEYS: &[(&[MapMode], &str, &str)] = &[
+    // The new name is typed on the command line.
+    (N, "<Space>r", ":rename<Space>"),
 ];
 
 /// Shortcuts handled by the window system rather than a view's key table:
@@ -63,6 +72,8 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["qa", "qall"], "workspace.quit_all"),
     (&["e", "edit"], "workspace.edit"),
     (&["eval"], "workspace.eval"),
+    (&["rename"], "editor.rename"),
+    (&["format", "fmt"], "editor.format"),
     (&["bn", "bnext", "tabn", "tabnext"], "workspace.next_tab"),
     (
         &["bp", "bprev", "bprevious", "tabp", "tabprevious"],
@@ -76,6 +87,11 @@ pub fn init(cx: &mut App) {
     for (modes, keys, command) in EDITOR_KEYS {
         for mode in *modes {
             keymap.bind(*mode, keys, command);
+        }
+    }
+    for (modes, keys, to) in EDITOR_KEYS_FOR_KEYS {
+        for mode in *modes {
+            keymap.bind_keys(*mode, keys, to);
         }
     }
 

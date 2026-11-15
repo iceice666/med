@@ -15,11 +15,14 @@ use med_core::Buffer;
 use med_vim::{Clipboard, Ctx, Effect, Key, Mode, PendingKeys, Scroll, Viewport, Vim};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Lines kept between the cursor and the top/bottom edge.
 const SCROLL_OFF: usize = 3;
 const COMPLETION_ROWS: usize = 10;
+
+/// How long writing a file waits for the language server to format it.
+const FORMAT_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// A diagnostic in buffer coordinates (char offsets).
 #[derive(Clone, Debug)]
@@ -52,6 +55,8 @@ pub enum EditorEvent {
         position: lsp::Position,
     },
     References(Vec<lsp::Location>),
+    /// Edits a language server asked for, in this file or in others.
+    WorkspaceEdit(lsp::WorkspaceEdit),
     /// The cursor is about to jump away from this offset.
     PushJump(usize),
     Message(String),
@@ -75,6 +80,112 @@ struct CompletionMenu {
     selected: usize,
     /// Start of the word being completed.
     start: usize,
+}
+
+/// The code actions on offer, to choose one from.
+struct ActionMenu {
+    actions: Vec<lsp::CodeActionOrCommand>,
+    selected: usize,
+}
+
+/// The signature of what is being called, with the argument the cursor
+/// is at.
+struct Signature {
+    label: String,
+    /// The bytes of `label` that are that argument's parameter.
+    active: Option<Range<usize>>,
+}
+
+/// Replace what `edits` say in `buf`, as one step to undo, and say how
+/// many changed anything and where a cursor at `cursor` ends up.
+pub(crate) fn apply_edits(
+    buf: &mut Buffer,
+    edits: &[lsp::TextEdit],
+    cursor: usize,
+) -> (usize, usize) {
+    let offset = |position: lsp::Position| {
+        buf.utf16_to_offset(med_core::Point::new(
+            position.line as usize,
+            position.character as usize,
+        ))
+    };
+    let mut resolved: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|edit| {
+            let (start, end) = (offset(edit.range.start), offset(edit.range.end));
+            (start, end.max(start), edit.new_text.as_str())
+        })
+        .collect();
+    // From the end, so that no edit moves one still to be made.
+    resolved.sort_by_key(|edit| std::cmp::Reverse((edit.0, edit.1)));
+
+    let point = buf.offset_to_point(cursor);
+    let (mut applied, mut shifted, mut inside) = (0, cursor as isize, false);
+    buf.begin(cursor);
+    for (start, end, text) in resolved {
+        // A formatter may send the whole file back: only the part that
+        // differs is an edit.
+        let old: Vec<char> = buf.slice(start..end).chars().collect();
+        let new: Vec<char> = text.chars().collect();
+        let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let suffix = old[prefix..]
+            .iter()
+            .rev()
+            .zip(new[prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let (start, end) = (start + prefix, end - suffix);
+        let text: String = new[prefix..new.len() - suffix].iter().collect();
+        if start == end && text.is_empty() {
+            continue;
+        }
+        if end <= cursor {
+            shifted += text.chars().count() as isize - (end - start) as isize;
+        } else if start < cursor {
+            inside = true;
+        }
+        buf.edit(start..end, &text);
+        applied += 1;
+    }
+    buf.end();
+    let cursor = if inside {
+        // Its text was rewritten: the same line and column is the best guess.
+        let row = point.row.min(buf.last_line());
+        buf.line_start(row) + point.col.min(buf.line_len(row))
+    } else {
+        shifted.max(0) as usize
+    };
+    (applied, cursor.min(buf.max_offset()))
+}
+
+/// What to show of a server's answer about the call the cursor is in.
+fn signature_of(help: lsp::SignatureHelp) -> Option<Signature> {
+    let index = help.active_signature.unwrap_or(0) as usize;
+    let signature = help.signatures.into_iter().nth(index)?;
+    let parameter = signature.active_parameter.or(help.active_parameter);
+    let parameter = parameter.and_then(|index| signature.parameters.as_ref()?.get(index as usize));
+    let label = signature.label;
+    let active = parameter.and_then(|parameter| match &parameter.label {
+        lsp::ParameterLabel::Simple(text) => {
+            let start = label.find(text.as_str())?;
+            Some(start..start + text.len())
+        }
+        // Counted in UTF-16 units of the label.
+        lsp::ParameterLabel::LabelOffsets([start, end]) => {
+            let byte = |units: u32| {
+                let mut seen = 0;
+                for (byte, c) in label.char_indices() {
+                    if seen >= units as usize {
+                        return byte;
+                    }
+                    seen += c.len_utf16();
+                }
+                label.len()
+            };
+            Some(byte(*start)..byte(*end))
+        }
+    });
+    Some(Signature { label, active })
 }
 
 pub struct Editor {
@@ -102,6 +213,9 @@ pub struct Editor {
     pending_keys: Option<PendingKeys>,
     hover: Option<SharedString>,
     request_task: Option<Task<()>>,
+    menu: Option<ActionMenu>,
+    signature: Option<Signature>,
+    signature_task: Option<Task<()>>,
     drag_anchor: Option<usize>,
     mtime: Option<SystemTime>,
     _subscriptions: Vec<Subscription>,
@@ -291,6 +405,9 @@ impl Editor {
             pending_keys: None,
             hover: None,
             request_task: None,
+            menu: None,
+            signature: None,
+            signature_task: None,
             drag_anchor: None,
             mtime: None,
             _subscriptions: Vec::new(),
@@ -381,6 +498,12 @@ impl Editor {
 
     pub fn save(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let path = self.path.clone().context("No file name")?;
+        if cx
+            .try_global::<Settings>()
+            .is_some_and(|s| s.format_on_save)
+        {
+            self.format_now(cx);
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -579,6 +702,14 @@ impl Editor {
             (Some(lsp), Some(path)) => lsp.read(cx).completion_triggers(path).contains(&last),
             _ => false,
         };
+        let has_signature = match (&self.lsp, &self.path) {
+            (Some(lsp), Some(path)) => lsp.read(cx).signature_triggers(path).contains(&last),
+            _ => false,
+        };
+        // Once it is up it follows the cursor from argument to argument.
+        if has_signature || self.signature.is_some() {
+            self.request_signature(cx);
+        }
         if is_trigger {
             self.request_completion(Some(last), cx);
         } else if is_ident(last) {
@@ -685,6 +816,7 @@ impl Editor {
         if self.vim.mode != Mode::Insert {
             self.marked = None;
             self.completion = None;
+            self.signature = None;
         }
         self.ensure_cursor_visible();
         self.report_pending(cx);
@@ -847,6 +979,238 @@ impl Editor {
             }
             None => cx.emit(EditorEvent::Message("No diagnostics".into())),
         }
+    }
+
+    // ---- edits from the language server --------------------------------
+
+    /// Make the edits a language server asked for in this file. How many
+    /// of them changed anything.
+    pub fn apply_text_edits(&mut self, edits: &[lsp::TextEdit], cx: &mut Context<Self>) -> usize {
+        let (applied, cursor) = apply_edits(&mut self.buf, edits, self.vim.cursor);
+        if applied > 0 {
+            self.vim.place_cursor(cursor, &self.buf);
+            self.completion = None;
+            self.after_change(cx);
+        }
+        applied
+    }
+
+    /// Give what is under the cursor another name, wherever it is used.
+    fn rename(&mut self, name: &str, cx: &mut Context<Self>) {
+        let name = name.trim();
+        if name.is_empty() {
+            cx.emit(EditorEvent::Message("Rename to what? :rename name".into()));
+            return;
+        }
+        let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
+            return;
+        };
+        let position = self.lsp_position(self.vim.cursor);
+        let Some(request) = lsp.read(cx).rename(path, position, name.to_string()) else {
+            cx.emit(EditorEvent::Message("No language server".into()));
+            return;
+        };
+        self.request_task = Some(cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |_, cx| match result {
+                Ok(Some(edit)) => cx.emit(EditorEvent::WorkspaceEdit(edit)),
+                Ok(None) => cx.emit(EditorEvent::Message("Nothing to rename here".into())),
+                Err(error) => cx.emit(EditorEvent::Message(format!("{error:#}"))),
+            })
+            .ok();
+        }));
+    }
+
+    fn formatting_request(
+        &self,
+        cx: &App,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::TextEdit>>>> + use<>> {
+        let (lsp, path) = (self.lsp.as_ref()?, self.path.as_ref()?);
+        let lang = &self.vim_lang;
+        lsp.read(cx)
+            .formatting(path, lang.tab_width as u32, lang.expand_tab)
+    }
+
+    /// Have the language server format the file.
+    fn format(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self.formatting_request(cx) else {
+            cx.emit(EditorEvent::Message("No language server".into()));
+            return;
+        };
+        let version = self.buf.version();
+        self.request_task = Some(cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |this, cx| {
+                let message = match result {
+                    // What it formatted is no longer what is here.
+                    Ok(_) if this.buf.version() != version => return,
+                    Ok(edits) => match this.apply_text_edits(&edits.unwrap_or_default(), cx) {
+                        0 => "Already formatted".to_string(),
+                        _ => "Formatted".to_string(),
+                    },
+                    Err(error) => format!("{error:#}"),
+                };
+                cx.emit(EditorEvent::Message(message));
+            })
+            .ok();
+        }));
+    }
+
+    /// Format the file before going on, for a moment at most: a server
+    /// that takes its time does not hold up writing the file.
+    pub fn format_now(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(request) = self.formatting_request(cx) else {
+            return false;
+        };
+        let executor = cx.foreground_executor().clone();
+        match executor.block_with_timeout(FORMAT_TIMEOUT, request) {
+            Ok(Ok(Some(edits))) => {
+                self.apply_text_edits(&edits, cx);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Ask what can be done about what is under the cursor, or selected.
+    fn code_action(&mut self, cx: &mut Context<Self>) {
+        let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
+            return;
+        };
+        let cursor = self.vim.cursor;
+        let (start, end) = self.vim.selection(&self.buf).unwrap_or((cursor, cursor));
+        let range = lsp::Range::new(self.lsp_position(start), self.lsp_position(end));
+        let Some(request) = lsp.read(cx).code_actions(path, range) else {
+            cx.emit(EditorEvent::Message("No language server".into()));
+            return;
+        };
+        let version = self.buf.version();
+        self.request_task = Some(cx.spawn(async move |this, cx| {
+            let actions = request.await.ok().flatten().unwrap_or_default();
+            let offered = |action: &lsp::CodeActionOrCommand| match action {
+                lsp::CodeActionOrCommand::CodeAction(action) => action.disabled.is_none(),
+                lsp::CodeActionOrCommand::Command(_) => true,
+            };
+            let actions: Vec<_> = actions.into_iter().filter(offered).collect();
+            this.update(cx, |this, cx| {
+                if this.buf.version() != version {
+                    return;
+                }
+                if actions.is_empty() {
+                    cx.emit(EditorEvent::Message("No code actions here".into()));
+                    return;
+                }
+                this.menu = Some(ActionMenu {
+                    actions,
+                    selected: 0,
+                });
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// The titles of the code actions on offer, if the menu is up.
+    pub fn code_action_titles(&self) -> Vec<String> {
+        let title = |action: &lsp::CodeActionOrCommand| match action {
+            lsp::CodeActionOrCommand::CodeAction(action) => action.title.clone(),
+            lsp::CodeActionOrCommand::Command(command) => command.title.clone(),
+        };
+        self.menu
+            .as_ref()
+            .map_or_else(Vec::new, |menu| menu.actions.iter().map(title).collect())
+    }
+
+    /// Keys while the code actions are listed: they all go to the list.
+    fn menu_key(&mut self, key: &Key, cx: &mut Context<Self>) -> bool {
+        let Some(menu) = &mut self.menu else {
+            return false;
+        };
+        let count = menu.actions.len();
+        match key {
+            Key::Char('j') | Key::Down | Key::Ctrl('n') | Key::Tab => {
+                menu.selected = (menu.selected + 1) % count;
+            }
+            Key::Char('k') | Key::Up | Key::Ctrl('p') | Key::BackTab => {
+                menu.selected = (menu.selected + count - 1) % count;
+            }
+            Key::Enter => self.accept_action(cx),
+            Key::Char(digit @ '1'..='9') if (*digit as usize - '1' as usize) < count => {
+                menu.selected = *digit as usize - '1' as usize;
+                self.accept_action(cx);
+            }
+            _ => self.menu = None,
+        }
+        cx.notify();
+        true
+    }
+
+    fn accept_action(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        let Some(action) = menu.actions.into_iter().nth(menu.selected) else {
+            return;
+        };
+        let (edit, command) = match action {
+            lsp::CodeActionOrCommand::CodeAction(action) => (action.edit, action.command),
+            lsp::CodeActionOrCommand::Command(command) => (None, Some(command)),
+        };
+        if let Some(edit) = edit {
+            cx.emit(EditorEvent::WorkspaceEdit(edit));
+        }
+        // What the command edits comes back through the server.
+        if let (Some(command), Some(lsp), Some(path)) = (command, &self.lsp, &self.path) {
+            lsp.read(cx).execute_command(path, command);
+        }
+    }
+
+    /// Ask for the signature of what is being called at the cursor.
+    fn request_signature(&mut self, cx: &mut Context<Self>) {
+        let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
+            return;
+        };
+        let position = self.lsp_position(self.vim.cursor);
+        let Some(request) = lsp.read(cx).signature_help(path, position) else {
+            return;
+        };
+        let version = self.buf.version();
+        self.signature_task = Some(cx.spawn(async move |this, cx| {
+            let help = request.await.ok().flatten();
+            this.update(cx, |this, cx| {
+                if this.buf.version() == version && this.vim.mode == Mode::Insert {
+                    this.signature = help.and_then(signature_of);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Put up what a language server would have answered with.
+    #[cfg(test)]
+    pub(crate) fn offer(
+        &mut self,
+        actions: Vec<lsp::CodeActionOrCommand>,
+        signature: Option<lsp::SignatureHelp>,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = (!actions.is_empty()).then_some(ActionMenu {
+            actions,
+            selected: 0,
+        });
+        self.signature = signature.and_then(signature_of);
+        cx.notify();
+    }
+
+    /// The signature being shown, and the parameter the cursor is at.
+    pub fn signature_text(&self) -> Option<(&str, Option<&str>)> {
+        let signature = self.signature.as_ref()?;
+        let active = signature
+            .active
+            .clone()
+            .and_then(|range| signature.label.get(range));
+        Some((signature.label.as_str(), active))
     }
 
     // ---- completion ----------------------------------------------------
@@ -1033,7 +1397,7 @@ impl Editor {
     /// A key press as the user makes it: the completion menu gets first
     /// refusal, then the vim engine.
     pub fn press(&mut self, key: Key, cx: &mut Context<Self>) {
-        if !self.completion_key(&key, cx) {
+        if !self.menu_key(&key, cx) && !self.completion_key(&key, cx) {
             self.handle_key(key, cx);
         }
     }
@@ -1105,6 +1469,7 @@ impl Editor {
         };
         self.hover = None;
         self.completion = None;
+        self.menu = None;
         match event.click_count {
             2 => {
                 if let Some((s, e)) = med_vim::motion::word_under_cursor(&self.buf, offset) {
@@ -1548,6 +1913,105 @@ impl Editor {
         )
     }
 
+    fn render_menu(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        let menu = self.menu.as_ref()?;
+        let origin = self.popup_origin()?;
+        let theme = cx.theme();
+        let titles = self.code_action_titles();
+        let rows = titles.into_iter().enumerate().map(|(row, title)| {
+            let number = if row < 9 {
+                format!("{}", row + 1)
+            } else {
+                " ".to_string()
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_2()
+                .h(px(22.))
+                .when(row == menu.selected, |el| el.bg(theme.list_active))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(theme.muted_foreground)
+                        .child(number),
+                )
+                .child(div().whitespace_nowrap().child(title))
+        });
+        Some(
+            deferred(
+                anchored().position(origin).snap_to_window().child(
+                    div()
+                        .occlude()
+                        .max_w(px(560.))
+                        .py_1()
+                        .bg(theme.popover)
+                        .text_color(theme.popover_foreground)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded_md()
+                        .shadow_md()
+                        .text_size(px(12.))
+                        .overflow_hidden()
+                        .children(rows),
+                ),
+            )
+            .with_priority(1),
+        )
+    }
+
+    /// The signature of the call being typed, over the line it is on.
+    fn render_signature(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        let signature = self.signature.as_ref()?;
+        let origin = self.cell_origin(self.vim.cursor)?;
+        let theme = cx.theme();
+        let label = &signature.label;
+        let (before, active, after) = match signature.active.clone() {
+            Some(range) if label.get(range.clone()).is_some() => (
+                label[..range.start].to_string(),
+                label[range.clone()].to_string(),
+                label[range.end..].to_string(),
+            ),
+            _ => (label.clone(), String::new(), String::new()),
+        };
+        Some(
+            deferred(
+                anchored()
+                    .anchor(Anchor::BottomLeft)
+                    .position(origin)
+                    .snap_to_window()
+                    .child(
+                        div()
+                            .occlude()
+                            .flex()
+                            .max_w(px(640.))
+                            .px_2()
+                            .py_1()
+                            .bg(theme.popover)
+                            .text_color(theme.muted_foreground)
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded_md()
+                            .shadow_md()
+                            .text_size(px(12.))
+                            .font_family(theme.mono_font_family.clone())
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .child(before)
+                            .child(
+                                div()
+                                    .text_color(theme.popover_foreground)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(active),
+                            )
+                            .child(after),
+                    ),
+            )
+            .with_priority(1),
+        )
+    }
+
     fn render_hover(&self, cx: &App) -> Option<impl IntoElement + use<>> {
         let text = self.hover.clone()?;
         let origin = self.popup_origin()?;
@@ -1679,6 +2143,8 @@ impl Render for Editor {
                 .size_full(),
             )
             .children(self.render_completion(cx))
+            .children(self.render_menu(cx))
+            .children(self.render_signature(cx))
             .children(self.render_hover(cx))
     }
 }
@@ -1872,6 +2338,26 @@ pub(crate) fn register(commands: &mut Commands) {
         "editor.complete",
         "Ask the language server for completions",
         E(|editor, _, cx| editor.request_completion(None, cx)),
+    );
+    commands.register(
+        "editor.rename",
+        "Rename the symbol under the cursor to the name given",
+        E(|editor, args, cx| editor.rename(&args.arg, cx)),
+    );
+    commands.register(
+        "editor.code_action",
+        "List what the language server can do here, to choose from",
+        E(|editor, _, cx| editor.code_action(cx)),
+    );
+    commands.register(
+        "editor.format",
+        "Have the language server format the file",
+        E(|editor, _, cx| editor.format(cx)),
+    );
+    commands.register(
+        "editor.signature_help",
+        "Show the signature of what is being called",
+        E(|editor, _, cx| editor.request_signature(cx)),
     );
     commands.register(
         "editor.paste",

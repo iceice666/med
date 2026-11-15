@@ -57,11 +57,17 @@ impl Workspace {
         });
 
         let subscriptions = vec![
-            cx.subscribe(&lsp, |_, _, event: &LspEvent, cx| {
-                if matches!(event, LspEvent::Status) {
-                    cx.notify();
-                }
-            }),
+            cx.subscribe_in(
+                &lsp,
+                window,
+                |this, _, event: &LspEvent, window, cx| match event {
+                    LspEvent::Status => cx.notify(),
+                    LspEvent::ApplyEdit(edit) => {
+                        this.apply_workspace_edit(edit.clone(), window, cx);
+                    }
+                    LspEvent::Diagnostics(_) => {}
+                },
+            ),
             cx.observe_window_appearance(window, |_, window, cx| {
                 gpui::component::Theme::sync_system_appearance(Some(window), cx);
             }),
@@ -397,11 +403,62 @@ impl Workspace {
                     self.set_message(format!("The first of {count} references"), cx);
                 }
             }
+            EditorEvent::WorkspaceEdit(edit) => {
+                self.apply_workspace_edit(edit.clone(), window, cx);
+            }
             EditorEvent::PushJump(offset) => {
                 if let Some(path) = editor.read(cx).path.clone() {
                     self.push_jump(path, *offset);
                 }
             }
+        }
+    }
+
+    /// Make the edits a language server asked for: in the tabs that have
+    /// the files open, and on disk for the rest.
+    pub(crate) fn apply_workspace_edit(
+        &mut self,
+        edit: lsp::WorkspaceEdit,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (mut changes, mut files, mut written) = (0, 0, false);
+        let mut failed = None;
+        for (path, edits) in crate::lsp::edits_by_file(edit) {
+            let open = self
+                .tabs
+                .iter()
+                .find(|tab| tab.read(cx).path.as_deref() == Some(path.as_path()))
+                .cloned();
+            let applied = match open {
+                Some(tab) => tab.update(cx, |editor, cx| editor.apply_text_edits(&edits, cx)),
+                None => match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        let mut buf = med_core::Buffer::new(&text);
+                        let (applied, _) = crate::editor::apply_edits(&mut buf, &edits, 0);
+                        match std::fs::write(&path, buf.to_disk_string()) {
+                            Ok(()) => written |= applied > 0,
+                            Err(error) => failed = Some(format!("{}: {error}", path.display())),
+                        }
+                        applied
+                    }
+                    Err(error) => {
+                        failed = Some(format!("{}: {error}", path.display()));
+                        0
+                    }
+                },
+            };
+            if applied > 0 {
+                changes += applied;
+                files += 1;
+            }
+        }
+        self.set_message(
+            failed.unwrap_or_else(|| format!("{changes} change(s) in {files} file(s)")),
+            cx,
+        );
+        if written {
+            self.files_changed(window, cx);
         }
     }
 

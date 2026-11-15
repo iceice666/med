@@ -632,7 +632,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1161,6 +1161,9 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                (def found 0)
                (unbind 'normal "<Space>q")
                (unbind 'normal "<Space>w")
+               (unbind '(normal visual) "<Space>a")
+               (unbind 'normal "<Space>=")
+               (unbind 'normal "<Space>r")
                (bind 'normal "<Space>f" "user.find")
                (bind 'normal "<Space>gg" "user.find")
                (bind-keys 'normal "<Space>y" "y$"))"#,
@@ -1928,6 +1931,55 @@ fn eval_in(ws: &Entity<Workspace>, source: &str, cx: &mut VisualTestContext) -> 
 }
 
 #[gpui::test]
+fn edits_from_a_language_server_reach_every_file(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "let old = 1;\nold + old\n"),
+        ("b.txt", "use old;\n"),
+    ]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    cx.simulate_keystrokes("j $");
+    assert_eq!(cursor(&ws, cx), (2, 9));
+
+    let edit = |line: u32, from: u32, to: u32| lsp_types::TextEdit {
+        range: lsp_types::Range::new(
+            lsp_types::Position::new(line, from),
+            lsp_types::Position::new(line, to),
+        ),
+        new_text: "renamed".to_string(),
+    };
+    let uri = |name: &str| crate::lsp::path_to_uri(&project.path(name)).unwrap();
+    let changes = [
+        (
+            uri("a.txt"),
+            vec![edit(0, 4, 7), edit(1, 0, 3), edit(1, 6, 9)],
+        ),
+        (uri("b.txt"), vec![edit(0, 4, 7)]),
+    ];
+    let edit = lsp_types::WorkspaceEdit {
+        changes: Some(changes.into_iter().collect()),
+        ..Default::default()
+    };
+    ws.update_in(cx, |ws, window, cx| {
+        ws.apply_workspace_edit(edit, window, cx)
+    });
+    cx.run_until_parked();
+
+    // The open file is edited in its tab, and not written.
+    assert_eq!(text(&ws, cx), "let renamed = 1;\nrenamed + renamed\n");
+    assert_eq!(project.read("a.txt"), "let old = 1;\nold + old\n");
+    // The other on disk.
+    assert_eq!(project.read("b.txt"), "use renamed;\n");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.message.clone()).as_deref(),
+        Some("4 change(s) in 2 file(s)")
+    );
+    // The cursor stayed on its text, and one undo takes it all back.
+    assert_eq!(cursor(&ws, cx), (2, 17));
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "let old = 1;\nold + old\n");
+}
+
+#[gpui::test]
 fn the_new_keys_work_in_a_window(cx: &mut TestAppContext) {
     let source = "\
 fn add(left: i32, right: i32) -> i32 {
@@ -1996,4 +2048,116 @@ fn main() {
     // Marks.
     cx.simulate_keystrokes("g g m a shift-g ' a");
     assert_eq!(cursor(&ws, cx), (1, 1));
+}
+
+#[gpui::test]
+fn chooses_a_code_action_and_shows_a_signature(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "call(1, 2)\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let uri = crate::lsp::path_to_uri(&project.path("a.txt")).unwrap();
+
+    // Two actions on offer: the second replaces `call` with `sum`.
+    let action = |title: &str, name: u32, new_text: &str| {
+        let edit = lsp_types::TextEdit {
+            range: lsp_types::Range::new(
+                lsp_types::Position::new(0, 0),
+                lsp_types::Position::new(0, name),
+            ),
+            new_text: new_text.to_string(),
+        };
+        lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+            title: title.to_string(),
+            edit: Some(lsp_types::WorkspaceEdit {
+                changes: Some([(uri.clone(), vec![edit])].into_iter().collect()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+    let actions = vec![
+        action("Call it add", 4, "add"),
+        action("Call it sum", 4, "sum"),
+    ];
+    editor.update(cx, |editor, cx| editor.offer(actions, None, cx));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |editor, _| editor.code_action_titles()),
+        ["Call it add", "Call it sum"]
+    );
+    // While the list is up the keys are its own: `j` moves in it.
+    cx.simulate_keystrokes("j enter");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "sum(1, 2)\n");
+    assert!(editor.read_with(cx, |editor, _| editor.code_action_titles().is_empty()));
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    // By its number, or not at all.
+    let actions = vec![action("Call it add", 3, "add"), action("Call it f", 3, "f")];
+    editor.update(cx, |editor, cx| editor.offer(actions.clone(), None, cx));
+    cx.simulate_keystrokes("2");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "f(1, 2)\n");
+    editor.update(cx, |editor, cx| editor.offer(actions, None, cx));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(editor.read_with(cx, |editor, _| editor.code_action_titles().is_empty()));
+    assert_eq!(text(&ws, cx), "f(1, 2)\n");
+
+    // A signature, with the parameter the cursor is at: named by where it
+    // is in the label, or by its text.
+    let signature = |parameters: Vec<lsp_types::ParameterLabel>, active: u32| {
+        let parameters = parameters
+            .into_iter()
+            .map(|label| lsp_types::ParameterInformation {
+                label,
+                documentation: None,
+            });
+        lsp_types::SignatureHelp {
+            signatures: vec![lsp_types::SignatureInformation {
+                label: "f(名: i32, b: u8)".to_string(),
+                documentation: None,
+                parameters: Some(parameters.collect()),
+                active_parameter: None,
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(active),
+        }
+    };
+    cx.simulate_keystrokes("i");
+    let by_place = vec![
+        lsp_types::ParameterLabel::LabelOffsets([2, 8]),
+        lsp_types::ParameterLabel::LabelOffsets([10, 15]),
+    ];
+    editor.update(cx, |editor, cx| {
+        editor.offer(Vec::new(), Some(signature(by_place.clone(), 0)), cx)
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let shown = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |editor, _| {
+            editor
+                .signature_text()
+                .map(|(label, active)| (label.to_string(), active.map(str::to_string)))
+        })
+    };
+    assert_eq!(
+        shown(cx),
+        Some(("f(名: i32, b: u8)".to_string(), Some("名: i32".to_string())))
+    );
+    editor.update(cx, |editor, cx| {
+        editor.offer(Vec::new(), Some(signature(by_place, 1)), cx)
+    });
+    assert_eq!(shown(cx).unwrap().1.as_deref(), Some("b: u8"));
+    let by_text = vec![
+        lsp_types::ParameterLabel::Simple("名: i32".to_string()),
+        lsp_types::ParameterLabel::Simple("b: u8".to_string()),
+    ];
+    editor.update(cx, |editor, cx| {
+        editor.offer(Vec::new(), Some(signature(by_text, 1)), cx)
+    });
+    assert_eq!(shown(cx).unwrap().1.as_deref(), Some("b: u8"));
+    // It goes when the typing is over.
+    cx.simulate_keystrokes("escape");
+    assert_eq!(shown(cx), None);
 }

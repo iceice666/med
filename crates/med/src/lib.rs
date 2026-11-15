@@ -32,6 +32,8 @@ pub struct Settings {
     /// one (`space` before `space f`), vim's `timeoutlen`; `None` to wait
     /// for the next key however long it takes.
     pub key_timeout: Option<Duration>,
+    /// Have the language server format a file before it is written.
+    pub format_on_save: bool,
 }
 
 impl Settings {
@@ -119,6 +121,7 @@ pub fn init(cx: &mut App) {
             .unwrap_or(14.),
         lsp: std::env::var_os("MED_NO_LSP").is_none(),
         key_timeout: Some(Settings::KEY_TIMEOUT),
+        format_on_save: false,
     });
     init_globals(cx);
     defaults::bind_app_keys(cx);
