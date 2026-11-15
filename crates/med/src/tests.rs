@@ -1593,6 +1593,7 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
             "git",
             "git-prompt",
             "which-key",
+            "dired-prompt",
             "statusline",
             "titlebar"
         ]
@@ -1652,6 +1653,7 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
             "git",
             "git-prompt",
             "which-key",
+            "dired-prompt",
             "statusline",
             "titlebar"
         ]
@@ -2862,6 +2864,7 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     ]);
     let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
     let listing = format!("{}/", project.0.display());
+    let editing = format!("(dired-editing? \"{}\")", project.0.display());
 
     // space - lists the directory of the file, the cursor on its line.
     cx.simulate_keystrokes("space -");
@@ -2871,7 +2874,10 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     assert_eq!(tab_titles(&ws, cx), ["a.txt", listing.as_str()]);
     assert_eq!(active_file(&ws, cx), None);
 
-    // A new name renames, one with / moves; the tab of a.txt goes with it.
+    // i edits the names. A new name renames, one with / moves; the tab of
+    // a.txt goes with it, and the listing is not edited any more.
+    cx.simulate_keystrokes("i");
+    assert_eq!(lisp(&editing, cx), "true");
     cx.simulate_keystrokes("c c");
     cx.simulate_input("c.txt");
     cx.simulate_keystrokes("escape shift-g c c");
@@ -2886,9 +2892,11 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     assert!(!project.path("a.txt").exists() && !project.path("z.txt").exists());
     assert_eq!(text(&ws, cx), "dir/\nb.txt\nc.txt\n");
     assert!(!dirty(&ws, cx));
+    assert_eq!(lisp(&editing, cx), "false");
     assert_eq!(tab_titles(&ws, cx), ["c.txt", listing.as_str()]);
 
     // What cannot all be done is not done at all, and stays to be fixed.
+    cx.simulate_keystrokes("i");
     let refused = |keys: &str, typed: &str, cx: &mut VisualTestContext| {
         cx.simulate_keystrokes(keys);
         cx.simulate_input(typed);
@@ -2913,6 +2921,7 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
         "dir/inner.txt is there already"
     );
     assert!(project.path("b.txt").exists());
+    assert_eq!(lisp(&editing, cx), "true");
 
     // An empty line is a file for the trash, after :w!.
     cx.simulate_keystrokes("g g j c c escape : w enter");
@@ -2925,6 +2934,23 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     assert!(!project.path("b.txt").exists());
     assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
 
+    // C-c C-k gives the changes up; C-x C-s writes them, as :w.
+    cx.simulate_keystrokes("i g g j c c");
+    cx.simulate_input("lost.txt");
+    cx.simulate_keystrokes("escape ctrl-c ctrl-k");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
+    assert!(!dirty(&ws, cx));
+    assert_eq!(lisp(&editing, cx), "false");
+    cx.simulate_keystrokes("ctrl-x ctrl-q");
+    assert_eq!(lisp(&editing, cx), "true", "{}", message(&ws, cx));
+    cx.simulate_keystrokes("c c");
+    cx.simulate_input("e.txt");
+    cx.simulate_keystrokes("escape ctrl-x ctrl-s");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 renamed, 0 to the trash");
+    assert_eq!(text(&ws, cx), "dir/\ne.txt\n");
+
     // Enter goes into a directory, and - back up to it: keys of the
     // listing's own.
     cx.simulate_keystrokes("g g enter");
@@ -2932,27 +2958,27 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     assert_eq!(text(&ws, cx), "sub/\ninner.txt\n");
     cx.simulate_keystrokes("-");
     cx.run_until_parked();
-    assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
+    assert_eq!(text(&ws, cx), "dir/\ne.txt\n");
     assert_eq!(cursor(&ws, cx), (1, 1));
     // On a file, enter opens it, where - and enter are vim's again.
     cx.simulate_keystrokes("j enter");
     cx.run_until_parked();
-    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
+    assert_eq!(active_file(&ws, cx), Some(project.path("e.txt")));
     cx.simulate_keystrokes("-");
     cx.run_until_parked();
-    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
+    assert_eq!(active_file(&ws, cx), Some(project.path("e.txt")));
 
     // :wq writes what the listing had, though another tab is up by the
-    // time the program runs: here c.txt, as many lines long.
+    // time the program runs: here e.txt, as many lines long.
     cx.simulate_keystrokes("space -");
     cx.run_until_parked();
-    cx.simulate_keystrokes("j c c");
+    cx.simulate_keystrokes("i j c c");
     cx.simulate_input("d.txt");
     cx.simulate_keystrokes("escape : w q enter");
     cx.run_until_parked();
     assert_eq!(message(&ws, cx), "1 renamed, 0 to the trash");
     assert_eq!(project.read("d.txt"), "a\n");
-    // The listing of dir, from gf, is still there.
+    // The listing of dir is still there.
     let inner = format!("{listing}dir/");
     assert_eq!(tab_titles(&ws, cx), ["d.txt", inner.as_str()]);
 
@@ -2982,21 +3008,56 @@ fn a_listing_keeps_what_is_not_written(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(lisp("seen", cx), r#"("dired" "normal")"#);
     cx.simulate_keystrokes("escape");
-    // Made with its text, there is nothing before it to undo to.
-    cx.simulate_keystrokes("u");
-    assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
 
-    // Going into a directory and back leaves an edit that is not written.
-    assert_eq!(cursor(&ws, cx), (2, 1));
-    cx.simulate_keystrokes("c c");
-    cx.simulate_input("b.txt");
-    cx.simulate_keystrokes("escape g g enter");
+    // Not being edited, the listing stays as it is, whatever vim's keys
+    // do to it.
+    cx.simulate_keystrokes("A");
+    cx.run_until_parked();
+    assert_eq!(
+        message(&ws, cx),
+        "The listing is not edited: i edits the names"
+    );
+    cx.simulate_keystrokes("g U U");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
+    assert!(!dirty(&ws, cx));
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    // Nor is it typed into.
+    cx.simulate_keystrokes("g I");
+    cx.run_until_parked();
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    cx.simulate_input("zz");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
+    // The details and marks are drawn without complaint.
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    // Going to another listing and back leaves an edit that is not
+    // written, still being edited.
+    cx.simulate_keystrokes("g g enter");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "inner.txt\n");
+    cx.simulate_keystrokes("i c c");
+    cx.simulate_input("x.txt");
+    cx.simulate_keystrokes("escape space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
+    // The listing above is not being edited: its keys are dired's.
+    cx.simulate_keystrokes("g g enter");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "x.txt\n");
+    assert!(dirty(&ws, cx));
+    cx.simulate_keystrokes(": w enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 renamed, 0 to the trash");
+    assert_eq!(project.read("dir/x.txt"), "inner\n");
     cx.simulate_keystrokes("-");
     cx.run_until_parked();
-    assert_eq!(text(&ws, cx), "dir/\nb.txt\nsp \n");
-    assert!(dirty(&ws, cx));
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    cx.simulate_keystrokes("j i c c");
+    cx.simulate_input("b.txt");
+    cx.simulate_keystrokes("escape");
 
     // A name with a space at its end is left as it is.
     cx.simulate_keystrokes(": w enter");
@@ -3005,6 +3066,217 @@ fn a_listing_keeps_what_is_not_written(cx: &mut TestAppContext) {
     assert_eq!(project.read("b.txt"), "a\n");
     assert_eq!(project.read("sp "), "s\n");
     assert_eq!(text(&ws, cx), "dir/\nb.txt\nsp \n");
+}
+
+#[gpui::test]
+fn a_listing_marks_files_and_does_things_to_them(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "bb\n"),
+        ("c.rs", "c\n"),
+        ("dir/inner.txt", "inner\n"),
+        ("old~", "o\n"),
+    ]);
+    let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    let dir = format!("\"{}\"", project.0.display());
+    let marked = |mark: &str, cx: &mut VisualTestContext| {
+        lisp(
+            &format!("(dired-names (dired-marked {dir} \"{mark}\"))"),
+            cx,
+        )
+    };
+    let answer = |typed: &str, cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        assert!(shown("dired-prompt", cx));
+        cx.simulate_input(typed);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+    let to = |line: usize, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(&format!("{line} shift-g"));
+    };
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nb.txt\nc.rs\nold~\n");
+
+    // m marks and goes on; t turns the marks around; U takes them off.
+    cx.simulate_keystrokes("m m");
+    assert_eq!(marked("*", cx), r#"("a.txt" "b.txt")"#);
+    assert_eq!(cursor(&ws, cx), (4, 1));
+    assert!(decoration_lines(&ws, "dired", cx).len() > 5);
+    cx.simulate_keystrokes("t");
+    assert_eq!(marked("*", cx), r#"("dir" "c.rs" "old~")"#);
+    cx.simulate_keystrokes("U");
+    assert_eq!(marked("*", cx), "nil");
+    cx.simulate_keystrokes("* /");
+    assert_eq!(marked("*", cx), r#"("dir")"#);
+    cx.simulate_keystrokes("U % m");
+    answer("\\.txt$", cx);
+    assert_eq!(marked("*", cx), r#"("a.txt" "b.txt")"#);
+
+    // C copies the marked files: into a directory, as there are two.
+    cx.simulate_keystrokes("C");
+    answer("dir", cx);
+    assert!(wait_for(cx, |_| project.path("dir/b.txt").exists()));
+    assert_eq!(project.read("dir/a.txt"), "a\n");
+    assert!(wait_for(cx, |cx| message(&ws, cx) == "copied 2"));
+
+    // R renames the file on the line, with nothing marked.
+    cx.simulate_keystrokes("U");
+    to(4, cx);
+    cx.simulate_keystrokes("R");
+    answer("renamed.rs", cx);
+    assert_eq!(message(&ws, cx), "renamed 1");
+    assert_eq!(project.read("renamed.rs"), "c\n");
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nb.txt\nold~\nrenamed.rs\n");
+
+    // ~ flags the backups, and x deletes the flagged, once told y.
+    cx.simulate_keystrokes("~");
+    assert_eq!(marked("D", cx), r#"("old~")"#);
+    cx.simulate_keystrokes("x");
+    answer("n", cx);
+    assert!(project.path("old~").exists());
+    cx.simulate_keystrokes("x");
+    answer("y", cx);
+    assert!(!project.path("old~").exists());
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nb.txt\nrenamed.rs\n");
+
+    // M sets permissions, S makes a link, + a directory.
+    to(2, cx);
+    cx.simulate_keystrokes("M");
+    answer("600", cx);
+    assert_eq!(
+        lisp(
+            &format!(
+                "(get (file-info \"{}\") :mode)",
+                project.path("a.txt").display()
+            ),
+            cx
+        ),
+        "384"
+    );
+    cx.simulate_keystrokes("S");
+    answer("link.txt", cx);
+    assert_eq!(
+        lisp(
+            &format!(
+                "(get (file-info \"{}\") :target)",
+                project.path("link.txt").display()
+            ),
+            cx
+        ),
+        format!("\"{}\"", project.path("a.txt").display())
+    );
+    cx.simulate_keystrokes("+");
+    answer("made", cx);
+    assert!(project.path("made").is_dir());
+
+    // ! runs a shell command on the file, ? standing for it.
+    to(
+        lisp(&format!("(dired-line-of {dir} \"b.txt\")"), cx)
+            .parse()
+            .unwrap(),
+        cx,
+    );
+    cx.simulate_keystrokes("!");
+    answer("echo ? is here", cx);
+    assert!(wait_for(cx, |cx| message(&ws, cx) == "b.txt is here"));
+
+    // D deletes the file on the line.
+    cx.simulate_keystrokes("D");
+    answer("y", cx);
+    assert!(!project.path("b.txt").exists());
+    assert!(!shown("dired-prompt", cx));
+}
+
+#[gpui::test]
+fn a_listing_says_what_ls_says(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let (_, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    let lisp = |source: &str, cx: &mut VisualTestContext| lisp(source, cx);
+
+    let mode = |kind: &str, mode: u32, cx: &mut VisualTestContext| {
+        lisp(
+            &format!("(dired-mode-string (list :kind '{kind} :mode {mode}))"),
+            cx,
+        )
+    };
+    assert_eq!(mode("file", 0o644, cx), "\"-rw-r--r--\"");
+    assert_eq!(mode("file", 0o4755, cx), "\"-rwsr-xr-x\"");
+    assert_eq!(mode("dir", 0o1777, cx), "\"drwxrwxrwt\"");
+    assert_eq!(mode("link", 0o2644, cx), "\"lrw-r-Sr--\"");
+
+    let size = |bytes: u64, cx: &mut VisualTestContext| lisp(&format!("(dired-size {bytes})"), cx);
+    assert_eq!(size(0, cx), "\"0\"");
+    assert_eq!(size(1023, cx), "\"1023\"");
+    assert_eq!(size(1536, cx), "\"1.5K\"");
+    assert_eq!(size(10240, cx), "\"10K\"");
+    assert_eq!(size(1 << 20, cx), "\"1.0M\"");
+
+    let date = |seconds: i64, cx: &mut VisualTestContext| {
+        lisp(
+            &format!("(do (set! dired-utc-offset 0) (dired-date {seconds}))"),
+            cx,
+        )
+    };
+    assert_eq!(date(0, cx), "\"1970-01-01 00:00\"");
+    assert_eq!(date(951_868_800, cx), "\"2000-03-01 00:00\"");
+    assert_eq!(date(1_709_210_040, cx), "\"2024-02-29 12:34\"");
+    assert_eq!(lisp("(dired-offset \"+0800\")", cx), "28800");
+    assert_eq!(lisp("(dired-offset \"-0530\")", cx), "-19800");
+
+    // The columns line up, past the longest name.
+    lisp(
+        "(set! dired-users (list \"501\" \"me\")) (set! dired-groups (list \"20\" \"staff\"))",
+        cx,
+    );
+    assert_eq!(
+        lisp(
+            "(dired-details (list
+               (list :name \"a\" :kind 'file :mode 420 :links 1 :uid 501 :gid 20 :size 2 :modified 0)
+               (list :name \"dir\" :kind 'dir :dir true :mode 493 :links 12 :uid 0 :gid 20 :size 384 :modified 0)
+               (list :name \"to\" :kind 'link :mode 493 :links 1 :uid 501 :gid 20 :size 1 :modified 0 :target \"a\")))",
+            cx
+        ),
+        concat!(
+            "(\"   -rw-r--r--  1 me staff   2 1970-01-01 00:00\" ",
+            "\"drwxr-xr-x 12 0  staff 384 1970-01-01 00:00\" ",
+            "\"  lrwxr-xr-x  1 me staff   1 1970-01-01 00:00 -> a\")"
+        )
+    );
+
+    // Owners' names, from ls -lan and ls -la of the same directory.
+    lisp("(set! dired-users nil) (set! dired-groups nil)", cx);
+    lisp(
+        r#"(dired-learn-from "total 8\n-rw-r--r--  1 501  20  2 Nov 15 10:22 a\n::med::\ntotal 8\n-rw-r--r--  1 me  staff  2 Nov 15 10:22 a\n")"#,
+        cx,
+    );
+    assert_eq!(
+        lisp("(list dired-users dired-groups)", cx),
+        r#"(("501" "me") ("20" "staff"))"#
+    );
+
+    // The shell's command line, the names quoted.
+    let script = |command: &str, cx: &mut VisualTestContext| {
+        lisp(
+            &format!("(dired-shell-script \"{command}\" (list \"a b\" \"it's\"))"),
+            cx,
+        )
+    };
+    assert_eq!(script("wc -l", cx), r#""wc -l 'a b' 'it'\\''s'""#);
+    assert_eq!(
+        script("tar czf x.tgz *", cx),
+        r#""tar czf x.tgz 'a b' 'it'\\''s'""#
+    );
+    assert_eq!(
+        script("gzip ? -k", cx),
+        r#""gzip 'a b' -k; gzip 'it'\\''s' -k""#
+    );
+
+    assert_eq!(
+        lisp("(dired-sort '(3 1 2 5 4) (fn (a b) (< a b)))", cx),
+        "(1 2 3 4 5)"
+    );
 }
 
 #[gpui::test]
@@ -3270,4 +3542,132 @@ fn help_works_with_no_keys_bound(cx: &mut TestAppContext) {
         page.contains("  none: (bind 'normal \"<keys>\" \"workspace.save_and_quit\")"),
         "{page}"
     );
+}
+
+#[gpui::test]
+fn a_listing_runs_every_command(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        ("c.tar.gz", "not really\n"),
+        ("d.gz.txt", "d\n"),
+        ("run.sh", "echo\n"),
+        ("sub/inner.txt", "inner\n"),
+        ("sub2/x", "x\n"),
+    ]);
+    let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    let dir = format!("\"{}\"", project.0.display());
+    let marked =
+        |cx: &mut VisualTestContext| lisp(&format!("(dired-names (dired-marked {dir} \"*\"))"), cx);
+    let answer = |typed: &str, cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        assert!(shown("dired-prompt", cx));
+        cx.simulate_input(typed);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+    let line_of = |name: &str, cx: &mut VisualTestContext| {
+        lisp(&format!("(dired-line-of {dir} \"{name}\")"), cx)
+    };
+    let to = |name: &str, cx: &mut VisualTestContext| {
+        let line = line_of(name, cx);
+        cx.simulate_keystrokes(&format!("{line} shift-g"));
+    };
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(
+        text(&ws, cx),
+        "sub/\nsub2/\na.txt\nb.txt\nc.tar.gz\nd.gz.txt\nrun.sh\n"
+    );
+
+    // > and < go from directory to directory.
+    cx.simulate_keystrokes("g g >");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes(">");
+    assert_eq!(message(&ws, cx), "No more directories");
+    cx.simulate_keystrokes("<");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // * . marks by an extension, dots and all.
+    cx.simulate_keystrokes("* .");
+    answer("tar.gz", cx);
+    assert_eq!(marked(cx), r#"("c.tar.gz")"#);
+    cx.simulate_keystrokes("U * .");
+    answer(".txt", cx);
+    assert_eq!(marked(cx), r#"("a.txt" "b.txt" "d.gz.txt")"#);
+
+    // % R and % C ask twice: the expression, then its replacement.
+    cx.simulate_keystrokes("U");
+    to("a.txt", cx);
+    cx.simulate_keystrokes("m m % R");
+    answer("\\.txt$", cx);
+    answer(".md", cx);
+    assert_eq!(message(&ws, cx), "renamed 2");
+    assert_eq!(project.read("a.md"), "a\n");
+    assert_eq!(project.read("b.md"), "b\n");
+    assert_eq!(marked(cx), "nil");
+    to("a.md", cx);
+    cx.simulate_keystrokes("% C");
+    answer("^a", cx);
+    answer("copy-of-a", cx);
+    assert!(wait_for(cx, |_| project.path("copy-of-a.md").exists()));
+
+    // M with a mode chmod knows by letters, T and Z run programs.
+    to("run.sh", cx);
+    cx.simulate_keystrokes("M");
+    answer("u+x", cx);
+    assert!(wait_for(cx, |cx| message(&ws, cx) == "changed 1"));
+    let mode = lisp(
+        &format!(
+            "(get (file-info \"{}\") :mode)",
+            project.path("run.sh").display()
+        ),
+        cx,
+    );
+    assert_eq!(mode.parse::<u32>().unwrap() & 0o100, 0o100);
+    cx.simulate_keystrokes("T");
+    assert!(wait_for(cx, |cx| message(&ws, cx) == "touched 1"));
+    to("d.gz.txt", cx);
+    cx.simulate_keystrokes("Z");
+    assert!(wait_for(cx, |cx| message(&ws, cx) == "compressed 1"));
+    assert!(project.path("d.gz.txt.gz").exists());
+    to("d.gz.txt.gz", cx);
+    cx.simulate_keystrokes("Z");
+    assert!(wait_for(cx, |cx| message(&ws, cx) == "compressed 1"));
+    assert_eq!(project.read("d.gz.txt"), "d\n");
+
+    // = diffs the file with another, in a tab of its own.
+    to("b.md", cx);
+    cx.simulate_keystrokes("=");
+    answer("a.md", cx);
+    assert!(wait_for(cx, |cx| tab_titles(&ws, cx).contains(&"*diff*".to_string())));
+    assert!(text(&ws, cx).contains("-a\n+b\n"), "{}", text(&ws, cx));
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+
+    // s lists the newest first, and back; ( hides the details.
+    let order =
+        |cx: &mut VisualTestContext| lisp(&format!("(dired-names (dired-get {dir} :entries))"), cx);
+    let by_name = order(cx);
+    cx.simulate_keystrokes("s");
+    assert_eq!(message(&ws, cx), "Newest first");
+    assert_eq!(lisp(&format!("(dired-get {dir} :sort)"), cx), "time");
+    cx.simulate_keystrokes("s");
+    assert_eq!(order(cx), by_name);
+    let lines = decoration_lines(&ws, "dired", cx).len();
+    cx.simulate_keystrokes("(");
+    assert!(decoration_lines(&ws, "dired", cx).len() < lines);
+    cx.simulate_keystrokes("(");
+    assert_eq!(decoration_lines(&ws, "dired", cx).len(), lines);
+
+    // g r reads what changed behind the listing's back.
+    std::fs::write(project.path("new.txt"), "n\n").unwrap();
+    cx.simulate_keystrokes("g r");
+    cx.run_until_parked();
+    assert!(text(&ws, cx).contains("new.txt\n"));
+
+    // q closes it.
+    cx.simulate_keystrokes("q");
+    cx.run_until_parked();
+    assert!(!tab_titles(&ws, cx).iter().any(|title| title.ends_with('/')));
 }
