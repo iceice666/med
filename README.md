@@ -372,8 +372,9 @@ show, `nil` where there is nothing to show:
 | `:lsp` | what the file's language server is doing |
 | `:branch` | the branch the project is on |
 
-With no file open there is no `:mode` and nothing that comes from a
-file. A status bar that leaves out `:cmdline` has `:` typed blind.
+With no file open there is an empty `[No Name]` buffer, which the next
+file opened takes the place of: it has a `:mode`, but nothing that comes
+from a file. A status bar that leaves out `:cmdline` has `:` typed blind.
 [`examples/statusline.lisp`](examples/statusline.lisp) is the window's own
 status bar, and the colors of the bars are `'status-bar`, `'title-bar`,
 `'title-bar-border` and `'tab-bar`.
