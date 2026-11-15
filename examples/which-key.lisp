@@ -33,19 +33,26 @@
 
 ; ---- what is on show
 
-; The keys that can follow, in the first table that knows these keys:
-; that is the one the next key will be looked up in.
+; The keys that can follow, from every table the next key is looked up
+; in: a key that one table does not know goes on to the next, so where
+; two know the same key the earlier one's is the one shown.
 (defn which-key-next (tables keys)
-  (if (nil? tables)
-      nil
-      (or (bindings (car tables) keys)
-          (which-key-next (cdr tables) keys))))
+  (reduce
+    (fn (found table)
+      (append found
+              (filter (fn (next)
+                        (not (find-index (fn (seen) (= (get seen :key) (get next :key)))
+                                         found)))
+                      (bindings table keys))))
+    nil
+    tables))
 
 ; Whether there is anything to list for a half-typed command: not for a
 ; key that is taken as it is (after `f`, or `"`), not while typing text,
 ; and after a count or an operator only if that was asked for.
 (defn which-key-wanted? (pending)
-  (let ((table (car (get pending :tables))))
+  ; The last of an editor's tables is its mode's.
+  (let ((table (last (get pending :tables))))
     (cond
       ((nil? pending) false)
       ((get pending :awaiting) false)
