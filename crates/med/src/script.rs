@@ -21,6 +21,9 @@
 //! (run "workspace.edit" "notes.md")    ; a command, with its argument
 //! (current-file)  (project-root)
 //! (open-file "src/main.rs" 12 1)       ; in a tab, at a line and column
+//! (open-scratch "notes" "text" save)   ; a tab of text that is no file
+//! (scratch-name)                       ; which, if it is the one up
+//! (modified?)                          ; has the tab up unsaved changes
 //! (focus-editor)
 //! (load "tree.lisp")                   ; another file, from beside this one
 //! (add-hook 'files-changed refresh)    ; be told of something: HOOKS
@@ -348,7 +351,22 @@ pub fn eval_from(source: String, window: &Window, cx: &mut Context<Workspace>) {
 /// Run a command of the user's for a workspace.
 pub fn run_command(function: Value, args: Args, window: &Window, cx: &mut Context<Workspace>) {
     start(window, cx, move |interp, cx| {
-        invoke(interp, cx, &function, &args)?;
+        invoke(interp, cx, &function, &[], &args)?;
+        Ok(None)
+    });
+}
+
+/// Give a program the text of its tab to write, `:w` having been typed
+/// there: the function is called with the text, as a command is.
+pub fn write_scratch(
+    function: Value,
+    text: String,
+    args: Args,
+    window: &Window,
+    cx: &mut Context<Workspace>,
+) {
+    start(window, cx, move |interp, cx| {
+        invoke(interp, cx, &function, &[Value::from(text)], &args)?;
         Ok(None)
     });
 }
@@ -433,20 +451,21 @@ pub fn keys_pending(pending: Value, window: &Window, cx: &mut Context<Workspace>
     run_hook(KEYS_PENDING, vec![pending], window, cx);
 }
 
-/// Call a command's function. While it runs, the names in [`INVOCATION`]
-/// say how it was invoked; a command that runs another gets them back
-/// afterwards.
+/// Call a command's function with `values`. While it runs, the names in
+/// [`INVOCATION`] say how it was invoked; a command that runs another gets
+/// them back afterwards.
 fn invoke(
     interp: &mut Interp,
     host: &mut dyn Any,
     function: &Value,
+    values: &[Value],
     args: &Args,
 ) -> Result<Value, Error> {
     let before = INVOCATION.map(|name| interp.global(name).cloned().unwrap_or(Value::Nil));
     for (name, value) in INVOCATION.iter().zip(invocation(args)) {
         interp.define(name, value);
     }
-    let result = interp.call(function, &[], host);
+    let result = interp.call(function, values, host);
     for (name, value) in INVOCATION.iter().zip(before) {
         interp.define(name, value);
     }
@@ -903,7 +922,7 @@ fn define_functions(interp: &mut Interp) {
         };
         // Another command of the user's: the interpreter is right here.
         if let Some(Handler::Script(function)) = commands.handler(&command) {
-            invoke(call.interp, call.host, &function, &invocation)?;
+            invoke(call.interp, call.host, &function, &[], &invocation)?;
             return Ok(Value::Nil);
         }
         if origin(cx).is_none() {
@@ -959,6 +978,66 @@ fn define_functions(interp: &mut Interp) {
             Some(opened) => Ok(Value::Bool(opened)),
             None => Err(failed("there is no window to open a file in")),
         }
+    });
+
+    // (open-scratch name [text [on-save]]): go to the tab of text called
+    // `name`, which is no file, or make one. Given text, that is what the
+    // tab has, as written; given a function, `:w` calls it with the text,
+    // as a command, and until then the text is unsaved. Without one there is nothing to
+    // lose, and nowhere to write it.
+    interp.define_native("open-scratch", Arity::between(1, 3), |call, args| {
+        let name = match args[0].as_str()? {
+            "" => return Err(failed("open-scratch: a tab needs a name")),
+            name => name.to_string(),
+        };
+        let text = match args.get(1) {
+            None | Some(Value::Nil) => None,
+            Some(text) => Some(text.as_str()?.to_string()),
+        };
+        let on_save = match args.get(2) {
+            None | Some(Value::Nil) => None,
+            Some(function @ (Value::Fn(_) | Value::Native(_))) => Some(function.clone()),
+            Some(other) => {
+                return Err(Error::new(
+                    ErrorKind::Type,
+                    format!("open-scratch: expected a function to write with, got {other}"),
+                ));
+            }
+        };
+        let cx = app(call)?;
+        let opened = in_workspace(cx, |workspace, window, cx| {
+            workspace.open_scratch(&name, text.as_deref(), on_save, window, cx)
+        });
+        match opened {
+            Some(()) => Ok(Value::from(name)),
+            None => Err(failed("there is no window to open a tab in")),
+        }
+    });
+
+    // (scratch-name): the name of the tab of text being edited, if it is
+    // one of `open-scratch`'s, or nil.
+    interp.define_native("scratch-name", 0, |call, _| {
+        let cx = app(call)?;
+        let name = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| {
+                let editor = workspace.active_editor()?.read(cx);
+                Some(editor.scratch.as_ref()?.name.clone())
+            };
+            origin.workspace.read_with(cx, read).ok().flatten()
+        });
+        Ok(name.map_or(Value::Nil, |name| Value::from(name.as_ref())))
+    });
+
+    // (modified?): whether the tab up has changes that are not written.
+    interp.define_native("modified?", 0, |call, _| {
+        let cx = app(call)?;
+        let dirty = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| {
+                Some(workspace.active_editor()?.read(cx).is_dirty())
+            };
+            origin.workspace.read_with(cx, read).ok().flatten()
+        });
+        Ok(Value::Bool(dirty.unwrap_or(false)))
     });
 
     // (focus-editor): give the keyboard back to the file being edited.

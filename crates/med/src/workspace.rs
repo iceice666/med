@@ -3,7 +3,7 @@
 
 use crate::commands::{Args, Commands, Handler, RunCommand};
 use crate::defaults::{self, InstallError};
-use crate::editor::{Editor, EditorEvent};
+use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::script;
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
@@ -259,9 +259,10 @@ impl Workspace {
         self.active = index.min(self.tabs.len() - 1);
         let editor = self.tabs[self.active].clone();
         editor.read(cx).focus_handle(cx).focus(window, cx);
-        let title = match &editor.read(cx).path {
-            Some(path) => format!("{} — med", self.relative(path)),
-            None => "med".to_string(),
+        let title = match (&editor.read(cx).scratch, &editor.read(cx).path) {
+            (Some(scratch), _) => format!("{} — med", scratch.name),
+            (None, Some(path)) => format!("{} — med", self.relative(path)),
+            (None, None) => "med".to_string(),
         };
         window.set_window_title(&title);
         self.editor_changed(window, cx);
@@ -400,6 +401,76 @@ impl Workspace {
         Some(editor)
     }
 
+    /// Go to the tab of a program's text called `name`, or make one. Given
+    /// `text`, that is what the tab has from now on, as written; given
+    /// `on_save`, that is what `:w` calls.
+    pub(crate) fn open_scratch(
+        &mut self,
+        name: &str,
+        text: Option<&str>,
+        on_save: Option<med_lisp::Value>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let found = self.tabs.iter().position(|tab| {
+            let scratch = tab.read(cx).scratch.as_ref();
+            scratch.is_some_and(|scratch| scratch.name == name)
+        });
+        let index = match found {
+            Some(index) => index,
+            None => {
+                let editor = cx.new(|cx| {
+                    let mut editor = Editor::new(None, "", None, cx);
+                    editor.scratch = Some(Scratch {
+                        name: SharedString::from(name.to_string()),
+                        on_save: None,
+                    });
+                    editor
+                });
+                self.add_tab(editor, window, cx);
+                self.active
+            }
+        };
+        let editor = self.tabs[index].clone();
+        editor.update(cx, |editor, cx| {
+            if let Some(on_save) = on_save
+                && let Some(scratch) = &mut editor.scratch
+            {
+                scratch.on_save = Some(on_save);
+            }
+            if let Some(text) = text {
+                editor.replace_text(text, cx);
+            }
+        });
+        self.activate(index, window, cx);
+    }
+
+    /// A file or directory was moved from `from` to `to`: the tabs that
+    /// had it, or something in it, have the new path.
+    pub(crate) fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        for tab in self.tabs.clone() {
+            let moved = tab.read(cx).path.as_deref().and_then(|path| {
+                let rest = path.strip_prefix(from).ok()?;
+                Some(match rest.as_os_str().is_empty() {
+                    true => to.to_path_buf(),
+                    false => to.join(rest),
+                })
+            });
+            if let Some(path) = moved {
+                tab.update(cx, |editor, cx| editor.set_path(path, cx));
+            }
+        }
+        for (path, _) in &mut self.jumps {
+            if let Ok(rest) = path.strip_prefix(from) {
+                *path = match rest.as_os_str().is_empty() {
+                    true => to.to_path_buf(),
+                    false => to.join(rest),
+                };
+            }
+        }
+        cx.notify();
+    }
+
     fn add_tab(&mut self, editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
         self._subscriptions
             .push(cx.subscribe_in(&editor, window, Self::on_editor_event));
@@ -441,10 +512,24 @@ impl Workspace {
         }
     }
 
-    fn save_active(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+    fn save_active(&mut self, args: &Args, window: &Window, cx: &mut Context<Self>) -> bool {
         let Some(editor) = self.active_editor().cloned() else {
             return false;
         };
+        // A program's text goes to the program, which says how it went.
+        if let Some(scratch) = &editor.read(cx).scratch {
+            let Some(on_save) = scratch.on_save.clone() else {
+                let message = format!("{} is no file, and has nowhere to be written", scratch.name);
+                self.set_message(message, cx);
+                return false;
+            };
+            // The text as it is now: by the time the program runs, `:wq`
+            // has closed the tab. Unsaved until the program gives the tab
+            // its text again.
+            let text = editor.read(cx).buf.text();
+            script::write_scratch(on_save, text, args.clone(), window, cx);
+            return true;
+        }
         match editor.update(cx, |editor, cx| editor.save(cx)) {
             Ok(()) => {
                 let editor = editor.read(cx);
@@ -1107,7 +1192,7 @@ pub(crate) fn register(commands: &mut Commands) {
                     editor.update(cx, |editor, cx| editor.set_path(path, cx));
                 }
             }
-            ws.save_active(window, cx);
+            ws.save_active(args, window, cx);
         }),
     );
     commands.register(
@@ -1116,7 +1201,8 @@ pub(crate) fn register(commands: &mut Commands) {
         W(|ws, _, _, cx| {
             let mut saved = 0;
             for tab in ws.tabs.clone() {
-                if tab.read(cx).is_dirty() && tab.update(cx, |e, cx| e.save(cx)).is_ok() {
+                let file = tab.read(cx).scratch.is_none();
+                if file && tab.read(cx).is_dirty() && tab.update(cx, |e, cx| e.save(cx)).is_ok() {
                     saved += 1;
                 }
             }
@@ -1154,8 +1240,8 @@ pub(crate) fn register(commands: &mut Commands) {
     commands.register(
         "workspace.save_and_quit",
         "Write the file, then close its tab",
-        W(|ws, _, window, cx| {
-            if ws.save_active(window, cx) {
+        W(|ws, args, window, cx| {
+            if ws.save_active(args, window, cx) {
                 ws.close_tab(ws.active, true, window, cx);
                 if ws.tabs.is_empty() {
                     cx.quit();

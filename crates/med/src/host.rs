@@ -3,9 +3,16 @@
 //!
 //! ```lisp
 //! (list-dir path)                 ; ((:name :path :dir)...), directories first
+//! (list-dir path true)            ; and what git ignores, too
 //! (path-name "/a/b.rs")           ; "b.rs"
 //! (path-parent "/a/b.rs")         ; "/a", and nil when there is none
 //! (path-join "/a" "b.rs")         ; "/a/b.rs"
+//!
+//! (file-exists? path)             ; is there anything there
+//! (dir? path)                     ; a directory, or a link to one
+//! (rename-file from to)           ; nil, or what went wrong
+//! (delete-file path)              ; to the trash: nil, or what went wrong
+//! (make-dir path)                 ; and the ones above it
 //!
 //! (walk-files (fn (files) ...))   ; every file, as a path from the root
 //! (fuzzy "mnrs" files 100)        ; the ones a few letters mean, best first
@@ -14,6 +21,10 @@
 //! (git 'status (fn (files problem) ...))
 //! (git 'commit "message" (fn (output problem) ...))
 //! ```
+//!
+//! A path that does not start at the top is the project's. `rename-file`
+//! never puts one file in the place of another, and the tabs that had the
+//! file, or one in the directory, go with it.
 //!
 //! What takes time is given a function to call when it is done: walking
 //! the project, searching it, and everything git does. A git function is
@@ -147,10 +158,14 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         Ok(path_value(&path))
     });
 
-    // (list-dir path): what is in a directory, directories first, without
-    // what git ignores. Nothing, if it cannot be read.
-    interp.define_native("list-dir", 1, |_, args| {
-        let entries = search::list_dir(Path::new(args[0].as_str()?));
+    // (list-dir path [all]): what is in a directory, directories first,
+    // without what git ignores unless `all`. Nothing, if it cannot be read.
+    interp.define_native("list-dir", Arity::between(1, 2), |_, args| {
+        let dir = Path::new(args[0].as_str()?);
+        let entries = match args.get(1).is_some_and(Value::is_truthy) {
+            true => search::list_dir_all(dir),
+            false => search::list_dir(dir),
+        };
         Ok(Value::list(entries.into_iter().map(|(path, is_dir)| {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             record([
@@ -159,6 +174,63 @@ pub(crate) fn define_functions(interp: &mut Interp) {
                 ("dir", Value::Bool(is_dir)),
             ])
         })))
+    });
+
+    // ---- changing what is on disk
+
+    // (file-exists? path): whether there is a file, a directory or a link
+    // there, even one to nowhere.
+    interp.define_native("file-exists?", 1, |call, args| {
+        let path = on_disk("file-exists?", &args[0], script::app(call)?)?;
+        Ok(Value::Bool(path.symlink_metadata().is_ok()))
+    });
+
+    // (dir? path): whether there is a directory there, or a link to one.
+    interp.define_native("dir?", 1, |call, args| {
+        let path = on_disk("dir?", &args[0], script::app(call)?)?;
+        Ok(Value::Bool(path.is_dir()))
+    });
+
+    // (rename-file from to): move a file or a directory. Nil once it is
+    // done, or else what went wrong, the place being taken among it.
+    interp.define_native("rename-file", 2, |call, args| {
+        let cx = script::app(call)?;
+        let from = on_disk("rename-file", &args[0], cx)?;
+        let to = on_disk("rename-file", &args[1], cx)?;
+        let (from, to) = (canonical(&from), canonical(&to));
+        match rename(&from, &to) {
+            Ok(()) => {
+                script::in_workspace(cx, |workspace, _, cx| workspace.renamed(&from, &to, cx));
+                Ok(Value::Nil)
+            }
+            Err(problem) => Ok(Value::from(problem)),
+        }
+    });
+
+    // (delete-file path): put a file or a directory in the trash. Nil, or
+    // what went wrong.
+    interp.define_native("delete-file", 1, |call, args| {
+        let path = on_disk("delete-file", &args[0], script::app(call)?)?;
+        if path.symlink_metadata().is_err() {
+            return Ok(Value::from(format!(
+                "{}: there is nothing there",
+                path.display()
+            )));
+        }
+        match to_trash(&path) {
+            Ok(()) => Ok(Value::Nil),
+            Err(error) => Ok(Value::from(format!("{}: {error}", path.display()))),
+        }
+    });
+
+    // (make-dir path): a directory, and the ones it is in. Nil, or what
+    // went wrong.
+    interp.define_native("make-dir", 1, |call, args| {
+        let path = on_disk("make-dir", &args[0], script::app(call)?)?;
+        match std::fs::create_dir_all(&path) {
+            Ok(()) => Ok(Value::Nil),
+            Err(error) => Ok(Value::from(format!("{}: {error}", path.display()))),
+        }
     });
 
     // (walk-files function): every file of the project that git would not
@@ -247,6 +319,83 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         );
         Ok(Value::Nil)
     });
+}
+
+// ---- files -------------------------------------------------------------
+
+/// A path a program gave: from the top, or else the project's.
+fn on_disk(name: &str, value: &Value, cx: &App) -> Result<PathBuf, Error> {
+    let path = PathBuf::from(value.as_str()?);
+    if path.as_os_str().is_empty() {
+        return Err(failed(format!("{name}: an empty path is nowhere")));
+    }
+    match path.is_absolute() {
+        true => Ok(path),
+        false => Ok(project(name, cx)?.join(path)),
+    }
+}
+
+/// `path`, with the directory it is in as tabs have it: a link at the end
+/// is left as it is, for it is what moves.
+fn canonical(path: &Path) -> PathBuf {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return path.to_path_buf();
+    };
+    match parent.canonicalize() {
+        Ok(parent) => parent.join(name),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Move `from` to `to`, unless something is there already. On a disk that
+/// does not tell `a` from `A`, `to` may be `from` by another name.
+fn rename(from: &Path, to: &Path) -> Result<(), String> {
+    let source = from
+        .symlink_metadata()
+        .map_err(|error| format!("{}: {error}", from.display()))?;
+    if let Ok(there) = to.symlink_metadata()
+        && !same_file(&source, &there)
+    {
+        return Err(format!(
+            "{}: there is something there already",
+            to.display()
+        ));
+    }
+    std::fs::rename(from, to)
+        .map_err(|error| format!("{} → {}: {error}", from.display(), to.display()))
+}
+
+/// Put `path` in the trash, by the way that asks for no more permission.
+#[cfg(not(test))]
+fn to_trash(path: &Path) -> Result<(), trash::Error> {
+    #[allow(unused_mut)]
+    let mut context = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
+        context.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    context.delete(path)
+}
+
+/// Tests would fill the trash of whoever runs them: theirs are gone.
+#[cfg(test)]
+fn to_trash(path: &Path) -> Result<(), std::io::Error> {
+    match path.symlink_metadata()?.is_dir() {
+        true => std::fs::remove_dir_all(path),
+        false => std::fs::remove_file(path),
+    }
+}
+
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    false
 }
 
 // ---- git ---------------------------------------------------------------

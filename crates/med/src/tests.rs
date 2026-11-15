@@ -2596,3 +2596,60 @@ fn flash_finds_selects_nodes_and_works_elsewhere(cx: &mut TestAppContext) {
     assert_eq!(text(&ws, cx), "fn main() {\n    add(one, );\n}\n");
     assert_eq!(cursor(&ws, cx), (1, 1));
 }
+
+#[gpui::test]
+fn programs_change_what_is_on_disk(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        (".gitignore", "ignored.txt\n"),
+        ("ignored.txt", "i\n"),
+    ]);
+    let (_, cx) = open(&project, &[], cx);
+    let at = |name: &str| format!("\"{}\"", project.path(name).display());
+
+    // Nothing is put in the place of another file.
+    let said = lisp(
+        &format!("(rename-file {} {})", at("a.txt"), at("b.txt")),
+        cx,
+    );
+    assert!(said.contains("there is something there already"), "{said}");
+    assert_eq!(
+        (project.read("a.txt"), project.read("b.txt")),
+        ("a\n".into(), "b\n".into())
+    );
+    assert_eq!(
+        lisp(
+            &format!("(rename-file {} {})", at("a.txt"), at("c.txt")),
+            cx
+        ),
+        "nil"
+    );
+    assert_eq!(project.read("c.txt"), "a\n");
+    assert_eq!(
+        lisp(&format!("(file-exists? {})", at("a.txt")), cx),
+        "false"
+    );
+
+    assert_eq!(lisp(&format!("(make-dir {})", at("d/e")), cx), "nil");
+    assert_eq!(lisp(&format!("(dir? {})", at("d/e")), cx), "true");
+    assert_eq!(lisp(&format!("(dir? {})", at("c.txt")), cx), "false");
+    assert_eq!(lisp(&format!("(delete-file {})", at("d")), cx), "nil");
+    assert!(!project.path("d").exists());
+    let said = lisp(&format!("(delete-file {})", at("d")), cx);
+    assert!(said.contains("there is nothing there"), "{said}");
+
+    // What git ignores is listed only when asked for.
+    let names = |all: &str, cx: &mut VisualTestContext| {
+        let dir = format!("\"{}\"", project.0.display());
+        lisp(
+            &format!("(map (fn (e) (get e :name)) (list-dir {dir} {all}))"),
+            cx,
+        )
+    };
+    assert_eq!(names("false", cx), r#"(".gitignore" "b.txt" "c.txt")"#);
+    assert_eq!(
+        names("true", cx),
+        r#"(".gitignore" "b.txt" "c.txt" "ignored.txt")"#
+    );
+}

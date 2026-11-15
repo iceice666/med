@@ -40,11 +40,32 @@ pub fn list_dir(dir: &Path) -> Vec<(PathBuf, bool)> {
             (entry.into_path(), is_dir)
         })
         .collect();
+    sort_entries(&mut children);
+    children
+}
+
+/// Everything in `dir`, what git ignores too, in the order of [`list_dir`].
+pub fn list_dir_all(dir: &Path) -> Vec<(PathBuf, bool)> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut children: Vec<(PathBuf, bool)> = read
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let path = entry.path();
+            let is_dir = path.is_dir();
+            (path, is_dir)
+        })
+        .collect();
+    sort_entries(&mut children);
+    children
+}
+
+fn sort_entries(children: &mut [(PathBuf, bool)]) {
     children.sort_by_cached_key(|(path, is_dir)| {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         (!is_dir, name.to_lowercase())
     });
-    children
 }
 
 /// All files under `root` that git would not ignore, as relative paths.

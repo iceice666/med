@@ -247,7 +247,17 @@ pub struct Editor {
     signature_task: Option<Task<()>>,
     drag_anchor: Option<usize>,
     mtime: Option<SystemTime>,
+    /// A tab that a program made, with no file behind it.
+    pub scratch: Option<Scratch>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A tab of text that is no file: a program's, by the name it gave it.
+pub struct Scratch {
+    pub name: SharedString,
+    /// What a program does with the text when it is written (`:w`); with
+    /// nothing to do, the text is never unsaved.
+    pub on_save: Option<med_lisp::Value>,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -461,6 +471,7 @@ impl Editor {
             signature_task: None,
             drag_anchor: None,
             mtime: None,
+            scratch: None,
             _subscriptions: Vec::new(),
         };
         if let Some(lsp) = this.lsp.clone() {
@@ -509,11 +520,16 @@ impl Editor {
             lsp.update(cx, |store, cx| store.open(&path, lang, text, cx));
         }
         self.path = Some(path);
+        // Written under a name, a program's text is a file from then on.
+        self.scratch = None;
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
 
     pub fn title(&self) -> String {
+        if let Some(scratch) = &self.scratch {
+            return scratch.name.to_string();
+        }
         match &self.path {
             Some(path) => path
                 .file_name()
@@ -523,8 +539,25 @@ impl Editor {
         }
     }
 
+    /// Whether there is anything to lose: a program's text that it does not
+    /// write anywhere is never unsaved.
     pub fn is_dirty(&self) -> bool {
-        self.buf.is_dirty()
+        let nowhere = self.scratch.as_ref().is_some_and(|s| s.on_save.is_none());
+        self.buf.is_dirty() && !nowhere
+    }
+
+    /// Put `text` in place of what is there, as written: a program's
+    /// scratch text, made again. Text that was never changed is replaced
+    /// for good, so that there is no undoing back to none.
+    pub fn replace_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.buf.version() == 0 {
+            self.buf = Buffer::new(text);
+        } else {
+            self.buf.set_text(text);
+            self.buf.mark_saved();
+        }
+        self.vim.set_cursor(self.vim.cursor, &self.buf);
+        self.after_change(cx);
     }
 
     pub fn language_name(&self) -> &'static str {
