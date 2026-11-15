@@ -10,7 +10,7 @@
 
 use crate::command::{Action, Await, Builtin, Cmd, InsertCmd};
 use crate::ex::{self, RangeCtx};
-use crate::flash::{Flash, FlashMatch};
+use crate::flash::{self, Flash, FlashMatch, FlashView, Kind};
 use crate::keymap::{Keymap, Lookup, MapMode, format_keys, parse_keys};
 use crate::motion::{self, Find, WS, class, first_non_blank, leading_ws};
 use crate::textobj::{self, ObjRange};
@@ -23,6 +23,10 @@ const MAX_MAPPED_KEYS: usize = 1000;
 
 /// Keys one `@` runs before a macro that calls itself is given up on.
 const MAX_MACRO_KEYS: usize = 100_000;
+
+/// The mark for where the cursor was when an operator went elsewhere to
+/// work (`motion.flash_remote`): not a name that can be typed.
+const REMOTE_ORIGIN: char = '\0';
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -517,6 +521,15 @@ struct BlockInsert {
     pad: bool,
 }
 
+/// Where a find on screen could go next, to mark until another key than
+/// a find's is pressed.
+struct Found {
+    till: bool,
+    matches: Vec<FlashMatch>,
+    /// The text it looked through from the cursor on, `start..end`.
+    range: (usize, usize),
+}
+
 /// One step of `select.expand`, to step back from.
 struct Expansion {
     from: (usize, usize, Mode),
@@ -559,12 +572,33 @@ pub struct Vim {
     macro_request: Option<Vec<Key>>,
     /// The keys being run are a macro's: they are not recorded again.
     playing: bool,
+    /// What the last find on screen left marked.
+    found: Option<Found>,
+    /// The key being run is the one that left it.
+    found_now: bool,
 }
 
 impl Default for Vim {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The text a find looks through, `start..end`: the cursor's `line`, or
+/// every line on screen.
+fn find_range(
+    find: Find,
+    buf: &Buffer,
+    viewport: Viewport,
+    line: (usize, usize),
+) -> (usize, usize) {
+    if !find.screen {
+        return line;
+    }
+    let last = buf.last_line();
+    let top = viewport.top.min(last);
+    let bottom = (top + viewport.height.saturating_sub(1)).min(last);
+    (buf.line_start(top), buf.line_end(bottom))
 }
 
 fn minmax(a: usize, b: usize) -> (usize, usize) {
@@ -601,6 +635,8 @@ impl Vim {
             record_mark: 0,
             macro_request: None,
             playing: false,
+            found: None,
+            found_now: false,
         }
     }
 
@@ -646,11 +682,25 @@ impl Vim {
         })
     }
 
-    /// The places on screen `motion.flash` has found so far, in the order
-    /// of the text, for a host to mark; `None` when it is not looking.
-    pub fn flash(&self) -> Option<&[FlashMatch]> {
-        let flash = self.pending.flash.as_ref()?;
-        Some(&flash.matches)
+    /// What there is to mark on screen, for a host to draw: the places
+    /// `motion.flash` has found so far, the syntax nodes `select.flash`
+    /// chooses from, or where a find on screen could go next. `None` when
+    /// none of them is going on.
+    pub fn flash(&self) -> Option<FlashView<'_>> {
+        if let Some(flash) = &self.pending.flash {
+            let nodes = flash.kind == Kind::Nodes;
+            return Some(FlashView {
+                matches: &flash.matches,
+                dim: if nodes { (0, 0) } else { (0, usize::MAX) },
+                nodes,
+            });
+        }
+        let found = self.found.as_ref()?;
+        Some(FlashView {
+            matches: &found.matches,
+            dim: found.range,
+            nodes: false,
+        })
     }
 
     /// The register keys are being recorded into, after `q`.
@@ -679,6 +729,7 @@ impl Vim {
         if version == self.marks_version {
             return;
         }
+        self.found = None;
         let edits = buf.edits();
         // Each edit is one version; the oldest still listed came after this.
         let listed_from = version.saturating_sub(edits.len() as u64);
@@ -759,6 +810,8 @@ impl Vim {
         self.surround = None;
         self.block_insert = None;
         self.pending = Pending::default();
+        self.found = None;
+        self.marks.remove(&REMOTE_ORIGIN);
         self.clamp(buf);
     }
 
@@ -788,6 +841,8 @@ impl Vim {
         self.cursor = cursor;
         self.goal_col = None;
         self.pending = Pending::default();
+        self.found = None;
+        self.marks.remove(&REMOTE_ORIGIN);
         self.clamp(buf);
     }
 
@@ -950,6 +1005,12 @@ impl Vim {
         }
 
         let settled = self.pending.is_idle() && !matches!(self.mode, Mode::Insert | Mode::Command);
+        // An operator that went elsewhere to work is done, or given up.
+        if settled && let Some(origin) = self.marks.remove(&REMOTE_ORIGIN) {
+            self.cursor = origin;
+            self.goal_col = None;
+            self.clamp(cx.buf);
+        }
         if settled && !self.replaying {
             let keys = std::mem::take(&mut self.keys);
             if self.cmd_changed && !self.no_repeat && self.cmd_start_mode == Mode::Normal {
@@ -959,6 +1020,15 @@ impl Vim {
     }
 
     fn step(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        self.found_now = false;
+        self.step_key(key, cx, fx);
+        // What a find marked lasts until a key that is not a find's.
+        if !self.found_now && self.pending.is_idle() {
+            self.found = None;
+        }
+    }
+
+    fn step_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         match self.mode {
             Mode::Command => return self.cmdline_key(key, cx, fx),
             // Pasted text is not typing: it is never mapped.
@@ -1108,7 +1178,30 @@ impl Vim {
             // The count means nothing to it; an operator waits for where
             // it goes.
             Action::Builtin(Builtin::Cmd(Cmd::Flash)) => {
-                self.pending.flash = Some(Flash::new(self.pending.typed.len()));
+                self.pending.flash = Some(Flash::new(Kind::Text, self.pending.typed.len()));
+            }
+            // Without an operator there is nothing to come back from.
+            Action::Builtin(Builtin::Cmd(Cmd::FlashRemote)) => {
+                let kind = match self.pending.op {
+                    Some(_) => Kind::Remote,
+                    None => Kind::Text,
+                };
+                self.pending.flash = Some(Flash::new(kind, self.pending.typed.len()));
+            }
+            Action::Builtin(Builtin::Cmd(Cmd::FlashNodes)) => self.flash_nodes(cx),
+            // The key of a find on screen again, while what it found is
+            // marked: on to the next, or with the key that looks the other
+            // way, back.
+            Action::Builtin(Builtin::Await(Await::Find {
+                forward,
+                till,
+                screen: true,
+            })) if self.pending.op.is_none()
+                && self.found.as_ref().is_some_and(|found| found.till == till) =>
+            {
+                cx.buf.begin(self.cursor);
+                self.run_motion(Motion::RepeatFind { reverse: !forward }, cx, fx);
+                cx.buf.end();
             }
             Action::Builtin(builtin) => {
                 cx.buf.begin(self.cursor);
@@ -1138,8 +1231,20 @@ impl Vim {
     fn argument_key(&mut self, awaiting: Await, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         match (awaiting, key) {
             (Await::Register, Key::Char(c)) => self.pending.register = Some(c),
-            (Await::Find { forward, till }, Key::Char(c)) => {
-                let find = Find { c, forward, till };
+            (
+                Await::Find {
+                    forward,
+                    till,
+                    screen,
+                },
+                Key::Char(c),
+            ) => {
+                let find = Find {
+                    c,
+                    forward,
+                    till,
+                    screen,
+                };
                 cx.shared.last_find = Some(find);
                 self.run_motion(Motion::Find(find), cx, fx);
             }
@@ -1202,18 +1307,50 @@ impl Vim {
         }
     }
 
+    /// `select.flash`: label the syntax nodes around the cursor, or around
+    /// what is selected, from the smallest out.
+    fn flash_nodes(&mut self, cx: &mut Ctx<'_>) {
+        let buf = &*cx.buf;
+        let (mut start, mut end) = match self.selection(buf) {
+            Some((start, end)) => (start, end.min(buf.max_offset())),
+            None => (self.cursor, self.cursor + 1),
+        };
+        let Some(syntax) = cx.syntax.as_deref_mut() else {
+            self.message = Some("No syntax tree for this file".to_string());
+            self.reset_pending();
+            return;
+        };
+        let mut nodes = Vec::new();
+        while let Some(node) = syntax.enclosing(buf, start, end) {
+            // Each holds the one before and more: it ends at the root.
+            if node.0 > start || node.1 < end || node == (start, end) {
+                break;
+            }
+            nodes.push(node);
+            (start, end) = node;
+        }
+        if nodes.is_empty() {
+            self.reset_pending();
+            return;
+        }
+        self.pending.flash = Some(Flash::nodes(&nodes, self.pending.typed.len()));
+    }
+
     /// A key while `motion.flash` looks for text. A label goes to its
     /// place and `enter` to the first place after the cursor, as a motion:
     /// with an operator, onto it. Any other character is more of the text,
     /// backspace takes the last one back, and escape, or text that is
-    /// nowhere on screen, gives up.
+    /// nowhere on screen, gives up. With nodes to choose from there is no
+    /// text to type: a key is a label, `enter` for the smallest, or gives
+    /// up.
     fn flash_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         let Some(mut flash) = self.pending.flash.take() else {
             return;
         };
+        let text = flash.kind != Kind::Nodes;
         match key {
-            Key::Char(c) if flash.labelled(c).is_none() => flash.pattern.push(c),
-            Key::Backspace | Key::Ctrl('h') if !flash.pattern.is_empty() => {
+            Key::Char(c) if text && flash.labelled(c).is_none() => flash.pattern.push(c),
+            Key::Backspace | Key::Ctrl('h') if text && !flash.pattern.is_empty() => {
                 flash.pattern.pop();
             }
             key => {
@@ -1223,11 +1360,7 @@ impl Vim {
                     _ => None,
                 };
                 match to {
-                    Some(to) => {
-                        cx.buf.begin(self.cursor);
-                        self.run_motion(Motion::Flash(to), cx, fx);
-                        cx.buf.end();
-                    }
+                    Some(to) => self.flash_to(flash.kind, to, cx, fx),
                     None => self.reset_pending(),
                 }
                 return;
@@ -1244,6 +1377,36 @@ impl Vim {
         let pattern = flash.pattern.chars().map(Key::Char);
         self.pending.typed.extend(pattern);
         self.pending.flash = Some(flash);
+    }
+
+    /// The place was chosen: go there, or select the node.
+    fn flash_to(&mut self, kind: Kind, to: FlashMatch, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        match kind {
+            // The operator goes on waiting, there; `drive` brings the
+            // cursor back once it is done. The mark moves with the text.
+            Kind::Remote if self.pending.op.is_some() => {
+                self.marks.entry(REMOTE_ORIGIN).or_insert(self.cursor);
+                self.cursor = to.start;
+                self.goal_col = None;
+            }
+            Kind::Text | Kind::Remote => {
+                cx.buf.begin(self.cursor);
+                self.run_motion(Motion::Flash(to.start), cx, fx);
+                cx.buf.end();
+            }
+            Kind::Nodes => {
+                cx.buf.begin(self.cursor);
+                match self.pending.op {
+                    Some(op) => {
+                        let end = to.end.min(cx.buf.max_offset());
+                        self.apply_operator(op, Target::Chars(to.start, end), cx);
+                    }
+                    None => self.select_node(to.start, to.end),
+                }
+                self.reset_pending();
+                cx.buf.end();
+            }
+        }
     }
 
     // ---- macros --------------------------------------------------------
@@ -1495,7 +1658,8 @@ impl Vim {
                 out(fnb(row), false, true)
             }
             Motion::Find(find) => {
-                let pos = motion::find_char(buf, cur, find, n, false)?;
+                let within = find_range(find, buf, cx.viewport, (ls, le));
+                let pos = motion::find_char(buf, cur, find, n, false, within)?;
                 out(pos, find.forward, false)
             }
             Motion::RepeatFind { reverse } => {
@@ -1503,7 +1667,8 @@ impl Vim {
                 if reverse {
                     find.forward = !find.forward;
                 }
-                let pos = motion::find_char(buf, cur, find, n, true)?;
+                let within = find_range(find, buf, cx.viewport, (ls, le));
+                let pos = motion::find_char(buf, cur, find, n, true, within)?;
                 out(pos, find.forward, false)
             }
             Motion::MatchPair => out(motion::match_pair(buf, cur)?, true, false),
@@ -1676,9 +1841,36 @@ impl Vim {
                 if let Some(lines) = out.scroll {
                     fx.push(Effect::Scroll(Scroll::Lines(lines)));
                 }
+                self.mark_found(motion, cx);
             }
         }
         self.reset_pending();
+    }
+
+    /// After a find on screen, mark where it could go next: every such
+    /// character from the cursor on, the way the find first looked.
+    fn mark_found(&mut self, motion: Motion, cx: &Ctx<'_>) {
+        let find = match motion {
+            Motion::Find(find) => Some(find),
+            Motion::RepeatFind { .. } => cx.shared.last_find,
+            _ => None,
+        };
+        let Some(find) = find.filter(|find| find.screen) else {
+            return;
+        };
+        let buf = &*cx.buf;
+        let (start, end) = find_range(find, buf, cx.viewport, (0, 0));
+        let range = if find.forward {
+            ((self.cursor + 1).min(end), end)
+        } else {
+            (start, self.cursor.max(start))
+        };
+        self.found = Some(Found {
+            till: find.till,
+            matches: flash::occurrences(buf, find.c, range),
+            range,
+        });
+        self.found_now = true;
     }
 
     fn motion_target(&self, motion: Motion, out: &MotionOut, buf: &Buffer) -> Target {
@@ -2065,6 +2257,12 @@ impl Vim {
         let Some((start, end)) = syntax.enclosing(buf, start, end) else {
             return;
         };
+        self.select_node(start, end);
+    }
+
+    /// Select the syntax node `start..end`, as a step `select.shrink`
+    /// leads back from.
+    fn select_node(&mut self, start: usize, end: usize) {
         // Steps back only lead from here if this is where they led to.
         let here = (self.anchor, self.cursor);
         if self.expansions.last().is_some_and(|last| last.to != here) || !self.mode.is_visual() {
@@ -2234,7 +2432,7 @@ impl Vim {
             Cmd::Expand => self.expand_selection(cx),
             Cmd::Shrink => self.shrink_selection(),
             // `exec` runs these itself: they keep something pending.
-            Cmd::Record | Cmd::Surround | Cmd::Flash => {}
+            Cmd::Record | Cmd::Surround | Cmd::Flash | Cmd::FlashRemote | Cmd::FlashNodes => {}
             Cmd::SwapEnds => {
                 if visual {
                     std::mem::swap(&mut self.anchor, &mut self.cursor);

@@ -2268,7 +2268,7 @@ fn main() {
     );
     cx.simulate_keystrokes("escape");
     assert_eq!(eval_in(&ws, "(set-option 'auto-pairs false)", cx), "nil");
-    cx.simulate_keystrokes("shift-s");
+    cx.simulate_keystrokes("c c");
     cx.simulate_input("(");
     cx.simulate_keystrokes("escape");
     assert!(text(&ws, cx).ends_with("(\n}\n"));
@@ -2398,7 +2398,13 @@ fn flash_goes_to_text_on_screen(cx: &mut TestAppContext) {
         ws.read_with(cx, |ws, cx| {
             let editor = ws.active_editor().unwrap().read(cx);
             let found = editor.vim.flash()?;
-            Some(found.iter().filter_map(|m| m.label).collect::<String>())
+            Some(
+                found
+                    .matches
+                    .iter()
+                    .filter_map(|m| m.label)
+                    .collect::<String>(),
+            )
         })
     };
     lisp(
@@ -2444,4 +2450,76 @@ fn flash_goes_to_text_on_screen(cx: &mut TestAppContext) {
     );
     cx.simulate_keystrokes("g s t w enter");
     assert_eq!(cursor(&ws, cx), (1, 8));
+}
+
+#[gpui::test]
+fn flash_finds_selects_nodes_and_works_elsewhere(cx: &mut TestAppContext) {
+    let source = "fn main() {\n    add(one, two);\n}\n";
+    let project = Project::new(&[("a.rs", source)]);
+    let (ws, cx) = open(&project, &["a.rs"], cx);
+    // What is marked: where each place starts and ends, and its label.
+    let marked = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            let view = editor.vim.flash()?;
+            let places = view.matches.iter().map(|m| (m.start, m.end, m.label));
+            Some((places.collect::<Vec<_>>(), view.dim, view.nodes))
+        })
+    };
+
+    // `f` looks on the lines below as well, and marks where it could go
+    // next; its key goes there, `F` back.
+    cx.simulate_keystrokes("f o");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 9));
+    assert_eq!(marked(cx), Some((vec![(27, 28, None)], (21, 32), false)));
+    cx.simulate_keystrokes("f");
+    assert_eq!(cursor(&ws, cx), (2, 16));
+    cx.simulate_keystrokes("shift-f");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 9));
+    cx.simulate_keystrokes("l h");
+    assert_eq!(marked(cx), None);
+
+    // `S`: the syntax nodes around the cursor, from the name out, with
+    // their labels drawn beside them.
+    cx.simulate_keystrokes("shift-s");
+    cx.run_until_parked();
+    let (nodes, dim, in_text) = marked(cx).expect("the nodes are labelled");
+    assert_eq!((dim, in_text), ((0, 0), true));
+    assert_eq!(
+        nodes[..3],
+        [
+            (20, 23, Some('a')),
+            (19, 29, Some('s')),
+            (16, 29, Some('d'))
+        ]
+    );
+    cx.simulate_keystrokes("s");
+    assert_eq!(mode(&ws, cx), Mode::Visual);
+    let selected = ws.read_with(cx, |ws, cx| {
+        let editor = ws.active_editor().unwrap().read(cx);
+        editor.vim.selection(&editor.buf)
+    });
+    assert_eq!(selected, Some((19, 29)));
+    cx.simulate_keystrokes("escape g g");
+
+    // After an operator, the node is what it acts on.
+    cx.simulate_keystrokes("f o d shift-s a");
+    assert_eq!(text(&ws, cx), "fn main() {\n    add(, two);\n}\n");
+    cx.simulate_keystrokes("u g g");
+
+    // `r` after an operator: it goes to work where the text is, and the
+    // cursor comes back.
+    cx.simulate_keystrokes("d r t w");
+    cx.run_until_parked();
+    assert_eq!(
+        marked(cx).map(|(places, ..)| places),
+        Some(vec![(25, 27, Some('a'))])
+    );
+    cx.simulate_keystrokes("a");
+    assert_eq!(cursor(&ws, cx), (2, 14));
+    cx.simulate_keystrokes("i w");
+    assert_eq!(text(&ws, cx), "fn main() {\n    add(one, );\n}\n");
+    assert_eq!(cursor(&ws, cx), (1, 1));
 }

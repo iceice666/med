@@ -146,19 +146,21 @@ pub struct Find {
     pub c: char,
     pub forward: bool,
     pub till: bool,
+    /// Look on every line on screen, not only on the cursor's.
+    pub screen: bool,
 }
 
-/// Find the `count`-th `find.c` on the cursor's line. `repeat` is set for
-/// `;`/`,`, where a `t` must skip the char it is already sitting next to.
+/// Find the `count`-th `find.c` from the cursor within `ls..le`, the
+/// cursor's line or more. `repeat` is set for `;`/`,`, where a `t` must
+/// skip the char it is already sitting next to.
 pub fn find_char(
     buf: &Buffer,
     cur: usize,
     find: Find,
     count: usize,
     repeat: bool,
+    (ls, le): (usize, usize),
 ) -> Option<usize> {
-    let line = buf.line_of(cur);
-    let (ls, le) = (buf.line_start(line), buf.line_end(line));
     let skip = if find.till && repeat { 2 } else { 1 };
     let mut remaining = count.max(1);
     if find.forward {

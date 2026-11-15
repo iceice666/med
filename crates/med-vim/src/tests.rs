@@ -956,19 +956,36 @@ fn expands_and_shrinks_the_selection() {
     );
 }
 
-/// `motion.flash` on the keys med gives it: `s`, and `z` after an operator.
+/// What flash does, on the keys med gives it: `s`, and `z` after an
+/// operator, to go to text; `S` for a syntax node; `r` after an operator
+/// for it to work elsewhere; and `f` `F` `t` `T` on every line on screen.
+fn bind_flash(h: &mut Harness) {
+    let keymap = &mut h.shared.keymap;
+    for mode in [MapMode::Normal, MapMode::Visual] {
+        keymap.bind(mode, "s", "motion.flash");
+    }
+    keymap.bind(MapMode::Operator, "z", "motion.flash");
+    keymap.bind(MapMode::Operator, "r", "motion.flash_remote");
+    for mode in [MapMode::Normal, MapMode::Operator] {
+        keymap.bind(mode, "S", "select.flash");
+    }
+    for mode in [MapMode::Normal, MapMode::Visual, MapMode::Operator] {
+        keymap.bind(mode, "f", "motion.flash_find_forward");
+        keymap.bind(mode, "F", "motion.flash_find_backward");
+        keymap.bind(mode, "t", "motion.flash_till_forward");
+        keymap.bind(mode, "T", "motion.flash_till_backward");
+    }
+}
+
 fn flash_harness(text: &str) -> Harness {
     let mut h = Harness::new(text);
-    for mode in [MapMode::Normal, MapMode::Visual] {
-        h.shared.keymap.bind(mode, "s", "motion.flash");
-    }
-    h.shared.keymap.bind(MapMode::Operator, "z", "motion.flash");
+    bind_flash(&mut h);
     h
 }
 
 fn flash_labels(h: &Harness) -> Vec<(usize, Option<char>)> {
     let found = h.vim.flash().expect("flash is looking for text");
-    found.iter().map(|m| (m.start, m.label)).collect()
+    found.matches.iter().map(|m| (m.start, m.label)).collect()
 }
 
 #[test]
@@ -1062,4 +1079,155 @@ fn flash_is_a_motion() {
 
     // Unbound, `s` is vim's own.
     check("|abc", "sx<esc>", "|xbc");
+}
+
+#[test]
+fn finds_on_every_line_on_screen() {
+    let mut h = flash_harness("|ab xb\ncb db\n");
+    assert_eq!(h.keys("fb").state(), "a|b xb\ncb db");
+    assert!(!h.vim.has_pending());
+    // Where it could go next is marked, and the text it looked through
+    // from here on is what a host dims.
+    let view = h.vim.flash().expect("the find left its marks");
+    assert_eq!(flash_labels(&h), [(4, None), (7, None), (10, None)]);
+    assert_eq!((view.dim, view.nodes), ((2, 11), false));
+
+    // Its key again goes on, onto the next line; the key that looks the
+    // other way goes back.
+    assert_eq!(h.keys("f").state(), "ab x|b\ncb db");
+    assert_eq!(h.keys("f").state(), "ab xb\nc|b db");
+    assert_eq!(flash_labels(&h), [(10, None)]);
+    assert_eq!(h.keys("F").state(), "ab x|b\ncb db");
+    assert_eq!(flash_labels(&h), [(7, None), (10, None)]);
+    // `;` and `,` do the same, and a count is how many to go on by.
+    assert_eq!(h.keys(";").state(), "ab xb\nc|b db");
+    assert_eq!(h.keys(",").state(), "ab x|b\ncb db");
+    assert_eq!(h.keys("2f").state(), "ab xb\ncb d|b");
+    // Any other key and the marks are gone: `f` is a new find again.
+    h.keys("h");
+    assert!(h.vim.flash().is_none());
+    h.keys("f");
+    assert!(h.vim.has_pending());
+    assert_eq!(h.keys("b").state(), "ab xb\ncb d|b");
+    assert_eq!(flash_labels(&h), []);
+
+    // Backwards the key goes on backwards, and the other one forwards.
+    let mut h = flash_harness("ab xb\ncb |db\n");
+    assert_eq!(h.keys("Fb").state(), "ab xb\nc|b db");
+    assert_eq!(flash_labels(&h), [(1, None), (4, None)]);
+    assert_eq!(h.vim.flash().map(|view| view.dim), Some((0, 7)));
+    assert_eq!(h.keys("f").state(), "ab x|b\ncb db");
+    assert_eq!(h.keys("F").state(), "ab xb\nc|b db");
+
+    // `t` stops short, and goes on past the one it is next to.
+    let mut h = flash_harness("|ab xb\ncb db\n");
+    assert_eq!(h.keys("tb").state(), "|ab xb\ncb db");
+    assert_eq!(h.keys("t").state(), "ab |xb\ncb db");
+    assert_eq!(h.keys("t").state(), "ab xb\n|cb db");
+    // Another find's key is a new find.
+    h.keys("f");
+    assert!(h.vim.has_pending());
+    assert_eq!(h.keys("d").state(), "ab xb\ncb |db");
+
+    // After an operator it is done with, and leaves nothing marked.
+    let mut h = flash_harness("|ab\ncd ef\n");
+    assert_eq!(h.keys("dfd").state(), "| ef");
+    assert!(h.vim.flash().is_none());
+    // In visual mode the selection goes along.
+    let mut h = flash_harness("|ab\ncd ef\n");
+    h.keys("vfdf");
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 5)));
+    let mut h = flash_harness("|ab\ncd ed\n");
+    h.keys("vfdf");
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 8)));
+
+    // Unbound, `f` stays on its line.
+    check("|ab\ncd", "fd", "|ab\ncd");
+}
+
+#[test]
+fn selects_a_syntax_node_by_its_label() {
+    let mut h = with_syntax("foo b|ar baz\nqux");
+    bind_flash(&mut h);
+    h.keys("S");
+    // The nodes around the cursor, from the smallest out: nothing is
+    // dimmed, and the labels go beside the nodes.
+    let view = h.vim.flash().expect("the nodes are labelled");
+    assert_eq!((view.dim, view.nodes), ((0, 0), true));
+    let nodes: Vec<_> = view
+        .matches
+        .iter()
+        .map(|m| (m.start, m.end, m.label))
+        .collect();
+    assert_eq!(
+        nodes,
+        [(4, 7, Some('a')), (0, 11, Some('s')), (0, 15, Some('d'))]
+    );
+    assert_eq!(h.vim.pending_display(), "S");
+
+    h.keys("s");
+    assert_eq!(h.vim.mode, Mode::Visual);
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 11)));
+    assert!(h.vim.flash().is_none());
+    // A step like `]x`'s: `[x` leads back from it, `]x` further out.
+    h.keys("]x");
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 15)));
+    h.keys("[x[x");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert_eq!(h.state(), "foo b|ar baz\nqux");
+
+    // Enter is the smallest; a key that is no label gives up.
+    h.keys("S<CR>");
+    assert_eq!(h.vim.selection(&h.buf), Some((4, 7)));
+    h.keys("<Esc>Sx");
+    assert!(!h.vim.has_pending());
+    assert_eq!(h.vim.mode, Mode::Normal);
+
+    // After an operator, the node is what it acts on.
+    assert_eq!(h.keys("bdSa").state(), "foo | baz\nqux");
+    // On the blank the smallest is the line.
+    assert_eq!(h.keys("dSa").state(), "|\nqux");
+
+    let mut h = flash_harness("|foo");
+    h.keys("S");
+    assert!(!h.vim.has_pending());
+    assert_eq!(
+        h.vim.message.as_deref(),
+        Some("No syntax tree for this file")
+    );
+}
+
+#[test]
+fn an_operator_works_elsewhere_and_comes_back() {
+    // `yr`, the place, and there the motion: the cursor ends where it was.
+    let mut h = flash_harness("o|ne two\nthree four\n");
+    h.keys("yrf");
+    assert_eq!(flash_labels(&h), [(14, Some('a'))]);
+    h.keys("a");
+    assert_eq!(h.state(), "one two\nthree |four");
+    assert_eq!(
+        h.vim.pending_keys().map(|pending| pending.mode),
+        Some(MapMode::Operator)
+    );
+    h.keys("iw");
+    assert_eq!(h.state(), "o|ne two\nthree four");
+    assert_eq!(h.clipboard.0.as_deref(), Some("four"));
+    assert!(!h.vim.has_pending());
+
+    // Where it was moves with the text taken away before it.
+    let mut h = flash_harness("one two\nthree fo|ur\n");
+    assert_eq!(h.keys("drtsiw").state(), "one \nthree fo|ur");
+    // A change comes back when the typing is done.
+    let mut h = flash_harness("o|ne two\nthree four\n");
+    h.keys("crfaiwx");
+    assert_eq!(h.state(), "one two\nthree x|");
+    assert_eq!(h.keys("<Esc>").state(), "o|ne two\nthree x");
+    // Given up on, there or before, it comes back as well.
+    assert_eq!(h.keys("yrta<Esc>").state(), "o|ne two\nthree x");
+    assert_eq!(h.keys("yrt<Esc>").state(), "o|ne two\nthree x");
+    assert!(!h.vim.has_pending());
+    // The node there, with `S`.
+    let mut h = with_syntax("o|ne two\nthree four\n");
+    bind_flash(&mut h);
+    assert_eq!(h.keys("drfaSa").state(), "o|ne two\nthree ");
 }

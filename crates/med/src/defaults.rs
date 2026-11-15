@@ -1,8 +1,8 @@
 //! What is bound out of the box: the tables a configuration will edit.
 //!
 //! The vim layout itself is [`med_vim::Keymap::vim`]; this adds the keys
-//! that reach beyond the buffer, the ones of `motion.flash`, the app
-//! shortcuts and the ex command names. Every right-hand side is a command name from [`Commands`] or the
+//! that reach beyond the buffer, the ones of flash (`s`, `S`, `f`…), the
+//! app shortcuts and the ex command names. Every right-hand side is a command name from [`Commands`] or the
 //! engine's [`med_vim::command_names`]. A panel's keys, and the keys that
 //! bring it up, are bound by the program that defines the panel.
 
@@ -12,7 +12,9 @@ use crate::keymap::PanelKeymaps;
 use gpui::{App, KeyBinding};
 use med_vim::MapMode::{self, Insert, Normal, Operator, Visual};
 
+const NVO: &[MapMode] = &[Normal, Visual, Operator];
 const NV: &[MapMode] = &[Normal, Visual];
+const NO: &[MapMode] = &[Normal, Operator];
 const N: &[MapMode] = &[Normal];
 const O: &[MapMode] = &[Operator];
 const I: &[MapMode] = &[Insert];
@@ -40,6 +42,17 @@ pub const EDITOR_KEYS: &[(&[MapMode], &str, &str)] = &[
     // surround's, so there it is `z`.
     (NV, "s", "motion.flash"),
     (O, "z", "motion.flash"),
+    // The same for an operator to work there, and come back.
+    (O, "r", "motion.flash_remote"),
+    // A syntax node around the cursor, by its label. In place of vim's
+    // `S`, which `cc` also is; on a selection `S` is surround's.
+    (NO, "S", "select.flash"),
+    // `f` and `t` on every line on screen, with where they could go next
+    // marked, and their key going on from there.
+    (NVO, "f", "motion.flash_find_forward"),
+    (NVO, "F", "motion.flash_find_backward"),
+    (NVO, "t", "motion.flash_till_forward"),
+    (NVO, "T", "motion.flash_till_backward"),
     (NV, "<Space>a", "editor.code_action"),
     (N, "<Space>=", "editor.format"),
     // Leader keys. `space` alone still moves right, after a pause.

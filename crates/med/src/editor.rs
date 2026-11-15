@@ -311,6 +311,27 @@ fn expand_tabs(text: &str, tab_width: usize) -> (String, Vec<u32>) {
     (display, offsets)
 }
 
+/// Put labels into a line's display text, between its characters. Each of
+/// `labels` is the char column it stands before and the label, in the
+/// order of the columns, and for one column in the order they are to
+/// stand in. The `offsets` of [`expand_tabs`] then point past the labels
+/// before a column; what comes back is how many bytes of them there are
+/// before each.
+fn insert_labels(display: &mut String, offsets: &mut [u32], labels: &[(usize, char)]) -> Vec<u32> {
+    let mut before = vec![0; offsets.len()];
+    // From the last one back: what is still to come stays where it was.
+    for &(col, label) in labels.iter().rev() {
+        let col = col.min(offsets.len() - 1);
+        display.insert((offsets[col] - before[col]) as usize, label);
+        let len = label.len_utf8() as u32;
+        before[col] += len;
+        for offset in &mut offsets[col..] {
+            *offset += len;
+        }
+    }
+    before
+}
+
 /// What is closed as it is opened in the file at `path`: everything a
 /// language has in pairs, which a `'` is not where it marks a lifetime or
 /// quotes a form.
@@ -1771,10 +1792,28 @@ impl Editor {
             let y = y0 + line_height * (line - first) as f32;
             let ls = buf.line_start(line);
             let text = buf.line_string(line);
-            let (display, offsets) = expand_tabs(&text, tab_width);
+            let (mut display, mut offsets) = expand_tabs(&text, tab_width);
             let nchars = offsets.len() - 1;
             let le = ls + nchars;
             let line_byte = buf.char_to_byte(ls);
+            // The labels of syntax nodes stand in the text, before a node
+            // and after it, like brackets: the outer ones outside.
+            let mut labels: Vec<(usize, char)> = Vec::new();
+            for view in flash.iter().filter(|view| view.nodes) {
+                let on_line = |at: usize| (ls..=le).contains(&at).then(|| at - ls);
+                let labelled = |m: &FlashMatch| m.label.map(|label| (*m, label));
+                for (m, label) in view.matches.iter().filter_map(labelled) {
+                    // A node that ends with its line: before the line break.
+                    let ends_line = m.end > m.start && buf.char_at(m.end - 1) == '\n';
+                    let end = if ends_line { m.end - 1 } else { m.end };
+                    labels.extend(on_line(end).map(|col| (col, label)));
+                }
+                for (m, label) in view.matches.iter().rev().filter_map(labelled) {
+                    labels.extend(on_line(m.start).map(|col| (col, label)));
+                }
+            }
+            labels.sort_by_key(|&(col, _)| col);
+            let label_bytes = insert_labels(&mut display, &mut offsets, &labels);
 
             // Which capture styles each byte of the line.
             let mut capture_at = vec![u32::MAX; text.len()];
@@ -1821,24 +1860,40 @@ impl Editor {
                     }
                 }
             }
-            // While `motion.flash` looks for text, the text is dimmed but
-            // for the places that have it.
+            // While `motion.flash` looks for text, or a find has marked
+            // where it could go next, the text is dimmed but for those
+            // places.
             let found: Vec<&FlashMatch> = flash
                 .iter()
-                .flat_map(|found| found.iter())
+                .filter(|view| !view.nodes)
+                .flat_map(|view| view.matches)
                 .filter(|m| m.start >= ls && m.end <= le)
                 .collect();
-            if flash.is_some() {
-                color_at.fill(Some(muted));
+            if let Some(view) = &flash {
+                let (from, to) = view.dim;
+                for (i, slot) in color_at.iter_mut().enumerate() {
+                    if (from..to).contains(&(ls + i)) {
+                        *slot = Some(muted);
+                    }
+                }
                 for m in &found {
                     color_at[m.start - ls..m.end - ls].fill(Some(fg));
                 }
             }
 
+            let label_run = |len: u32| {
+                let mut run = plain(len as usize, label_fg);
+                run.font.weight = FontWeight::BOLD;
+                run
+            };
             let mut runs: Vec<TextRun> = Vec::new();
             let mut last_key = None;
             for (i, (byte, _)) in text.char_indices().enumerate() {
-                let len = (offsets[i + 1] - offsets[i]) as usize;
+                if label_bytes[i] > 0 {
+                    runs.push(label_run(label_bytes[i]));
+                    last_key = None;
+                }
+                let len = (offsets[i + 1] - offsets[i] - label_bytes[i + 1]) as usize;
                 let offset = ls + i;
                 let inverse = block_cursor && offset == cursor;
                 let marked = self.marked.as_ref().is_some_and(|m| m.contains(&offset));
@@ -1884,6 +1939,9 @@ impl Editor {
                     });
                 }
                 runs.push(run);
+            }
+            if label_bytes[nchars] > 0 {
+                runs.push(label_run(label_bytes[nchars]));
             }
             let shaped = text_system.shape_line(display.into(), font_size, &runs, None);
             let x_of = |col: usize| shaped.x_for_index(offsets[col.min(nchars)] as usize);
@@ -1958,6 +2016,17 @@ impl Editor {
                 let label =
                     text_system.shape_line(label.to_string().into(), font_size, &[run], None);
                 frame.labels.push((origin, label));
+            }
+            // Behind the labels that stand in the text.
+            for (col, &bytes) in label_bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, bytes)| **bytes > 0)
+            {
+                let from = shaped.x_for_index((offsets[col] - bytes) as usize);
+                let origin = point(line_x + from, y);
+                let cell = Bounds::new(origin, size(x_of(col) - from, line_height));
+                frame.text_back.push(fill(cell, label_bg));
             }
             for &(s, e) in &selections {
                 let (a, b) = (s.max(ls), e.min(le + 1));
@@ -2612,4 +2681,36 @@ pub(crate) fn register(commands: &mut Commands) {
         "Copy the selection to the system clipboard",
         E(|editor, _, cx| editor.copy(cx)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expand_tabs, insert_labels};
+
+    #[test]
+    fn labels_stand_between_the_characters() {
+        // A tab, then `ab`: the labels go before `a`, two of them, and
+        // after `b`, at the end of the line.
+        let (mut display, mut offsets) = expand_tabs("\tab", 4);
+        assert_eq!(
+            (display.as_str(), offsets.as_slice()),
+            ("    ab", &[0, 4, 5, 6][..])
+        );
+        let before = insert_labels(&mut display, &mut offsets, &[(1, 'x'), (1, 'y'), (3, 'z')]);
+        assert_eq!(display, "    xyabz");
+        // Each column is where its character is, past its labels.
+        assert_eq!(offsets, [0, 6, 7, 9]);
+        assert_eq!(before, [0, 2, 0, 1]);
+
+        // A label of more than a byte, and none at all.
+        let (mut display, mut offsets) = expand_tabs("ab", 4);
+        let before = insert_labels(&mut display, &mut offsets, &[(0, 'é')]);
+        assert_eq!(
+            (display.as_str(), offsets.as_slice()),
+            ("éab", &[2, 3, 4][..])
+        );
+        assert_eq!(before, [2, 0, 0]);
+        assert_eq!(insert_labels(&mut display, &mut offsets, &[]), [0, 0, 0]);
+        assert_eq!(display, "éab");
+    }
 }

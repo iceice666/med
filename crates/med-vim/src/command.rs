@@ -33,8 +33,13 @@ pub(crate) enum Builtin {
 pub(crate) enum Await {
     /// `"x`
     Register,
-    /// `f` / `F` / `t` / `T`
-    Find { forward: bool, till: bool },
+    /// `f` / `F` / `t` / `T`: the character to find, on the cursor's line
+    /// or on any line on screen.
+    Find {
+        forward: bool,
+        till: bool,
+        screen: bool,
+    },
     /// `r`
     Replace,
     /// `i` / `a` after an operator or in visual mode
@@ -113,6 +118,11 @@ pub(crate) enum Cmd {
     /// Look for text on screen as it is typed, and go to a place that has
     /// it by the label the place is given.
     Flash,
+    /// The same after an operator, which then waits there for its motion
+    /// and leaves the cursor where it was.
+    FlashRemote,
+    /// Label the syntax nodes around the cursor, to select one of them.
+    FlashNodes,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,7 +155,19 @@ const fn syntax(kind: char, forward: bool) -> Builtin {
 }
 
 const fn find(forward: bool, till: bool) -> Builtin {
-    Builtin::Await(Await::Find { forward, till })
+    Builtin::Await(Await::Find {
+        forward,
+        till,
+        screen: false,
+    })
+}
+
+const fn find_on_screen(forward: bool, till: bool) -> Builtin {
+    Builtin::Await(Await::Find {
+        forward,
+        till,
+        screen: true,
+    })
 }
 
 const fn op(o: Operator) -> Builtin {
@@ -263,6 +285,16 @@ const BUILTINS: &[(&str, Builtin)] = &[
     // The keys after it are text to look for on screen, then the label of
     // the place to go to.
     ("motion.flash", cmd(Cmd::Flash)),
+    // After an operator: go there for it, and come back when it is done.
+    ("motion.flash_remote", cmd(Cmd::FlashRemote)),
+    // The syntax nodes around the cursor get labels; a label selects one.
+    ("select.flash", cmd(Cmd::FlashNodes)),
+    // `f` and `t` that look on every line on screen, mark where else they
+    // could go, and go on from there when their key is pressed again.
+    ("motion.flash_find_forward", find_on_screen(true, false)),
+    ("motion.flash_find_backward", find_on_screen(false, false)),
+    ("motion.flash_till_forward", find_on_screen(true, true)),
+    ("motion.flash_till_backward", find_on_screen(false, true)),
     // Marks: the next key names one.
     ("mark.set", Builtin::Await(Await::SetMark)),
     (
