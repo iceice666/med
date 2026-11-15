@@ -1,7 +1,8 @@
 ; An init file that has everything in this directory: the vim keys and
 ; the editor's, the file tree, the picker, the git screen, the keys that
-; can come next, and the signs on the lines that say TODO. Put a line
-; like this in your own `init.lisp`, with the path of your checkout:
+; can come next, the signs on the lines that say TODO, and directories to
+; edit as text. Put a line like this in your own `init.lisp`, with the
+; path of your checkout:
 ;
 ;   (load "/path/to/med/examples/init.lisp")
 ;
@@ -15,6 +16,7 @@
 (load "git.lisp")
 (load "which-key.lisp")
 (load "todo.lisp")
+(load "dired.lisp")
 
 ; The leader keys of an editor work from the tree as well.
 (bind 'tree "<Space>f" "picker.files")

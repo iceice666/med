@@ -53,6 +53,7 @@ pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
         include_str!("../../../examples/which-key.lisp"),
     ),
     ("todo.lisp", include_str!("../../../examples/todo.lisp")),
+    ("dired.lisp", include_str!("../../../examples/dired.lisp")),
 ];
 
 /// Why the default configuration was not written.

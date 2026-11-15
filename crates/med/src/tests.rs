@@ -78,6 +78,7 @@ const PICKER: &str = include_str!("../../../examples/picker.lisp");
 const GIT: &str = include_str!("../../../examples/git.lisp");
 const WHICH_KEY: &str = include_str!("../../../examples/which-key.lisp");
 const TODO: &str = include_str!("../../../examples/todo.lisp");
+const DIRED: &str = include_str!("../../../examples/dired.lisp");
 
 fn open<'a>(
     project: &Project,
@@ -2597,6 +2598,22 @@ fn flash_finds_selects_nodes_and_works_elsewhere(cx: &mut TestAppContext) {
     assert_eq!(cursor(&ws, cx), (1, 1));
 }
 
+fn message(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
+    workspace.read_with(cx, |ws, _| {
+        ws.message.clone().unwrap_or_default().to_string()
+    })
+}
+
+fn dirty(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
+    workspace.read_with(cx, |ws, cx| ws.active_editor().unwrap().read(cx).is_dirty())
+}
+
+fn tab_titles(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+    workspace.read_with(cx, |ws, cx| {
+        ws.tabs.iter().map(|tab| tab.read(cx).title()).collect()
+    })
+}
+
 #[gpui::test]
 fn programs_change_what_is_on_disk(cx: &mut TestAppContext) {
     let project = Project::new(&[
@@ -2652,4 +2669,151 @@ fn programs_change_what_is_on_disk(cx: &mut TestAppContext) {
         names("true", cx),
         r#"(".gitignore" "b.txt" "c.txt" "ignored.txt")"#
     );
+}
+
+#[gpui::test]
+fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        ("dir/inner.txt", "inner\n"),
+        ("z.txt", "z\n"),
+    ]);
+    let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    let listing = format!("{}/", project.0.display());
+
+    // space - lists the directory of the file, the cursor on its line.
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nb.txt\nz.txt\n");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", listing.as_str()]);
+    assert_eq!(active_file(&ws, cx), None);
+
+    // A new name renames, one with / moves; the tab of a.txt goes with it.
+    cx.simulate_keystrokes("c c");
+    cx.simulate_input("c.txt");
+    cx.simulate_keystrokes("escape shift-g c c");
+    cx.simulate_input("dir/sub/z.txt");
+    cx.simulate_keystrokes("escape");
+    assert!(dirty(&ws, cx));
+    cx.simulate_keystrokes(": w enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "2 renamed, 0 to the trash");
+    assert_eq!(project.read("c.txt"), "a\n");
+    assert_eq!(project.read("dir/sub/z.txt"), "z\n");
+    assert!(!project.path("a.txt").exists() && !project.path("z.txt").exists());
+    assert_eq!(text(&ws, cx), "dir/\nb.txt\nc.txt\n");
+    assert!(!dirty(&ws, cx));
+    assert_eq!(tab_titles(&ws, cx), ["c.txt", listing.as_str()]);
+
+    // What cannot all be done is not done at all, and stays to be fixed.
+    let refused = |keys: &str, typed: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(keys);
+        cx.simulate_input(typed);
+        cx.simulate_keystrokes("escape : w enter");
+        cx.run_until_parked();
+        let said = message(&ws, cx);
+        assert!(dirty(&ws, cx), "{said}");
+        cx.simulate_keystrokes("u");
+        assert_eq!(text(&ws, cx), "dir/\nb.txt\nc.txt\n");
+        said
+    };
+    assert_eq!(
+        refused("g g j o", "new.txt", cx),
+        "4 lines for 3 files: change names in place, and empty a line to delete"
+    );
+    assert_eq!(
+        refused("g g j c c", "c.txt", cx),
+        "c.txt is another line's: rename it first, then this"
+    );
+    assert_eq!(
+        refused("g g j c c", "dir/inner.txt", cx),
+        "dir/inner.txt is there already"
+    );
+    assert!(project.path("b.txt").exists());
+
+    // An empty line is a file for the trash, after :w!.
+    cx.simulate_keystrokes("g g j c c escape : w enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 to the trash: :w! to do it");
+    assert!(project.path("b.txt").exists());
+    cx.simulate_keystrokes(": w ! enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "0 renamed, 1 to the trash");
+    assert!(!project.path("b.txt").exists());
+    assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
+
+    // gf goes into a directory, and space - back up to it.
+    cx.simulate_keystrokes("g g g f");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "sub/\ninner.txt\n");
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    // On a file, gf opens it; away from a listing it only says so.
+    cx.simulate_keystrokes("j g f");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
+    cx.simulate_keystrokes("g f");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "Not a listing: space - makes one");
+
+    // :wq writes what the listing had, though another tab is up by the
+    // time the program runs: here c.txt, as many lines long.
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("j c c");
+    cx.simulate_input("d.txt");
+    cx.simulate_keystrokes("escape : w q enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 renamed, 0 to the trash");
+    assert_eq!(project.read("d.txt"), "a\n");
+    // The listing of dir, from gf, is still there.
+    let inner = format!("{listing}dir/");
+    assert_eq!(tab_titles(&ws, cx), ["d.txt", inner.as_str()]);
+
+    // A listing with nothing unsaved is no reason not to quit.
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    cx.simulate_keystrokes(": q a enter");
+    cx.run_until_parked();
+    assert!(!message(&ws, cx).starts_with("Unsaved"));
+}
+
+#[gpui::test]
+fn a_listing_keeps_what_is_not_written(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("dir/inner.txt", "inner\n"),
+        ("sp ", "s\n"),
+    ]);
+    let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
+    // Made with its text, there is nothing before it to undo to.
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
+
+    // Going into a directory and back leaves an edit that is not written.
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("c c");
+    cx.simulate_input("b.txt");
+    cx.simulate_keystrokes("escape g g g f");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "inner.txt\n");
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\nb.txt\nsp \n");
+    assert!(dirty(&ws, cx));
+
+    // A name with a space at its end is left as it is.
+    cx.simulate_keystrokes(": w enter");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 renamed, 0 to the trash");
+    assert_eq!(project.read("b.txt"), "a\n");
+    assert_eq!(project.read("sp "), "s\n");
+    assert_eq!(text(&ws, cx), "dir/\nb.txt\nsp \n");
 }
