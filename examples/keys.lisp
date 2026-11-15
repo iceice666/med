@@ -66,6 +66,8 @@
 (bind 'normal "<Space>=" "editor.format")
 (bind 'normal "<Space>w" "workspace.save")
 (bind 'normal "<Space>q" "workspace.close_tab")
+; A Markdown file rendered, in a pane to the right; again, to it and back.
+(bind 'normal "<Space>m" "workspace.markdown_preview")
 ; The new name is typed on the command line.
 (bind-keys 'normal "<Space>r" ":rename<Space>")
 

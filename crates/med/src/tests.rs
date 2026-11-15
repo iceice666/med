@@ -1199,6 +1199,7 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                (unbind '(normal visual) "<Space>a")
                (unbind 'normal "<Space>=")
                (unbind 'normal "<Space>r")
+               (unbind 'normal "<Space>m")
                (bind 'normal "<Space>f" "user.find")
                (bind 'normal "<Space>gg" "user.find")
                (bind-keys 'normal "<Space>y" "y$"))"#,
@@ -2416,6 +2417,105 @@ fn the_todo_example_marks_lines(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(lisp("todo-lines", cx), "(1 3)");
     assert_eq!(decoration_lines(&ws, "todo", cx), [2, 0]);
+}
+
+#[gpui::test]
+fn a_markdown_file_has_a_preview_beside_it(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("README.md", "# Title\n\n- one\n"),
+        ("docs/README.md", "# Docs\n"),
+        ("b.txt", "b\n"),
+    ]);
+    let (ws, cx) = open_with(&[], &project, &["README.md"], cx);
+    let ex = |line: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(line);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+    // Each pane, as what it shows, and whether it has the keys.
+    let panes = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            ws.pane_infos(cx)
+                .into_iter()
+                .map(|pane| {
+                    let shows = match (pane.scratch, pane.path) {
+                        (Some(name), _) => name.to_string(),
+                        (None, Some(path)) => path.file_name().unwrap().to_string_lossy().into(),
+                        (None, None) => String::new(),
+                    };
+                    (shows, pane.focused)
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+
+    // A pane split off to the right, the keys staying with the file.
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    assert_eq!(
+        panes(cx),
+        [
+            ("README.md".to_string(), true),
+            ("README.md (preview)".to_string(), false)
+        ]
+    );
+    assert_eq!(active_file(&ws, cx), Some(project.path("README.md")));
+
+    // Again, to the preview: its text is the file's.
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), None);
+    assert_eq!(text(&ws, cx), "# Title\n\n- one\n");
+    let preview = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+
+    // Back to the file: what is typed there is in the preview at once.
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("README.md")));
+    cx.simulate_keystrokes("shift-g o");
+    cx.simulate_input("- two");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    let shown = |cx: &mut VisualTestContext| preview.read_with(cx, |preview, _| preview.buf.text());
+    assert_eq!(shown(cx), "# Title\n\n- one\n- two\n");
+
+    // The same preview again, and nothing is edited in it.
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    assert_eq!(panes(cx).len(), 2);
+    cx.simulate_keystrokes("j d d");
+    cx.run_until_parked();
+    assert!(message(&ws, cx).contains("preview"), "{}", message(&ws, cx));
+    cx.simulate_keystrokes("i");
+    cx.simulate_input("x");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "# Title\n\n- one\n- two\n");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    // It is no file, and has nowhere to be written.
+    ex("w", cx);
+    assert!(message(&ws, cx).contains("nowhere"), "{}", message(&ws, cx));
+    // `:q` closes it, as any tab, and its pane with it.
+    ex("q", cx);
+    assert_eq!(panes(cx), [("README.md".to_string(), true)]);
+
+    // A file of the same name elsewhere has a preview of its own.
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    ex("e docs/README.md", cx);
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    assert_eq!(panes(cx).len(), 3);
+    cx.simulate_keystrokes("space m");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "# Docs\n");
+
+    // What is not Markdown has none.
+    ex("e b.txt", cx);
+    ex("preview", cx);
+    assert_eq!(message(&ws, cx), "b.txt is not Markdown");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
 }
 
 #[gpui::test]

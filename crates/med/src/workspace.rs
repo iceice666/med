@@ -675,6 +675,53 @@ impl Workspace {
         self.activate(index, window, cx);
     }
 
+    /// Go to the preview of the Markdown file being edited; with none, open
+    /// one in a pane split off to the right, the keys staying with the
+    /// file. From a preview, go back to its file.
+    fn markdown_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active_editor().cloned() else {
+            return;
+        };
+        if let Some(preview) = &active.read(cx).preview {
+            match active.read(cx).preview_source() {
+                Some(source) => self.follow(&source, window, cx),
+                None => {
+                    let path = preview.source_path.clone();
+                    self.open_path(&path, window, cx);
+                }
+            }
+            return;
+        }
+        let editor = active.read(cx);
+        let Some(path) = editor.path.clone() else {
+            self.set_message("Only a file has a preview", cx);
+            return;
+        };
+        if editor.language_name() != "markdown" {
+            let message = format!("{} is not Markdown", self.relative(&path));
+            self.set_message(message, cx);
+            return;
+        }
+        let found = self.find_tab(cx, |editor| {
+            let preview = editor.preview.as_ref();
+            preview.is_some_and(|preview| preview.source_path == path)
+        });
+        match found {
+            // Where it is, in whichever pane: beside the file, it stays.
+            Some((pane, tab)) => {
+                let preview = self.panes[pane].tabs[tab].clone();
+                preview.update(cx, |preview, cx| preview.link_preview(&active, cx));
+                self.follow(&preview, window, cx);
+            }
+            None => {
+                let preview = cx.new(|cx| Editor::preview_of(&active, path, cx));
+                self.watch(&preview, window, cx);
+                self.split_with(Axis::Row, preview, window, cx);
+                self.follow(&active, window, cx);
+            }
+        }
+    }
+
     /// A file or directory was moved from `from` to `to`: the tabs that
     /// had it, or something in it, have the new path.
     pub(crate) fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
@@ -785,10 +832,22 @@ impl Workspace {
     /// Split the focused pane: a new one with an empty buffer goes right
     /// of it, or below it, and has the keys.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = self.empty_editor(window, cx);
+        self.split_with(axis, editor, window, cx);
+    }
+
+    /// Split the focused pane, the new one having `editor`, which has been
+    /// watched, and the keys.
+    fn split_with(
+        &mut self,
+        axis: Axis,
+        editor: Entity<Editor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let id = self.next_pane;
         self.next_pane += 1;
         self.layout.split(self.pane().id, axis, id);
-        let editor = self.empty_editor(window, cx);
         self.panes.push(Pane {
             id,
             tabs: vec![editor],
@@ -1995,6 +2054,11 @@ pub(crate) fn register(commands: &mut Commands) {
             }
             None => ws.set_message(format!("No help for {}", args.arg), cx),
         }),
+    );
+    commands.register(
+        "workspace.markdown_preview",
+        "Show the Markdown file being edited rendered, in a pane split off to the right; from there, go back",
+        W(|ws, _, window, cx| ws.markdown_preview(window, cx)),
     );
     commands.register(
         "workspace.install_default_config",

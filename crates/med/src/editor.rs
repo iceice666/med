@@ -7,7 +7,7 @@ use crate::syntax::{self, LangInfo, Syntax};
 use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
 use gpui::component::ActiveTheme as _;
-use gpui::component::text::TextView;
+use gpui::component::text::{RangeHighlight, TextView, TextViewState};
 use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
@@ -254,6 +254,28 @@ pub struct Editor {
     mtime: Option<SystemTime>,
     /// A tab that a program made, with no file behind it.
     pub scratch: Option<Scratch>,
+    /// A tab that shows a Markdown file rendered.
+    pub preview: Option<Preview>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// What a Markdown preview tab shows: another tab's file, rendered. Its own
+/// text is that file's, as it is typed there, so that the keys move about
+/// in it, but it is not to be edited here: what is, is put back.
+pub struct Preview {
+    /// The file shown, which tells one file's preview from another's.
+    pub source_path: PathBuf,
+    source: WeakEntity<Editor>,
+    /// The text, as last taken from the file's tab.
+    text: SharedString,
+    /// The file's version that `text` is.
+    source_version: u64,
+    /// The version of this tab's text when it was last given `text`: any
+    /// other is an edit made here.
+    version: u64,
+    view: Entity<TextViewState>,
+    /// The line the view last followed the cursor to.
+    line: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -481,6 +503,7 @@ impl Editor {
             drag_anchor: None,
             mtime: None,
             scratch: None,
+            preview: None,
             _subscriptions: Vec::new(),
         };
         if let Some(lsp) = this.lsp.clone() {
@@ -545,6 +568,7 @@ impl Editor {
         if self.scratch.take().is_some() {
             self.vim.tables.clear();
         }
+        self.preview = None;
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
@@ -587,6 +611,199 @@ impl Editor {
         }
         self.vim.set_cursor(self.vim.cursor, &self.buf);
         self.after_change(cx);
+    }
+
+    // ---- Markdown preview ----------------------------------------------
+
+    /// A tab that shows `source`'s file, at `path`, as rendered Markdown,
+    /// and follows it as it is typed.
+    pub fn preview_of(source: &Entity<Editor>, path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let mut this = Editor::new(None, "", None, cx);
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        this.scratch = Some(Scratch {
+            name: format!("{name} (preview)").into(),
+            on_save: None,
+        });
+        let view = cx.new(|cx| {
+            TextViewState::markdown("", cx)
+                .scrollable(true)
+                .selectable(false)
+        });
+        // Once the text is parsed, the view can find the cursor's line.
+        let parsed = cx.observe(&view, |this, _, cx| this.follow_cursor_in_preview(cx));
+        this.preview = Some(Preview {
+            source_path: path,
+            source: source.downgrade(),
+            text: SharedString::default(),
+            source_version: 0,
+            version: this.buf.version(),
+            view,
+            line: None,
+            _subscriptions: vec![parsed],
+        });
+        this.link_preview(source, cx);
+        this
+    }
+
+    /// Follow `source` from now on: the preview's file, in a tab that may
+    /// have been opened again since.
+    pub fn link_preview(&mut self, source: &Entity<Editor>, cx: &mut Context<Self>) {
+        let Some(preview) = &mut self.preview else {
+            return;
+        };
+        preview.source = source.downgrade();
+        let changed = cx.observe(source, |this, source, cx| this.mirror_source(&source, cx));
+        // The view's, then the file's.
+        preview._subscriptions.truncate(1);
+        preview._subscriptions.push(changed);
+        // Whatever version it is at, take its text.
+        preview.source_version = source.read(cx).buf.version().wrapping_add(1);
+        self.mirror_source(source, cx);
+    }
+
+    /// The tab whose file this previews, while it is open.
+    pub fn preview_source(&self) -> Option<Entity<Editor>> {
+        self.preview.as_ref()?.source.upgrade()
+    }
+
+    /// Take the text of the file's tab, if it changed.
+    fn mirror_source(&mut self, source: &Entity<Editor>, cx: &mut Context<Self>) {
+        let buf = &source.read(cx).buf;
+        let version = buf.version();
+        if self
+            .preview
+            .as_ref()
+            .is_none_or(|p| p.source_version == version)
+        {
+            return;
+        }
+        let text = SharedString::from(buf.text());
+        let cursor = self.vim.cursor;
+        self.buf = Buffer::new(&text);
+        self.vim.set_cursor(cursor, &self.buf);
+        let Some(preview) = &mut self.preview else {
+            return;
+        };
+        preview.source_version = version;
+        preview.version = self.buf.version();
+        preview.text = text.clone();
+        preview.line = None;
+        preview.view.update(cx, |view, cx| view.set_text(&text, cx));
+        self.after_change(cx);
+    }
+
+    /// A preview's text is its file's: an edit made in it is put back, and
+    /// it does not stay in insert mode.
+    fn keep_preview_text(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = &mut self.preview else {
+            return;
+        };
+        let edited = self.buf.version() != preview.version;
+        if !edited && self.vim.mode != Mode::Insert {
+            return;
+        }
+        if edited {
+            let cursor = self.vim.cursor;
+            self.buf = Buffer::new(&preview.text);
+            preview.version = self.buf.version();
+            self.vim.set_cursor(cursor, &self.buf);
+        }
+        if self.vim.mode == Mode::Insert {
+            self.vim.mode = Mode::Normal;
+        }
+        cx.emit(EditorEvent::Message(
+            "A preview is not edited here: edit its file".into(),
+        ));
+    }
+
+    /// Scroll a preview to what the cursor's line renders, and mark it.
+    fn follow_cursor_in_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = &self.preview else {
+            return;
+        };
+        let line = self.buf.line_of(self.vim.cursor);
+        if preview.line == Some(line) {
+            return;
+        }
+        let view = preview.view.clone();
+        let color = cx.theme().selection;
+        let buf = &self.buf;
+        let rope = buf.rope();
+        let source_len = rope.len_bytes();
+        let bytes = |line: usize| {
+            rope.char_to_byte(buf.line_start(line))..rope.char_to_byte(buf.line_end(line))
+        };
+        // A blank line, a fence or a rule renders nothing of its own: the
+        // nearest line that does, below and then above.
+        let mut lines = (line..=buf.last_line()).chain((0..line).rev());
+        let found = view.update(cx, |view, cx| {
+            let rendered = view.rendered_text();
+            // Not parsed yet: the view says when it is.
+            if rendered.source().len() != source_len {
+                return false;
+            }
+            let Some(range) = lines.find_map(|line| rendered.range_for_source(bytes(line))) else {
+                return false;
+            };
+            view.reveal_range(range.clone(), cx).ok();
+            view.set_range_highlights([RangeHighlight::new(range, color)], cx)
+                .ok();
+            true
+        });
+        if found && let Some(preview) = &mut self.preview {
+            preview.line = Some(line);
+        }
+    }
+
+    fn render_preview(
+        &self,
+        preview: &Preview,
+        key_context: KeyContext,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entity = cx.entity();
+        let focus_handle = self.focus_handle.clone();
+        div()
+            .id("editor")
+            .relative()
+            .size_full()
+            .bg(cx.theme().background)
+            .track_focus(&self.focus_handle)
+            .key_context(key_context)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                }),
+            )
+            // What is typed on the `:` line comes as text input.
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        window.handle_input(
+                            &focus_handle,
+                            ElementInputHandler::new(bounds, entity),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div().size_full().px_6().py_2().child(
+                    TextView::new(&preview.view)
+                        .scrollable(true)
+                        .selectable(false)
+                        .size_full(),
+                ),
+            )
+            .into_any_element()
     }
 
     pub fn language_name(&self) -> &'static str {
@@ -887,6 +1104,7 @@ impl Editor {
     /// edits to the syntax tree and the language server, keep the cursor on
     /// screen, repaint.
     fn after_change(&mut self, cx: &mut Context<Self>) {
+        self.keep_preview_text(cx);
         // What `Tab` went through was for the command line just closed.
         if self.vim.cmdline().is_none() {
             self.cmdline_completion = None;
@@ -934,6 +1152,7 @@ impl Editor {
             self.signature = None;
         }
         self.ensure_cursor_visible();
+        self.follow_cursor_in_preview(cx);
         self.report_pending(cx);
         cx.emit(EditorEvent::Changed);
         cx.notify();
@@ -2513,6 +2732,9 @@ impl Render for Editor {
                 Mode::Command => "command",
             },
         );
+        if let Some(preview) = &self.preview {
+            return self.render_preview(preview, key_context, cx);
+        }
         let prepaint_entity = cx.entity();
         let paint_entity = cx.entity();
         let focus_handle = self.focus_handle.clone();
@@ -2551,6 +2773,7 @@ impl Render for Editor {
             .children(self.render_menu(cx))
             .children(self.render_signature(cx))
             .children(self.render_hover(cx))
+            .into_any_element()
     }
 }
 

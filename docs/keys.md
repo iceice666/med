@@ -45,6 +45,7 @@ clipboard.
 | `ctrl-w h j k l`, `ctrl-w w` / `ctrl-w W` | the pane to the left, below, above, right; the next / previous one |
 | `ctrl-w c` / `:close`, `ctrl-w o` / `:only` | close the pane / every other pane: their tabs go to the pane left with the keys |
 | `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
+| `space m`, `:preview` | a Markdown file rendered, in a pane split off to the right that follows it as it is typed, the keys staying with the file; again, to the preview and back |
 
 Surround, as in nvim-surround: `ys` and a motion or text object, then the
 delimiter (`ysiw)`, `yss"` for the line), `ds"` to take one away, `cs"'`
