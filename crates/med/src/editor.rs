@@ -501,6 +501,17 @@ impl Editor {
         this
     }
 
+    /// Announce the file to the language server again, as after the
+    /// servers were restarted.
+    pub fn reopen_in_lsp(&mut self, cx: &mut Context<Self>) {
+        if let (Some(lsp), Some(lang), Some(path)) = (&self.lsp, self.lang, &self.path) {
+            self.lsp_version = 0;
+            self.diagnostics.clear();
+            let text = self.buf.text();
+            lsp.update(cx, |store, cx| store.open(path, lang, text, cx));
+        }
+    }
+
     /// Attach the buffer to a file: language, syntax tree, language server.
     pub fn set_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if let (Some(lsp), Some(old)) = (&self.lsp, &self.path) {

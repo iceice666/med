@@ -56,9 +56,11 @@
 //! `spawn`ed. A git function is called with the answer and nil, or with
 //! nil and what went wrong. `spawn` runs a program with no shell between
 //! (`(spawn "sh" (list "-c" line) ...)` for one), in `dir`, nil for the
-//! project's, with nothing to read; its function is called with
-//! `(:status :out :err)`, the exit code (nil when a signal stopped it) and
-//! what it printed, and nil, or with nil and why it could not be run.
+//! project's, with nothing to read, in the project's environment (see
+//! `:workspace.reload_env`; a program spawned while it is being worked out
+//! waits for it); its function is called with `(:status :out :err)`, the
+//! exit code (nil when a signal stopped it) and what it printed, and nil,
+//! or with nil and why it could not be run.
 //!
 //! What `git` can be asked, each followed by the function to call:
 //! - `'status`: the changed files, each `(:path :file :index :worktree
@@ -78,6 +80,7 @@
 //!   `'pull`, `'push`, `'stash`, `'stash-apply index`, `'stash-pop index`,
 //!   `'stash-drop index`: what git printed.
 
+use crate::env::{EnvCell, ProjectEnv};
 use crate::panel::{is_function, word, wrong};
 use crate::script::{self, Script};
 use crate::search::{self, Hit};
@@ -332,15 +335,29 @@ pub(crate) fn define_functions(interp: &mut Interp) {
             Value::Nil => project("spawn", cx)?,
             dir => on_disk("spawn", dir, cx)?,
         };
-        script::in_background(
-            cx,
-            callback,
-            move || run_program(&program, &arguments, &dir),
-            |result| match result {
-                Ok(done) => vec![done.into_value(), Value::Nil],
-                Err(problem) => vec![Value::Nil, Value::from(problem)],
-            },
-        );
+        // The project's environment; med's own with no project.
+        let cell =
+            script::project_env(cx).unwrap_or_else(|| EnvCell::ready(ProjectEnv::inherited()));
+        let values = |result: Result<Ran, String>| match result {
+            Ok(done) => vec![done.into_value(), Value::Nil],
+            Err(problem) => vec![Value::Nil, Value::from(problem)],
+        };
+        match cell.get() {
+            Some(env) => script::in_background(
+                cx,
+                callback,
+                move || run_program(&env, &program, &arguments, &dir),
+                values,
+            ),
+            // Still being worked out, which can take minutes: wait for it
+            // on a thread of its own, not one of the executor's.
+            None => script::on_thread(
+                cx,
+                callback,
+                move || run_program(&cell.wait(), &program, &arguments, &dir),
+                values,
+            ),
+        }
         Ok(Value::Nil)
     });
 
@@ -734,8 +751,14 @@ impl Ran {
     }
 }
 
-fn run_program(program: &str, arguments: &[String], dir: &Path) -> Result<Ran, String> {
-    let output = std::process::Command::new(program)
+fn run_program(
+    env: &ProjectEnv,
+    program: &str,
+    arguments: &[String],
+    dir: &Path,
+) -> Result<Ran, String> {
+    let output = env
+        .command(program)
         .args(arguments)
         .current_dir(dir)
         .stdin(std::process::Stdio::null())

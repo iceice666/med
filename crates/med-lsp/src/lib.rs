@@ -136,9 +136,19 @@ impl Client {
         args: &[String],
         cwd: &Path,
     ) -> io::Result<(Self, mpsc::UnboundedReceiver<Incoming>)> {
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
+        let mut command = Command::new(program);
+        command.args(args).current_dir(cwd);
+        Self::spawn_command(program, command)
+    }
+
+    /// Start a server from a command made ready but for its stdio: one
+    /// with an environment of its own, say. `name` names its threads.
+    pub fn spawn_command(
+        name: &str,
+        mut command: Command,
+    ) -> io::Result<(Self, mpsc::UnboundedReceiver<Incoming>)> {
+        let program = name;
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -5,6 +5,7 @@ mod cmdline;
 pub mod commands;
 pub mod defaults;
 pub mod editor;
+pub mod env;
 pub mod help;
 pub mod host;
 pub mod keymap;
@@ -38,6 +39,9 @@ pub struct Settings {
     pub key_timeout: Option<Duration>,
     /// Have the language server format a file before it is written.
     pub format_on_save: bool,
+    /// Work out each project's environment (login shell, direnv) for its
+    /// language servers and programs, rather than use med's own.
+    pub project_env: bool,
 }
 
 impl Settings {
@@ -153,6 +157,8 @@ pub fn init(cx: &mut App) {
         lsp: std::env::var_os("MED_NO_LSP").is_none(),
         key_timeout: Some(Settings::KEY_TIMEOUT),
         format_on_save: false,
+        // Turned on by `run`: tests must not start the user's shell.
+        project_env: false,
     });
     init_globals(cx);
     // With no window to ask about unsaved work, quitting just quits.
@@ -170,6 +176,8 @@ pub fn run() {
         .with_assets(gpui::assets::Assets)
         .run(move |cx| {
             init(cx);
+            cx.global_mut::<Settings>().project_env =
+                std::env::var_os("MED_NO_PROJECT_ENV").is_none();
             // Not in `init`: tests must not depend on what is in $HOME.
             script::load_init(cx);
             cx.activate(true);

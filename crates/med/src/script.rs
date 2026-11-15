@@ -15,7 +15,8 @@
 //! (set-buffer-keys '(listing))         ; the tab up is in it
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
-//!                                      ; auto-pairs, format-on-save
+//!                                      ; auto-pairs, format-on-save,
+//!                                      ; project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -318,6 +319,28 @@ pub(crate) fn in_background<T: Send + 'static>(
     .detach();
 }
 
+/// [`in_background`] on a thread of its own, for work that may wait a
+/// long time (for the project's environment, say) without holding up one
+/// of the executor's threads.
+pub(crate) fn on_thread<T: Send + 'static>(
+    cx: &mut App,
+    callback: Value,
+    work: impl FnOnce() -> T + Send + 'static,
+    values: impl FnOnce(T) -> Vec<Value> + 'static,
+) {
+    let origin = cx.global::<Script>().origin.clone();
+    let (tx, rx) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    cx.spawn(async move |cx| {
+        if let Ok(result) = rx.await {
+            cx.update(|cx| call_back(origin, callback, values(result), cx));
+        }
+    })
+    .detach();
+}
+
 /// Call `callback`, a function a program left to be called later.
 pub(crate) fn call_back(origin: Option<Origin>, callback: Value, args: Vec<Value>, cx: &mut App) {
     finish(origin, cx, move |interp, cx| {
@@ -354,6 +377,12 @@ pub(crate) fn in_workspace<T>(
 /// The directory of the workspace the running program was started from.
 pub(crate) fn project_root(cx: &App) -> Option<PathBuf> {
     let read = |workspace: &Workspace, _: &App| workspace.root().to_path_buf();
+    origin(cx)?.workspace.read_with(cx, read).ok()
+}
+
+/// The environment of the project a program is running for.
+pub(crate) fn project_env(cx: &App) -> Option<std::sync::Arc<crate::env::EnvCell>> {
+    let read = |workspace: &Workspace, _: &App| workspace.env();
     origin(cx)?.workspace.read_with(cx, read).ok()
 }
 
@@ -976,6 +1005,8 @@ fn define_functions(interp: &mut Interp) {
                 };
             }
             "format-on-save" => settings.format_on_save = flag(value)?,
+            // Read when a window opens, as `lsp` is.
+            "project-env" => settings.project_env = flag(value)?,
             // Close brackets and quotes as they are typed.
             "auto-pairs" => {
                 let on = flag(value)?;
@@ -984,7 +1015,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save project-env)"
                 )));
             }
         }

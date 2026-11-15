@@ -4,6 +4,7 @@
 use crate::commands::{Args, Commands, Handler, RunCommand};
 use crate::defaults::{self, InstallError};
 use crate::editor::{Editor, EditorEvent, Scratch};
+use crate::env::{self, EnvCell, ProjectEnv};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
 use crate::{help, script};
@@ -15,11 +16,15 @@ use med_lisp::Value;
 use med_vim::Mode;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct Workspace {
     root: PathBuf,
     focus_handle: FocusHandle,
     lsp: Entity<LspStore>,
+    /// The environment the project's programs run in.
+    env: Arc<EnvCell>,
+    _env_task: Option<Task<()>>,
     pub(crate) tabs: Vec<Entity<Editor>>,
     pub(crate) active: usize,
     /// The views of the panels, made as each is first drawn or asked for.
@@ -69,8 +74,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let lsp_enabled = cx.global::<crate::Settings>().lsp;
-        let lsp = cx.new(|_| LspStore::new(root.clone(), lsp_enabled));
+        let settings = cx.global::<crate::Settings>();
+        let (lsp_enabled, project_env) = (settings.lsp, settings.project_env);
+        let env = match project_env {
+            true => Arc::new(EnvCell::default()),
+            false => EnvCell::ready(ProjectEnv::inherited()),
+        };
+        let lsp = cx.new(|_| LspStore::with_env(root.clone(), lsp_enabled, env.clone()));
 
         // Closing the window must not silently drop unsaved work.
         let weak = cx.weak_entity();
@@ -108,6 +118,8 @@ impl Workspace {
             root,
             focus_handle: cx.focus_handle(),
             lsp,
+            env,
+            _env_task: None,
             tabs: Vec::new(),
             active: 0,
             user_panels: HashMap::new(),
@@ -133,6 +145,9 @@ impl Workspace {
             .or_else(|| defaults::no_keys_hint(cx))
             .map(SharedString::from);
         this.read_branch(cx);
+        if project_env {
+            this.load_env(false, cx);
+        }
         // The panels have a project to show.
         script::run_hook("opened", Vec::new(), window, cx);
         this
@@ -233,6 +248,80 @@ impl Workspace {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The environment the project's programs run in, for a background
+    /// thread to wait for.
+    pub(crate) fn env(&self) -> Arc<EnvCell> {
+        self.env.clone()
+    }
+
+    /// Work the project's environment out again, in the background: the
+    /// language servers start in it once it is there, and programs that
+    /// `spawn` meanwhile wait for it.
+    /// `reloaded` says so in the status bar once it is there.
+    fn load_env(&mut self, reloaded: bool, cx: &mut Context<Self>) {
+        self.env.clear();
+        let root = self.root.clone();
+        let (tx, rx) = futures::channel::oneshot::channel();
+        // Not the executor's: direnv evaluating a flake can take minutes.
+        let spawned = std::thread::Builder::new()
+            .name("med-env".into())
+            .spawn(move || {
+                let _ = tx.send(env::load(&root));
+            });
+        if let Err(error) = spawned {
+            self.env.set(ProjectEnv::inherited());
+            self.set_message(
+                format!("Could not load the project environment: {error}"),
+                cx,
+            );
+            return;
+        }
+        self._env_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = rx.await.unwrap_or_else(|_| env::Loaded {
+                env: ProjectEnv::inherited(),
+                problems: vec!["loading the project environment stopped".into()],
+            });
+            let _ = this.update(cx, |this, cx| {
+                this.env.set(loaded.env);
+                this.lsp.update(cx, |lsp, cx| lsp.env_ready(cx));
+                let problems = loaded.problems.join("; ");
+                let message = match (&this.message, problems.is_empty()) {
+                    (_, true) if reloaded => Some("Loaded the project environment".into()),
+                    (_, true) => None,
+                    // What the init file said stays.
+                    (Some(said), false) if !reloaded => Some(format!("{said}; {problems}")),
+                    (_, false) => Some(problems),
+                };
+                if let Some(message) = message {
+                    this.message = Some(message.into());
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// `:workspace.reload_env`: the environment again, and every language
+    /// server started anew in it.
+    fn reload_env(&mut self, cx: &mut Context<Self>) {
+        let project_env = cx.global::<crate::Settings>().project_env;
+        self.lsp.update(cx, |lsp, cx| lsp.restart(cx));
+        if project_env {
+            self.load_env(true, cx);
+        } else {
+            self.env.set(ProjectEnv::inherited());
+        }
+        for editor in &self.tabs {
+            editor.update(cx, |editor, cx| editor.reopen_in_lsp(cx));
+        }
+        self.set_message(
+            match project_env {
+                true => "Loading the project environment",
+                false => "project-env is off: restarted the language servers in med's environment",
+            },
+            cx,
+        );
     }
 
     pub(crate) fn set_message(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -1451,6 +1540,11 @@ pub(crate) fn register(commands: &mut Commands) {
             // The panels it defined anew have a project to show.
             script::run_hook("opened", Vec::new(), window, cx);
         }),
+    );
+    commands.register(
+        "workspace.reload_env",
+        "Load the project's environment again (login shell, direnv) and restart its language servers",
+        W(|ws, _, _, cx| ws.reload_env(cx)),
     );
     commands.register(
         "workspace.help",

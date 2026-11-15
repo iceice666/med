@@ -1,6 +1,7 @@
 //! Language server management: which server speaks which language, starting
 //! them on demand, document sync, and collected diagnostics.
 
+use crate::env::{EnvCell, ProjectEnv};
 use crate::syntax::LangInfo;
 use futures::StreamExt;
 use gpui::{Context, EventEmitter, Task};
@@ -37,11 +38,6 @@ fn candidates(lang: &str) -> &'static [Candidate] {
         "bash" => &[("bash-language-server", &["start"])],
         _ => &[],
     }
-}
-
-fn in_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
 pub fn path_to_uri(path: &Path) -> Option<lsp::Uri> {
@@ -112,6 +108,11 @@ pub struct LspStore {
     servers: HashMap<&'static str, Server>,
     /// Servers that crashed or failed to start; not retried.
     failed: HashSet<&'static str>,
+    /// The environment servers are started in.
+    env: Arc<EnvCell>,
+    /// Files opened while the environment was still being worked out,
+    /// with their language and latest text.
+    waiting: HashMap<PathBuf, (&'static LangInfo, String)>,
     docs: HashMap<PathBuf, &'static str>,
     diagnostics: HashMap<PathBuf, Vec<lsp::Diagnostic>>,
 }
@@ -166,20 +167,56 @@ fn client_capabilities() -> lsp::ClientCapabilities {
 }
 
 impl LspStore {
+    /// Servers start in med's own environment.
     pub fn new(root: PathBuf, enabled: bool) -> Self {
+        Self::with_env(root, enabled, EnvCell::ready(ProjectEnv::inherited()))
+    }
+
+    /// Servers start in `env`, and files opened before it is there wait.
+    pub fn with_env(root: PathBuf, enabled: bool, env: Arc<EnvCell>) -> Self {
         Self {
             root,
             enabled,
             servers: HashMap::new(),
             failed: HashSet::new(),
+            env,
+            waiting: HashMap::new(),
             docs: HashMap::new(),
             diagnostics: HashMap::new(),
         }
     }
 
-    fn start(&mut self, program: &'static str, args: &[&str], cx: &mut Context<Self>) -> bool {
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let Ok((client, mut incoming)) = Client::spawn(program, &args, &self.root) else {
+    /// The environment is there: open the files that waited for it.
+    pub fn env_ready(&mut self, cx: &mut Context<Self>) {
+        for (path, (lang, text)) in std::mem::take(&mut self.waiting) {
+            self.open(&path, lang, text, cx);
+        }
+        cx.emit(LspEvent::Status);
+    }
+
+    /// Stop every server and forget which failed, as when the environment
+    /// changes; the files are to be opened again.
+    pub fn restart(&mut self, cx: &mut Context<Self>) {
+        self.servers.clear();
+        self.failed.clear();
+        self.docs.clear();
+        self.waiting.clear();
+        for (path, _) in std::mem::take(&mut self.diagnostics) {
+            cx.emit(LspEvent::Diagnostics(path));
+        }
+        cx.emit(LspEvent::Status);
+    }
+
+    fn start(
+        &mut self,
+        env: &ProjectEnv,
+        program: &'static str,
+        args: &[&str],
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut command = env.command(program);
+        command.args(args).current_dir(&self.root);
+        let Ok((client, mut incoming)) = Client::spawn_command(program, command) else {
             self.failed.insert(program);
             return false;
         };
@@ -415,6 +452,11 @@ impl LspStore {
         let Some(uri) = path_to_uri(path) else {
             return;
         };
+        let Some(env) = self.env.get() else {
+            self.waiting.insert(path.to_path_buf(), (lang, text));
+            cx.emit(LspEvent::Status);
+            return;
+        };
         let running = candidates(lang.name)
             .iter()
             .find(|(program, _)| self.servers.contains_key(program))
@@ -423,8 +465,8 @@ impl LspStore {
         if program.is_none() {
             for (candidate, args) in candidates(lang.name) {
                 if !self.failed.contains(candidate)
-                    && in_path(candidate)
-                    && self.start(candidate, args, cx)
+                    && env.find_program(candidate).is_some()
+                    && self.start(&env, candidate, args, cx)
                 {
                     program = Some(*candidate);
                     break;
@@ -462,6 +504,10 @@ impl LspStore {
         let Some(uri) = path_to_uri(path) else {
             return;
         };
+        if let Some((_, text)) = self.waiting.get_mut(path) {
+            *text = full_text();
+            return;
+        }
         let Some(server) = self.server(path) else {
             return;
         };
@@ -513,6 +559,7 @@ impl LspStore {
             });
         }
         self.docs.remove(path);
+        self.waiting.remove(path);
         if self.diagnostics.remove(path).is_some() {
             cx.emit(LspEvent::Diagnostics(path.to_path_buf()));
         }
@@ -546,6 +593,9 @@ impl LspStore {
 
     /// Status-bar text for the server attached to `path`.
     pub fn status(&self, path: &Path) -> Option<String> {
+        if self.waiting.contains_key(path) {
+            return Some("loading the environment".into());
+        }
         let program = self.docs.get(path)?;
         let server = self.servers.get(program)?;
         Some(match &server.status {
@@ -823,5 +873,53 @@ mod tests {
             "file:///tmp/my%20dir/%E6%AA%94%E6%A1%88%20%231.rs"
         );
         assert_eq!(uri_to_path(&uri).unwrap(), path);
+    }
+
+    /// A file opened before the environment is there waits for it, keeps
+    /// its latest text, and gets the server found on that environment's
+    /// PATH, not med's.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn servers_wait_for_the_environment(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("med-lsp-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = dir.join("rust-analyzer");
+        std::fs::write(&server, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = dir.join("main.rs");
+        let lang = crate::syntax::lang_for_path(&file).unwrap();
+
+        let cell = Arc::new(EnvCell::default());
+        let store = cx.new(|_| LspStore::with_env(dir.clone(), true, cell.clone()));
+        store.update(cx, |store, cx| {
+            store.open(&file, lang, "fn main() {}".into(), cx)
+        });
+        store.update(cx, |store, _| {
+            store.change(&file, 1, Vec::new(), || "fn main() { 1; }".into());
+        });
+        store.read_with(cx, |store, _| {
+            assert_eq!(
+                store.status(&file).as_deref(),
+                Some("loading the environment")
+            );
+            assert_eq!(store.waiting[&file].1, "fn main() { 1; }");
+        });
+
+        let path = format!("{}:/usr/bin:/bin", dir.display());
+        cell.set(ProjectEnv::from_vars([("PATH", path.as_str())]));
+        store.update(cx, |store, cx| store.env_ready(cx));
+        store.read_with(cx, |store, _| {
+            assert!(store.waiting.is_empty());
+            assert_eq!(
+                store.status(&file).as_deref(),
+                Some("rust-analyzer: starting")
+            );
+        });
+
+        store.update(cx, |store, cx| store.restart(cx));
+        store.read_with(cx, |store, _| assert_eq!(store.status(&file), None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

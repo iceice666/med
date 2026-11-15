@@ -666,7 +666,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
