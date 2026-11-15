@@ -524,6 +524,13 @@ impl LspStore {
         self.diagnostics.get(path).map_or(&[], Vec::as_slice)
     }
 
+    /// The diagnostics of every file that has any.
+    pub fn all_diagnostics(&self) -> impl Iterator<Item = (&PathBuf, &Vec<lsp::Diagnostic>)> {
+        self.diagnostics
+            .iter()
+            .filter(|(_, diagnostics)| !diagnostics.is_empty())
+    }
+
     /// (errors, warnings) across every file with diagnostics.
     pub fn diagnostic_counts(&self) -> (usize, usize) {
         let mut counts = (0, 0);

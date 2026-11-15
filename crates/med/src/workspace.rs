@@ -30,7 +30,28 @@ pub struct Workspace {
     /// Places `ctrl-o` / `ctrl-i` walk through.
     jumps: Vec<(PathBuf, usize)>,
     jump_index: usize,
+    /// The editor programs were last told about, and how it was then.
+    seen: Option<Seen>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What of an editor the hooks are about: see [`Workspace::editor_changed`].
+#[derive(PartialEq)]
+struct Seen {
+    editor: EntityId,
+    version: u64,
+    cursor: usize,
+    mode: Mode,
+}
+
+/// A diagnostic of any file, for a program to list.
+pub(crate) struct FileDiagnostic {
+    pub path: PathBuf,
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    pub severity: u8,
+    pub message: String,
 }
 
 impl Focusable for Workspace {
@@ -65,7 +86,10 @@ impl Workspace {
                     LspEvent::ApplyEdit(edit) => {
                         this.apply_workspace_edit(edit.clone(), window, cx);
                     }
-                    LspEvent::Diagnostics(_) => {}
+                    LspEvent::Diagnostics(path) => {
+                        let path = med_lisp::Value::from(path.display().to_string());
+                        script::run_hook("diagnostics-changed", vec![path], window, cx);
+                    }
                 },
             ),
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -90,6 +114,7 @@ impl Workspace {
             message: None,
             jumps: Vec::new(),
             jump_index: 0,
+            seen: None,
             _subscriptions: subscriptions,
         };
         for file in files {
@@ -201,7 +226,95 @@ impl Workspace {
             None => "med".to_string(),
         };
         window.set_window_title(&title);
+        self.editor_changed(window, cx);
         cx.notify();
+    }
+
+    /// Tell the programs that asked what is new about the file being
+    /// edited: that it is another one, or that its text, its cursor or its
+    /// mode changed.
+    fn editor_changed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor().cloned() else {
+            self.seen = None;
+            return;
+        };
+        let (now, path) = {
+            let read = editor.read(cx);
+            let now = Seen {
+                editor: editor.entity_id(),
+                version: read.buf.version(),
+                cursor: read.vim.cursor,
+                mode: read.vim.mode,
+            };
+            (now, read.path.clone())
+        };
+        if self.seen.as_ref() == Some(&now) {
+            return;
+        }
+        let before = self.seen.replace(now);
+        let now = self.seen.as_ref().expect("just set");
+        let same = before.as_ref().filter(|before| before.editor == now.editor);
+        let (text, cursor, mode) = match same {
+            Some(before) => (
+                before.version != now.version,
+                before.cursor != now.cursor,
+                before.mode != now.mode,
+            ),
+            None => (
+                false,
+                true,
+                before.as_ref().is_none_or(|before| before.mode != now.mode),
+            ),
+        };
+        let mode_now = med_lisp::Value::symbol(crate::buffer_api::mode_name(now.mode));
+        if same.is_none() {
+            let path = path.map_or(med_lisp::Value::Nil, |path| {
+                med_lisp::Value::from(path.display().to_string())
+            });
+            script::run_hook("buffer-entered", vec![path], window, cx);
+        }
+        if text {
+            script::run_hook("buffer-changed", Vec::new(), window, cx);
+        }
+        if mode {
+            script::run_hook("mode-changed", vec![mode_now], window, cx);
+        }
+        if cursor {
+            script::run_hook("cursor-moved", Vec::new(), window, cx);
+        }
+    }
+
+    /// What the language servers say of every file, the worst first in
+    /// each, files in the order of their paths.
+    pub(crate) fn all_diagnostics(&self, cx: &App) -> Vec<FileDiagnostic> {
+        let store = self.lsp.read(cx);
+        let mut found: Vec<FileDiagnostic> = store
+            .all_diagnostics()
+            .flat_map(|(path, diagnostics)| {
+                diagnostics.iter().map(move |diagnostic| FileDiagnostic {
+                    path: path.clone(),
+                    file: self.relative(path),
+                    line: diagnostic.range.start.line as usize,
+                    col: diagnostic.range.start.character as usize,
+                    severity: match diagnostic.severity {
+                        Some(lsp::DiagnosticSeverity::ERROR) | None => 1,
+                        Some(lsp::DiagnosticSeverity::WARNING) => 2,
+                        Some(lsp::DiagnosticSeverity::INFORMATION) => 3,
+                        _ => 4,
+                    },
+                    message: diagnostic
+                        .message
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+            })
+            .collect();
+        found.sort_by(|a, b| {
+            (&a.path, a.severity, a.line, a.col).cmp(&(&b.path, b.severity, b.line, b.col))
+        });
+        found
     }
 
     /// Open `path` in a tab (or switch to the tab that already has it).
@@ -374,7 +487,12 @@ impl Workspace {
                 let pending = pending.as_ref().map(script::editor_pending);
                 script::keys_pending(pending.unwrap_or(med_lisp::Value::Nil), window, cx);
             }
-            EditorEvent::Changed => cx.notify(),
+            EditorEvent::Changed => {
+                cx.notify();
+                if self.active_editor() == Some(editor) {
+                    self.editor_changed(window, cx);
+                }
+            }
             EditorEvent::Message(message) => self.set_message(message.clone(), cx),
             EditorEvent::Ex(command) => self.run_ex(command, window, cx),
             EditorEvent::Command { name, args } => self.run_command(name, args, window, cx),

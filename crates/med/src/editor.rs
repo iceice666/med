@@ -34,6 +34,33 @@ pub struct Diag {
     pub message: String,
 }
 
+/// A mark a program put on the text: see `buffer_api.rs`.
+#[derive(Clone)]
+pub(crate) struct Decoration {
+    /// Char offsets. For a line's decoration both are where it starts.
+    pub start: usize,
+    pub end: usize,
+    pub whole_line: bool,
+    /// A character beside the line's number.
+    pub sign: Option<SharedString>,
+    /// Words after the end of the line.
+    pub text: Option<SharedString>,
+    pub bg: Option<crate::panel::Color>,
+    pub color: Option<crate::panel::Color>,
+}
+
+/// Keep `start..end` on its text through an edit.
+fn shift_range(start: &mut usize, end: &mut usize, edit: &med_core::Edit) {
+    let delta = edit.new_end_char as isize - edit.old_end_char as isize;
+    let shift = |offset: usize| (offset as isize + delta).max(0) as usize;
+    if *start >= edit.old_end_char {
+        *start = shift(*start);
+        *end = shift(*end);
+    } else if *end >= edit.old_end_char {
+        *end = shift(*end).max(*start);
+    }
+}
+
 pub enum EditorEvent {
     /// An ex command for the workspace (`w`, `q`, `e foo`…).
     Ex(String),
@@ -206,6 +233,8 @@ pub struct Editor {
     /// IME composition in progress, as a char range of the buffer.
     marked: Option<Range<usize>>,
     diagnostics: Vec<Diag>,
+    /// What programs marked on the text, by the group they gave.
+    decorations: Vec<(SharedString, Vec<Decoration>)>,
     completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
     key_timeout: Option<Task<()>>,
@@ -399,6 +428,7 @@ impl Editor {
             metrics: None,
             marked: None,
             diagnostics: Vec::new(),
+            decorations: Vec::new(),
             completion: None,
             completion_task: None,
             key_timeout: None,
@@ -782,14 +812,12 @@ impl Editor {
                 syntax.update(&self.buf, &edits);
             }
             for edit in &edits {
-                let delta = edit.new_end_char as isize - edit.old_end_char as isize;
-                let shift = |offset: usize| (offset as isize + delta).max(0) as usize;
                 for d in &mut self.diagnostics {
-                    if d.start >= edit.old_end_char {
-                        d.start = shift(d.start);
-                        d.end = shift(d.end);
-                    } else if d.end >= edit.old_end_char {
-                        d.end = shift(d.end).max(d.start);
+                    shift_range(&mut d.start, &mut d.end, edit);
+                }
+                for (_, group) in &mut self.decorations {
+                    for d in group {
+                        shift_range(&mut d.start, &mut d.end, edit);
                     }
                 }
             }
@@ -979,6 +1007,77 @@ impl Editor {
             }
             None => cx.emit(EditorEvent::Message("No diagnostics".into())),
         }
+    }
+
+    // ---- for programs ---------------------------------------------------
+
+    pub fn diagnostics(&self) -> &[Diag] {
+        &self.diagnostics
+    }
+
+    /// The offset of a line and a column, both from 0; beyond the text it
+    /// is the nearest place in it.
+    pub fn offset_at_place(&self, line: usize, col: usize) -> usize {
+        let line = line.min(self.buf.last_line());
+        self.buf.line_start(line) + col.min(self.buf.line_len(line))
+    }
+
+    /// The first and the last line on screen, from 0.
+    pub fn visible_lines(&self) -> (usize, usize) {
+        let first = (self.scroll_top.max(0.) as usize).min(self.buf.last_line());
+        let last = first + self.visible_lines.max(1) - 1;
+        (first, last.min(self.buf.last_line()))
+    }
+
+    /// Move the cursor, keeping it on screen.
+    pub fn move_cursor(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vim.place_cursor(offset, &self.buf);
+        self.after_change(cx);
+    }
+
+    /// Put `text` in place of `range`, as one step to undo. A cursor in
+    /// or at what is replaced ends up after the new text.
+    pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        let max = self.buf.len_chars();
+        let (start, end) = (range.start.min(max), range.end.min(max));
+        let cursor = self.vim.cursor;
+        self.buf.edit(start..end, text);
+        let new_end = start + text.chars().count();
+        let cursor = if cursor > end {
+            cursor + new_end - end
+        } else if cursor >= start {
+            new_end
+        } else {
+            cursor
+        };
+        self.vim.place_cursor(cursor, &self.buf);
+        self.completion = None;
+        self.after_change(cx);
+    }
+
+    /// Give a group the decorations it is to have from now on; none takes
+    /// the group away.
+    pub(crate) fn set_decorations(
+        &mut self,
+        group: SharedString,
+        decorations: Vec<Decoration>,
+        cx: &mut Context<Self>,
+    ) {
+        self.decorations.retain(|(known, _)| *known != group);
+        if !decorations.is_empty() {
+            self.decorations.push((group, decorations));
+        }
+        cx.notify();
+    }
+
+    /// The lines a group's decorations are on, from 0, in the order they
+    /// were given.
+    pub fn decoration_lines(&self, group: &str) -> Vec<usize> {
+        let group = self.decorations.iter().find(|(known, _)| known == group);
+        group.map_or_else(Vec::new, |(_, decorations)| {
+            let line = |d: &Decoration| self.buf.line_of(d.start.min(self.buf.max_offset()));
+            decorations.iter().map(line).collect()
+        })
     }
 
     // ---- edits from the language server --------------------------------
@@ -1625,6 +1724,30 @@ impl Editor {
                 .map(|s| s.regex.clone())
         };
         let tab_width = self.vim_lang.tab_width;
+        // Decorations, with the colors they come to in this theme.
+        struct Mark {
+            start: usize,
+            end: usize,
+            whole_line: bool,
+            sign: Option<SharedString>,
+            text: Option<SharedString>,
+            bg: Option<Hsla>,
+            color: Option<Hsla>,
+        }
+        let marks: Vec<Mark> = self
+            .decorations
+            .iter()
+            .flat_map(|(_, group)| group)
+            .map(|d| Mark {
+                start: d.start,
+                end: d.end,
+                whole_line: d.whole_line,
+                sign: d.sign.clone(),
+                text: d.text.clone(),
+                bg: d.bg.map(|color| color.of(theme)),
+                color: d.color.map(|color| color.of(theme)),
+            })
+            .collect();
 
         let mut frame = Frame {
             bounds,
@@ -1675,6 +1798,24 @@ impl Editor {
                 }
             }
 
+            // The decorations that touch this line, and the color each
+            // char of it is given by one.
+            let line_marks: Vec<&Mark> = marks
+                .iter()
+                .filter(|m| match m.whole_line {
+                    true => m.start >= ls && m.start <= le,
+                    false => m.start <= le && m.end > ls,
+                })
+                .collect();
+            let mut color_at: Vec<Option<Hsla>> = vec![None; nchars + 1];
+            for mark in line_marks.iter().filter(|m| !m.whole_line) {
+                if let Some(color) = mark.color {
+                    for slot in &mut color_at[mark.start.max(ls) - ls..mark.end.min(le) - ls] {
+                        *slot = Some(color);
+                    }
+                }
+            }
+
             let mut runs: Vec<TextRun> = Vec::new();
             let mut last_key = None;
             for (i, (byte, _)) in text.char_indices().enumerate() {
@@ -1682,7 +1823,13 @@ impl Editor {
                 let offset = ls + i;
                 let inverse = block_cursor && offset == cursor;
                 let marked = self.marked.as_ref().is_some_and(|m| m.contains(&offset));
-                let key = (capture_at[byte], severity_at[i], marked, inverse);
+                let key = (
+                    capture_at[byte],
+                    severity_at[i],
+                    marked,
+                    inverse,
+                    color_at[i],
+                );
                 if last_key == Some(key) {
                     if let Some(run) = runs.last_mut() {
                         run.len += len;
@@ -1691,7 +1838,8 @@ impl Editor {
                 }
                 last_key = Some(key);
                 let style = styles.get(key.0 as usize).copied().flatten();
-                let mut run = plain(len, style.and_then(|s| s.color).unwrap_or(fg));
+                let color = key.4.or(style.and_then(|s| s.color)).unwrap_or(fg);
+                let mut run = plain(len, color);
                 if let Some(style) = style {
                     if let Some(weight) = style.font_weight {
                         run.font.weight = weight;
@@ -1742,6 +1890,28 @@ impl Editor {
                     active_line_bg,
                 ));
             }
+            for mark in &line_marks {
+                let Some(color) = mark.bg else {
+                    continue;
+                };
+                if mark.whole_line {
+                    frame.back.push(fill(
+                        Bounds::new(
+                            point(bounds.left(), y),
+                            size(bounds.size.width, line_height),
+                        ),
+                        color,
+                    ));
+                } else {
+                    let (a, b) = (mark.start.max(ls), mark.end.min(le + 1));
+                    if a < b {
+                        let through = b > le;
+                        frame
+                            .text_back
+                            .push(span(a - ls, (b - ls).min(nchars), through, color));
+                    }
+                }
+            }
             if let Some(regex) = &search {
                 for m in regex.find_iter(&text) {
                     if m.is_empty() {
@@ -1784,8 +1954,24 @@ impl Editor {
             }
 
             // Inline diagnostic after the end of the line.
-            let text_end = shaped.width;
+            let mut text_end = shaped.width;
             frame.lines.push((point(line_x, y), shaped));
+            // What programs have to say of the line, after its end.
+            for mark in &line_marks {
+                let Some(words) = mark.text.as_ref().filter(|_| mark.whole_line) else {
+                    continue;
+                };
+                let words: String = words
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(200)
+                    .collect();
+                let run = plain(words.len(), mark.color.unwrap_or(muted));
+                let shaped = text_system.shape_line(words.into(), font_size, &[run], None);
+                let x = text_end + char_width * 3.;
+                text_end = x + shaped.width;
+                frame.lines.push((point(line_x + x, y), shaped));
+            }
             if let Some(d) = line_diag {
                 let color = diag_colors[(d.severity - 1) as usize];
                 let message: String = d
@@ -1821,6 +2007,19 @@ impl Editor {
                     Bounds::new(point(bounds.left(), y), size(px(3.), line_height)),
                     diag_colors[(severity - 1) as usize],
                 ));
+            }
+            // A program's sign, in front of the number: the first there is.
+            let sign = line_marks
+                .iter()
+                .filter(|m| m.whole_line)
+                .find_map(|m| Some((m.sign.as_ref()?, m.color)));
+            if let Some((sign, color)) = sign {
+                let sign: String = sign.chars().filter(|c| !c.is_control()).take(1).collect();
+                let run = plain(sign.len(), color.unwrap_or(fg));
+                let shaped = text_system.shape_line(sign.into(), font_size, &[run], None);
+                frame
+                    .gutter
+                    .push((point(bounds.left() + char_width * 0.5, y), shaped));
             }
         }
 

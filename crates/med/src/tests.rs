@@ -1467,7 +1467,8 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     };
     assert_eq!(
         error("(add-hook 'closed (fn () 1))", cx),
-        "1:1: closed is not a hook (opened files-changed locations keys-pending)"
+        "1:1: closed is not a hook (opened files-changed locations keys-pending \
+         buffer-entered buffer-changed cursor-moved mode-changed diagnostics-changed)"
     );
     assert!(
         error("(load \"/nowhere/at/all.lisp\")", cx).starts_with("1:1: /nowhere/at/all.lisp: ")
@@ -1928,6 +1929,196 @@ fn eval_in(ws: &Entity<Workspace>, source: &str, cx: &mut VisualTestContext) -> 
     ws.read_with(cx, |ws, _| {
         ws.message.clone().unwrap_or_default().to_string()
     })
+}
+
+fn decoration_lines(ws: &Entity<Workspace>, group: &str, cx: &mut VisualTestContext) -> Vec<usize> {
+    ws.read_with(cx, |ws, cx| {
+        ws.active_editor().unwrap().read(cx).decoration_lines(group)
+    })
+}
+
+#[gpui::test]
+fn programs_read_and_edit_the_file(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one two\nthree\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let eval = |source: &str, cx: &mut VisualTestContext| eval_in(&ws, source, cx);
+
+    // Reading: where the cursor is, and what the text says.
+    assert_eq!(eval("(cursor)", cx), "(1 1)");
+    assert_eq!(eval("(line-count)", cx), "2");
+    assert_eq!(eval(r#"(= (buffer-line 2) "three")"#, cx), "true");
+    assert_eq!(eval("(buffer-line 3)", cx), "nil");
+    assert_eq!(eval(r#"(= (buffer-text '(1 5) '(1 8)) "two")"#, cx), "true");
+    assert_eq!(eval("(length (lines (buffer-text)))", cx), "2");
+    assert_eq!(eval("(car (visible-lines))", cx), "1");
+    assert_eq!(eval("(mode)", cx), "normal");
+    assert_eq!(eval("(selection)", cx), "nil");
+    assert_eq!(eval("(diagnostics)", cx), "nil");
+    assert_eq!(eval("(all-diagnostics)", cx), "nil");
+
+    // Moving: to a place, or to the nearest there is.
+    eval("(set-cursor 2 3)", cx);
+    assert_eq!(cursor(&ws, cx), (2, 3));
+    eval("(set-cursor 99 99)", cx);
+    assert_eq!(cursor(&ws, cx), (2, 5));
+
+    // Editing: each a step to undo, and the cursor follows its text.
+    eval("(set-cursor 1 5)", cx);
+    eval(r#"(insert "2 ")"#, cx);
+    assert_eq!(text(&ws, cx), "one 2 two\nthree\n");
+    assert_eq!(cursor(&ws, cx), (1, 7));
+    eval(r#"(edit '(1 1) '(1 4) "1")"#, cx);
+    assert_eq!(text(&ws, cx), "1 2 two\nthree\n");
+    assert_eq!(cursor(&ws, cx), (1, 5));
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one 2 two\nthree\n");
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one two\nthree\n");
+    // Keys, as the keyboard would type them.
+    eval(r#"(feed-keys "ggcwONE<Esc>jdd")"#, cx);
+    assert_eq!(text(&ws, cx), "ONE two\n");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+
+    // What is selected, asked from a key bound in visual mode.
+    lisp(
+        r#"(def seen nil)
+           (defcommand "user.look" "Note the selection" (fn () (set! seen (list (mode) (selection)))))
+           (bind 'visual "Q" "user.look")"#,
+        cx,
+    );
+    cx.simulate_keystrokes("g g v e shift-q");
+    cx.run_until_parked();
+    assert_eq!(lisp("(car seen)", cx), "visual");
+    assert_eq!(lisp(r#"(= (get (nth 1 seen) :text) "ONE")"#, cx), "true");
+    assert_eq!(lisp("(get (nth 1 seen) :start)", cx), "(1 1)");
+    assert_eq!(lisp("(get (nth 1 seen) :end)", cx), "(1 4)");
+    assert_eq!(lisp("(get (nth 1 seen) :kind)", cx), "char");
+    cx.simulate_keystrokes("escape ctrl-v l shift-q escape");
+    cx.run_until_parked();
+    assert_eq!(lisp("(car seen)", cx), "visual-block");
+    assert_eq!(lisp("(get (nth 1 seen) :kind)", cx), "block");
+
+    // Mistakes are explained.
+    assert_eq!(
+        eval("(set-cursor 0 1)", cx),
+        "1:1: set-cursor: expected a place, (line column) counted from 1, got (0 1)"
+    );
+    // With no file there is nothing to ask about.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("bd!");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(ws.read_with(cx, |ws, _| ws.active_editor().is_none()));
+}
+
+#[gpui::test]
+fn programs_are_told_what_happens_in_the_editor(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\ntwo\n"), ("b.txt", "bee\n")]);
+    let hooks = r#"
+        (def entered nil) (def moves 0) (def changes 0) (def modes nil)
+        (add-hook 'buffer-entered (fn (path) (set! entered (cons (path-name path) entered))))
+        (add-hook 'cursor-moved (fn () (set! moves (+ moves 1))))
+        (add-hook 'buffer-changed (fn () (set! changes (+ changes 1))))
+        (add-hook 'mode-changed (fn (mode) (set! modes (cons mode modes))))"#;
+    let (ws, cx) = open_with(&[hooks], &project, &["a.txt"], cx);
+
+    // The file the window opened on.
+    assert_eq!(lisp("entered", cx), r#"("a.txt")"#);
+    assert_eq!(lisp("modes", cx), "(normal)");
+    assert_eq!(lisp("(list moves changes)", cx), "(1 0)");
+
+    cx.simulate_keystrokes("j");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list moves changes)", cx), "(2 0)");
+    // A key that moves nothing tells nothing.
+    cx.simulate_keystrokes("j");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list moves changes)", cx), "(2 0)");
+
+    cx.simulate_keystrokes("x");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list moves changes)", cx), "(2 1)");
+    assert_eq!(text(&ws, cx), "one\nwo\n");
+
+    cx.simulate_keystrokes("i");
+    cx.simulate_input("t");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(lisp("modes", cx), "(normal insert normal)");
+    assert_eq!(lisp("changes", cx), "2");
+
+    // Another file, and back.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("e b.txt");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    assert_eq!(lisp("(car entered)", cx), r#""b.txt""#);
+    cx.simulate_keystrokes("g t");
+    cx.run_until_parked();
+    assert_eq!(lisp("(car entered)", cx), r#""a.txt""#);
+    assert_eq!(lisp("(length entered)", cx), "3");
+
+    // A hook there is not.
+    assert!(
+        eval_in(&ws, "(add-hook 'cursor-move (fn () nil))", cx)
+            .starts_with("1:1: cursor-move is not a hook (")
+    );
+}
+
+#[gpui::test]
+fn programs_decorate_the_file(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\ntwo\nthree\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let eval = |source: &str, cx: &mut VisualTestContext| eval_in(&ws, source, cx);
+
+    let marks = r##"(decorate 'marks (list
+        (list :line 1 :sign "!" :color 'warning)
+        (list :line 2 :text "the second" :bg "#ff0000")
+        (list :start '(3 1) :end '(3 4) :bg 'warning :color 'danger)))"##;
+    let marks = marks.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(eval(&marks, cx), "3");
+    assert_eq!(decoration_lines(&ws, "marks", cx), [0, 1, 2]);
+    // They are drawn without complaint.
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    // They stay on their text as lines come and go above it.
+    cx.simulate_keystrokes("g g shift-o");
+    cx.simulate_input("zero");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(decoration_lines(&ws, "marks", cx), [1, 2, 3]);
+    cx.simulate_keystrokes("j d d");
+    assert_eq!(text(&ws, cx), "zero\ntwo\nthree\n");
+    assert_eq!(decoration_lines(&ws, "marks", cx), [1, 1, 2]);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    // A group is replaced as a whole, and others are left alone.
+    assert_eq!(
+        eval("(decorate 'other (list (list :line 3 :sign \"x\")))", cx),
+        "1"
+    );
+    assert_eq!(
+        eval("(decorate 'marks (list (list :line 1 :sign \"y\")))", cx),
+        "1"
+    );
+    assert_eq!(decoration_lines(&ws, "marks", cx), [0]);
+    assert_eq!(decoration_lines(&ws, "other", cx), [2]);
+    assert_eq!(eval("(decorate 'marks nil)", cx), "0");
+    assert_eq!(decoration_lines(&ws, "marks", cx), [] as [usize; 0]);
+
+    // Mistakes are explained, and change nothing.
+    assert!(
+        eval("(decorate 'other (list (list :sign \"x\")))", cx).starts_with(
+            "1:1: decorate: expected a decoration with :line, or with :start and :end"
+        )
+    );
+    assert!(
+        eval("(decorate 'other (list (list :line 1 :bg 'no-such)))", cx)
+            .starts_with("1:1: bg: no-such is not a color of the theme")
+    );
+    assert_eq!(decoration_lines(&ws, "other", cx), [2]);
 }
 
 #[gpui::test]

@@ -27,6 +27,7 @@
 //! (bindings 'normal "<Space>")         ; the keys that can follow others
 //! (def timer (after 300 show))         ; call a function in 300 ms
 //! (cancel timer)                       ; or not after all
+//! (cursor) (insert "x") (decorate ...) ; the file being edited: buffer_api.rs
 //! (defpanel 'notes :at 'right ...)     ; a panel: user_panel.rs, panel.rs
 //! (list-dir path) (git 'status ...)    ; the project's files: host.rs
 //! ```
@@ -82,7 +83,25 @@ const DRAW_STEP_LIMIT: u64 = 200_000;
 ///   with one, or are done with it. The function is called with what the
 ///   command waits for, `(:tables :keys :typed :awaiting)` as
 ///   [`pending_value`] makes it, or with nil once nothing is half typed.
-const HOOKS: &[&str] = &["opened", "files-changed", "locations", KEYS_PENDING];
+/// - `buffer-entered`: another file is the one being edited; the
+///   function is called with its path, or nil if it has no name yet.
+/// - `buffer-changed`: the text of the file being edited changed.
+/// - `cursor-moved`: the cursor is somewhere else.
+/// - `mode-changed`: the editor went into another mode; the function is
+///   called with it, as `(mode)` gives it.
+/// - `diagnostics-changed`: a language server has something new to say
+///   about a file; the function is called with the file's path.
+const HOOKS: &[&str] = &[
+    "opened",
+    "files-changed",
+    "locations",
+    KEYS_PENDING,
+    "buffer-entered",
+    "buffer-changed",
+    "cursor-moved",
+    "mode-changed",
+    "diagnostics-changed",
+];
 
 const KEYS_PENDING: &str = "keys-pending";
 
@@ -154,6 +173,7 @@ pub fn init(cx: &mut App) {
     crate::panel::define_functions(&mut interp);
     crate::user_panel::define_functions(&mut interp);
     crate::host::define_functions(&mut interp);
+    crate::buffer_api::define_functions(&mut interp);
     for (name, value) in INVOCATION.iter().zip(invocation(&Args::default())) {
         interp.define(name, value);
     }

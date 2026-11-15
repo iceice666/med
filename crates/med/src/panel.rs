@@ -154,9 +154,18 @@ enum Justify {
 
 /// A color of the theme by name, or `"#rrggbb"`.
 #[derive(Clone, Copy)]
-enum Color {
+pub(crate) enum Color {
     Theme(ThemeColor),
     Fixed(Hsla),
+}
+
+impl Color {
+    pub(crate) fn of(self, theme: &Theme) -> Hsla {
+        match self {
+            Color::Theme(get) => get(theme),
+            Color::Fixed(color) => color,
+        }
+    }
 }
 
 /// Looks a color up in whichever theme is in use.
@@ -222,7 +231,7 @@ fn size(key: &str, value: &Value) -> Result<Size, Error> {
     }
 }
 
-fn color(key: &str, value: &Value) -> Result<Color, Error> {
+pub(crate) fn color(key: &str, value: &Value) -> Result<Color, Error> {
     let Some(name) = word(value) else {
         return Err(wrong(key, "a color", value));
     };

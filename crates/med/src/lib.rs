@@ -1,5 +1,6 @@
 //! med — a modal editor built on GPUI.
 
+pub mod buffer_api;
 pub mod commands;
 pub mod defaults;
 pub mod editor;
