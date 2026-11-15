@@ -39,6 +39,22 @@ pub(crate) enum Await {
     Replace,
     /// `i` / `a` after an operator or in visual mode
     TextObject { around: bool },
+    /// `m`: the name of the mark to set.
+    SetMark,
+    /// `'` / `` ` ``: the mark to go to, to its line or to the very place.
+    Mark { linewise: bool },
+    /// `q`: the register to record keys into.
+    RecordRegister,
+    /// `@`: the register whose keys to run.
+    PlayRegister,
+    /// The delimiter to put around what a surround operator was given.
+    SurroundAdd,
+    /// `ds`: the delimiter to remove.
+    SurroundDelete,
+    /// `cs`: the delimiter to replace…
+    SurroundChange,
+    /// …and, with that one known, what to replace it with.
+    SurroundChangeTo(char),
 }
 
 /// Normal- and visual-mode commands that are neither motions nor operators.
@@ -78,6 +94,22 @@ pub(crate) enum Cmd {
     Reselect,
     /// Open the command line with this prompt (`:`, `/`, `?`).
     Prompt(char),
+    /// Enter blockwise visual mode, switch to it, or leave it.
+    VisualBlock,
+    /// `I` / `A` in visual mode: insert before or after the selection, on
+    /// every line of a block.
+    BlockInsert {
+        append: bool,
+    },
+    /// `q`: start recording keys into a register, or stop.
+    Record,
+    /// `s` after an operator: `ys` surrounds, `ds` and `cs` take
+    /// delimiters away and change them.
+    Surround,
+    /// Select the syntax node around the cursor or the selection.
+    Expand,
+    /// Go back to what was selected before the last `Expand`.
+    Shrink,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +135,10 @@ pub(crate) enum InsertCmd {
 
 const fn motion(m: Motion) -> Builtin {
     Builtin::Motion(m)
+}
+
+const fn syntax(kind: char, forward: bool) -> Builtin {
+    Builtin::Motion(Motion::Syntax { kind, forward })
 }
 
 const fn find(forward: bool, till: bool) -> Builtin {
@@ -221,6 +257,25 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ("motion.prev_line", motion(Motion::PrevLine)),
     ("motion.current_line", motion(Motion::CurLine)),
     ("motion.column", motion(Motion::Column)),
+    // Marks: the next key names one.
+    ("mark.set", Builtin::Await(Await::SetMark)),
+    (
+        "motion.mark_line",
+        Builtin::Await(Await::Mark { linewise: true }),
+    ),
+    (
+        "motion.mark",
+        Builtin::Await(Await::Mark { linewise: false }),
+    ),
+    // What the syntax tree knows: functions, types, arguments, comments.
+    ("motion.next_function", syntax('f', true)),
+    ("motion.prev_function", syntax('f', false)),
+    ("motion.next_type", syntax('t', true)),
+    ("motion.prev_type", syntax('t', false)),
+    ("motion.next_argument", syntax('a', true)),
+    ("motion.prev_argument", syntax('a', false)),
+    ("motion.next_comment", syntax('c', true)),
+    ("motion.prev_comment", syntax('c', false)),
     // Operators: wait for a motion or text object, or act on the selection.
     ("operator.delete", op(Operator::Delete)),
     ("operator.change", op(Operator::Change)),
@@ -231,6 +286,11 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ("operator.uppercase", op(Operator::Upper)),
     ("operator.toggle_case", op(Operator::ToggleCase)),
     ("operator.comment", op(Operator::Comment)),
+    // Surround: the operator waits for a motion, then for the delimiter.
+    ("surround.add", op(Operator::Surround)),
+    ("surround.delete", Builtin::Await(Await::SurroundDelete)),
+    ("surround.change", Builtin::Await(Await::SurroundChange)),
+    ("surround.operator", cmd(Cmd::Surround)),
     // The next key names the object (`w`, `"`, `(`…) or the register.
     (
         "textobj.inner",
@@ -248,6 +308,7 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ("mode.append_line_end", cmd(Cmd::AppendLineEnd)),
     ("mode.visual", cmd(Cmd::Visual { linewise: false })),
     ("mode.visual_line", cmd(Cmd::Visual { linewise: true })),
+    ("mode.visual_block", cmd(Cmd::VisualBlock)),
     ("edit.open_below", cmd(Cmd::OpenBelow)),
     ("edit.open_above", cmd(Cmd::OpenAbove)),
     ("edit.delete_char", cmd(Cmd::DeleteChar { before: false })),
@@ -278,6 +339,12 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ("edit.redo", cmd(Cmd::Redo)),
     ("visual.swap_ends", cmd(Cmd::SwapEnds)),
     ("visual.reselect", cmd(Cmd::Reselect)),
+    ("visual.insert", cmd(Cmd::BlockInsert { append: false })),
+    ("visual.append", cmd(Cmd::BlockInsert { append: true })),
+    ("select.expand", cmd(Cmd::Expand)),
+    ("select.shrink", cmd(Cmd::Shrink)),
+    ("macro.record", cmd(Cmd::Record)),
+    ("macro.play", Builtin::Await(Await::PlayRegister)),
     ("cmdline.ex", cmd(Cmd::Prompt(':'))),
     ("cmdline.search_forward", cmd(Cmd::Prompt('/'))),
     ("cmdline.search_backward", cmd(Cmd::Prompt('?'))),

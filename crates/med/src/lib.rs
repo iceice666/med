@@ -96,7 +96,9 @@ pub fn config_dir() -> Option<PathBuf> {
 /// script interpreter. Needs no window system, so headless code can
 /// stop here.
 pub fn init_globals(cx: &mut App) {
-    cx.set_global(VimGlobal(med_vim::Shared::default()));
+    let mut vim = med_vim::Shared::default();
+    vim.auto_pairs = true;
+    cx.set_global(VimGlobal(vim));
     commands::init(cx);
     defaults::init(cx);
     panel::init(cx);

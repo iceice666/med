@@ -10,7 +10,8 @@
 //! (bind 'tree "x" "tree.close")        ; a panel's keys
 //! (bind-keys 'normal "Y" "y$")         ; keys typed in place of others
 //! (unbind 'normal "gt")
-//! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout
+//! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
+//!                                      ; auto-pairs
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -368,8 +369,9 @@ pub fn run_hook(
 /// - `:keys`: the start of a binding typed so far, as `bindings` takes
 ///   it. Empty after a count or an operator.
 /// - `:typed`: every key of the command so far (`"a2d`).
-/// - `:awaiting`: `'register`, `'char` or `'text-object` when the next
-///   key is not looked up but taken as it is (after `"`, `f`, `di`).
+/// - `:awaiting`: `'register`, `'char`, `'text-object` or `'mark` when the
+///   next key is not looked up but taken as it is (after `"`, `f`, `di`,
+///   `m`).
 pub(crate) fn pending_value(
     tables: &[&str],
     keys: &str,
@@ -394,6 +396,7 @@ pub(crate) fn editor_pending(pending: &PendingKeys) -> Value {
         Awaiting::Register => "register",
         Awaiting::Char => "char",
         Awaiting::TextObject => "text-object",
+        Awaiting::Mark => "mark",
     });
     pending_value(
         &[mode.map_or("normal", |(name, _)| name)],
@@ -548,6 +551,18 @@ fn tables(value: &Value, cx: &App) -> Result<Vec<Table>, Error> {
 fn milliseconds(value: &Value) -> Result<Duration, Error> {
     Duration::try_from_secs_f64(value.as_float()? / 1000.)
         .map_err(|_| failed(format!("{value} is no time to wait, in milliseconds")))
+}
+
+/// An option that is on or off.
+fn flag(value: &Value) -> Result<bool, Error> {
+    match value {
+        Value::Bool(on) => Ok(*on),
+        Value::Nil => Ok(false),
+        other => Err(Error::new(
+            ErrorKind::Type,
+            format!("expected true or false, got {other}"),
+        )),
+    }
 }
 
 /// Keys as a program writes them, in vim notation.
@@ -778,15 +793,7 @@ fn define_functions(interp: &mut Interp) {
                 };
             }
             // Read when a window opens: of use in the init file.
-            "lsp" => match value {
-                Value::Bool(enabled) => settings.lsp = *enabled,
-                other => {
-                    return Err(Error::new(
-                        ErrorKind::Type,
-                        format!("expected true or false, got {other}"),
-                    ));
-                }
-            },
+            "lsp" => settings.lsp = flag(value)?,
             // How long a key that is a binding by itself waits to become
             // a longer one, in milliseconds; nil for as long as it takes.
             "key-timeout" => {
@@ -795,9 +802,15 @@ fn define_functions(interp: &mut Interp) {
                     time => Some(milliseconds(time)?),
                 };
             }
+            // Close brackets and quotes as they are typed.
+            "auto-pairs" => {
+                let on = flag(value)?;
+                cx.global_mut::<VimGlobal>().0.auto_pairs = on;
+            }
             other => {
                 return Err(failed(format!(
-                    "{other} is not an option (font-size font-family lsp key-timeout)"
+                    "{other} is not an option \
+                     (font-size font-family lsp key-timeout auto-pairs)"
                 )));
             }
         }

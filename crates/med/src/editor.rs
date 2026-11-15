@@ -168,6 +168,20 @@ fn expand_tabs(text: &str, tab_width: usize) -> (String, Vec<u32>) {
     (display, offsets)
 }
 
+/// What is closed as it is opened in the file at `path`: everything a
+/// language has in pairs, which a `'` is not where it marks a lifetime or
+/// quotes a form.
+fn pairs_for(path: &Path) -> Vec<(char, char)> {
+    let extension = path.extension().and_then(|ext| ext.to_str());
+    let lone_quote = matches!(
+        extension,
+        Some("rs" | "lisp" | "el" | "clj" | "cljs" | "scm" | "rkt" | "ml" | "mli" | "hs")
+    );
+    let mut pairs = med_vim::PAIRS.to_vec();
+    pairs.retain(|pair| !(lone_quote && pair.0 == '\''));
+    pairs
+}
+
 fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -318,6 +332,7 @@ impl Editor {
                 .or(self.lang.map(|l| l.expand_tab))
                 .unwrap_or(true),
             line_comment: self.lang.and_then(|l| l.line_comment).map(str::to_string),
+            pairs: pairs_for(&path),
         };
         self.mtime = mtime(&path);
         self.diagnostics.clear();
@@ -475,6 +490,7 @@ impl Editor {
             height: self.visible_lines.max(1),
         };
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
+        let syntax = &mut self.syntax;
         cx.update_global::<VimGlobal, R>(|global, cx| {
             let mut clipboard = AppClipboard(cx);
             let mut ctx = Ctx {
@@ -483,6 +499,9 @@ impl Editor {
                 clipboard: &mut clipboard,
                 viewport,
                 lang,
+                syntax: syntax
+                    .as_mut()
+                    .map(|syntax| syntax as &mut dyn med_vim::SyntaxTree),
             };
             f(vim, &mut ctx)
         })
@@ -624,6 +643,8 @@ impl Editor {
     /// edits to the syntax tree and the language server, keep the cursor on
     /// screen, repaint.
     fn after_change(&mut self, cx: &mut Context<Self>) {
+        // Marks follow the edits made here as they do the engine's own.
+        self.vim.sync(&self.buf);
         let edits = self.buf.take_edits();
         if !edits.is_empty() {
             if let Some(syntax) = &mut self.syntax {
@@ -1228,9 +1249,8 @@ impl Editor {
         let mode = self.vim.mode;
         let cursor = self.vim.cursor;
         let cursor_line = buf.line_of(cursor);
-        let block_cursor =
-            focused && matches!(mode, Mode::Normal | Mode::Visual | Mode::VisualLine);
-        let selection = self.vim.selection(buf);
+        let block_cursor = focused && (mode == Mode::Normal || mode.is_visual());
+        let selections = self.vim.selections(buf);
         let search = {
             let shared = &cx.global::<VimGlobal>().0;
             shared
@@ -1348,7 +1368,7 @@ impl Editor {
                 )
             };
 
-            if line == cursor_line && selection.is_none() {
+            if line == cursor_line && !mode.is_visual() {
                 frame.back.push(fill(
                     Bounds::new(
                         point(bounds.left(), y),
@@ -1367,7 +1387,7 @@ impl Editor {
                     frame.text_back.push(span(from, to, false, search_bg));
                 }
             }
-            if let Some((s, e)) = selection {
+            for &(s, e) in &selections {
                 let (a, b) = (s.max(ls), e.min(le + 1));
                 if a < b {
                     frame
@@ -1620,7 +1640,7 @@ impl Render for Editor {
                 Mode::Normal if self.vim.has_pending() => "pending",
                 Mode::Normal => "normal",
                 Mode::Insert => "insert",
-                Mode::Visual | Mode::VisualLine => "visual",
+                Mode::Visual | Mode::VisualLine | Mode::VisualBlock => "visual",
                 Mode::Command => "command",
             },
         );

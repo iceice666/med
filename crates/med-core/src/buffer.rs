@@ -340,6 +340,12 @@ impl Buffer {
         removed
     }
 
+    /// The edits [`take_edits`](Self::take_edits) would give, left where
+    /// they are. Each is one step of [`version`](Self::version).
+    pub fn edits(&self) -> &[Edit] {
+        &self.edits
+    }
+
     /// Edits applied since the last call, oldest first.
     pub fn take_edits(&mut self) -> Vec<Edit> {
         std::mem::take(&mut self.edits)

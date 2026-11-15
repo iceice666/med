@@ -36,6 +36,26 @@ pub fn text_object(buf: &Buffer, pos: usize, kind: char, around: bool) -> Option
     }
 }
 
+/// Where the delimiters `kind` stands for are, around `pos`: the opening
+/// one and the closing one. Brackets are matched across lines, anything
+/// else pairs up along the line.
+pub fn delimiters(buf: &Buffer, pos: usize, kind: char) -> Option<(usize, usize)> {
+    let bracket = |open, close| {
+        let around = bracket(buf, pos, open, close, true)?;
+        Some((around.start, around.end - 1))
+    };
+    match kind {
+        '(' | ')' | 'b' => bracket('(', ')'),
+        '[' | ']' | 'r' => bracket('[', ']'),
+        '{' | '}' | 'B' => bracket('{', '}'),
+        '<' | '>' | 'a' => bracket('<', '>'),
+        c => {
+            let inner = quote(buf, pos, c, false)?;
+            Some((inner.start - 1, inner.end))
+        }
+    }
+}
+
 fn word(buf: &Buffer, pos: usize, around: bool, big: bool) -> ObjRange {
     let line = buf.line_of(pos);
     let (ls, le) = (buf.line_start(line), buf.line_end(line));

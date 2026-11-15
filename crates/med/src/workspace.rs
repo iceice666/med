@@ -617,7 +617,7 @@ impl Workspace {
         let mode_color = match mode {
             Mode::Normal => theme.info,
             Mode::Insert => theme.success,
-            Mode::Visual | Mode::VisualLine => theme.warning,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => theme.warning,
             Mode::Command => theme.primary,
         };
         let name = match &editor.path {
@@ -677,6 +677,11 @@ impl Workspace {
                 .child(mode.label()),
         )
         .child(left)
+        .children(editor.vim.recording().map(|register| {
+            div()
+                .text_color(theme.danger)
+                .child(format!("recording @{register}"))
+        }))
         .child(
             div()
                 .text_color(theme.warning)

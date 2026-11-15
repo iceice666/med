@@ -14,6 +14,6 @@ pub use command::command_names;
 pub use ex::build_regex;
 pub use keymap::{Bound, KeyTrie, Keymap, Lookup, MapMode, NextKey, format_keys, parse_keys};
 pub use vim::{
-    Awaiting, Clipboard, Ctx, Effect, Key, Lang, MemClipboard, Mode, PendingKeys, Register, Scroll,
-    Search, Shared, Viewport, Vim, find_match,
+    Awaiting, Clipboard, Ctx, Effect, Key, Lang, MemClipboard, Mode, PAIRS, PendingKeys, Register,
+    Scroll, Search, Shared, SyntaxTree, Viewport, Vim, find_match,
 };

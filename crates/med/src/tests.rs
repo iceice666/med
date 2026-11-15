@@ -592,7 +592,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
     cx.simulate_keystrokes("space e");
     cx.run_until_parked();
-    cx.simulate_keystrokes("cmd-shift-j q");
+    cx.simulate_keystrokes("cmd-shift-j");
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
     assert_eq!(eval(r#"(unbind 'app "cmd-shift-j")"#, cx), "true");
@@ -632,7 +632,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1913,4 +1913,87 @@ fn keys_and_commands_are_data(cx: &mut TestAppContext) {
     });
     cx.simulate_keystrokes("shift-z");
     assert_eq!(message(cx), "Unknown command: no.such_command");
+}
+
+/// Evaluate a form from the command line, and give what the status bar
+/// then says: what the form came to, or what went wrong.
+fn eval_in(ws: &Entity<Workspace>, source: &str, cx: &mut VisualTestContext) -> String {
+    cx.simulate_keystrokes(":");
+    cx.simulate_input(&format!("eval {source}"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    ws.read_with(cx, |ws, _| {
+        ws.message.clone().unwrap_or_default().to_string()
+    })
+}
+
+#[gpui::test]
+fn the_new_keys_work_in_a_window(cx: &mut TestAppContext) {
+    let source = "\
+fn add(left: i32, right: i32) -> i32 {
+    left + right
+}
+
+fn main() {
+    add(1, 2);
+}
+";
+    let project = Project::new(&[("a.rs", source)]);
+    let (ws, cx) = open(&project, &["a.rs"], cx);
+
+    // The syntax tree's motions and text objects.
+    cx.simulate_keystrokes("] f");
+    assert_eq!(cursor(&ws, cx), (5, 1));
+    cx.simulate_keystrokes("[ f f l c i a");
+    cx.simulate_input("a: u8");
+    cx.simulate_keystrokes("escape");
+    assert!(text(&ws, cx).starts_with("fn add(a: u8, right: i32) -> i32 {"));
+    cx.simulate_keystrokes("u j ] x");
+    assert_eq!(mode(&ws, cx), Mode::Visual);
+    cx.simulate_keystrokes("escape d a f");
+    assert_eq!(text(&ws, cx), "\nfn main() {\n    add(1, 2);\n}\n");
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), source);
+
+    // A block, with something put in front of each of its lines.
+    cx.simulate_keystrokes("g g ctrl-v j j shift-i");
+    cx.simulate_input("// ");
+    cx.simulate_keystrokes("escape");
+    assert!(
+        text(&ws, cx)
+            .starts_with("// fn add(left: i32, right: i32) -> i32 {\n//     left + right\n// }\n")
+    );
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), source);
+
+    // Surround, and a macro: quote a word here, then again further down.
+    cx.simulate_keystrokes("g g w q a y s i w \" q");
+    assert!(text(&ws, cx).starts_with("fn \"add\"(left"));
+    cx.simulate_keystrokes("5 j w @ a");
+    assert!(text(&ws, cx).contains("    \"add\"(1, 2);"));
+    cx.simulate_keystrokes("d s \" u u u");
+    assert_eq!(text(&ws, cx), source);
+
+    // Brackets close as they are typed, but a `'` in Rust is a lifetime's.
+    cx.simulate_keystrokes("shift-g shift-o");
+    cx.simulate_input("fn f<'a>(x: &[");
+    assert_eq!(
+        ws.read_with(cx, |ws, cx| ws
+            .active_editor()
+            .unwrap()
+            .read(cx)
+            .buf
+            .line_string(6)),
+        "fn f<'a>(x: &[])"
+    );
+    cx.simulate_keystrokes("escape");
+    assert_eq!(eval_in(&ws, "(set-option 'auto-pairs false)", cx), "nil");
+    cx.simulate_keystrokes("shift-s");
+    cx.simulate_input("(");
+    cx.simulate_keystrokes("escape");
+    assert!(text(&ws, cx).ends_with("(\n}\n"));
+
+    // Marks.
+    cx.simulate_keystrokes("g g m a shift-g ' a");
+    assert_eq!(cursor(&ws, cx), (1, 1));
 }

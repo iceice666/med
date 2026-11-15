@@ -10,15 +10,18 @@
 
 use crate::command::{Action, Await, Builtin, Cmd, InsertCmd};
 use crate::ex::{self, RangeCtx};
-use crate::keymap::{Keymap, Lookup, MapMode, format_keys};
+use crate::keymap::{Keymap, Lookup, MapMode, format_keys, parse_keys};
 use crate::motion::{self, Find, WS, class, first_non_blank, leading_ws};
-use crate::textobj;
+use crate::textobj::{self, ObjRange};
 use med_core::Buffer;
 use regex::Regex;
 use std::collections::{HashMap, VecDeque};
 
 /// Keys run for one key press before giving up on a mapping as endless.
 const MAX_MAPPED_KEYS: usize = 1000;
+
+/// Keys one `@` runs before a macro that calls itself is given up on.
+const MAX_MACRO_KEYS: usize = 100_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -56,13 +59,15 @@ pub enum Mode {
     Insert,
     Visual,
     VisualLine,
+    /// A rectangle of text: `ctrl-v`.
+    VisualBlock,
     /// Editing the `:` / `/` / `?` command line.
     Command,
 }
 
 impl Mode {
     pub fn is_visual(self) -> bool {
-        matches!(self, Mode::Visual | Mode::VisualLine)
+        matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
     }
 
     pub fn label(self) -> &'static str {
@@ -71,6 +76,7 @@ impl Mode {
             Mode::Insert => "INSERT",
             Mode::Visual => "VISUAL",
             Mode::VisualLine => "V-LINE",
+            Mode::VisualBlock => "V-BLOCK",
             Mode::Command => "COMMAND",
         }
     }
@@ -89,7 +95,19 @@ pub struct Lang {
     pub tab_width: usize,
     pub expand_tab: bool,
     pub line_comment: Option<String>,
+    /// What is closed as it is opened, while [`Shared::auto_pairs`] is on.
+    pub pairs: Vec<(char, char)>,
 }
+
+/// The brackets and quotes most languages close.
+pub const PAIRS: &[(char, char)] = &[
+    ('(', ')'),
+    ('[', ']'),
+    ('{', '}'),
+    ('"', '"'),
+    ('\'', '\''),
+    ('`', '`'),
+];
 
 impl Default for Lang {
     fn default() -> Self {
@@ -97,6 +115,7 @@ impl Default for Lang {
             tab_width: 4,
             expand_tab: true,
             line_comment: None,
+            pairs: PAIRS.to_vec(),
         }
     }
 }
@@ -130,10 +149,33 @@ impl Clipboard for MemClipboard {
     }
 }
 
+/// What the host knows of the text's structure, for the text objects and
+/// motions that go by it (`if`, `]f`, expanding the selection). An engine
+/// with no host to ask does without them.
+pub trait SyntaxTree {
+    /// The text object `kind` at `pos`, as `start..end` in chars: `f` a
+    /// function, `t` a type, `a` an argument, `c` a comment.
+    fn object(
+        &mut self,
+        buf: &Buffer,
+        pos: usize,
+        kind: char,
+        around: bool,
+    ) -> Option<(usize, usize)>;
+
+    /// The smallest node that holds `start..end` and more.
+    fn enclosing(&mut self, buf: &Buffer, start: usize, end: usize) -> Option<(usize, usize)>;
+
+    /// Where the next (or the previous) object of `kind` starts.
+    fn neighbor(&mut self, buf: &Buffer, pos: usize, kind: char, forward: bool) -> Option<usize>;
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Register {
     pub text: String,
     pub linewise: bool,
+    /// A rectangle, one line of it to a line of `text`.
+    pub blockwise: bool,
 }
 
 pub struct Search {
@@ -150,8 +192,15 @@ pub struct Shared {
     registers: HashMap<char, Register>,
     pub search: Option<Search>,
     pub hlsearch: bool,
+    /// Close brackets and quotes as they are typed.
+    pub auto_pairs: bool,
     last_find: Option<Find>,
     last_change: Vec<Key>,
+    /// The keys recorded into a register, with the text they were stored
+    /// as: while the register still holds that text, these are run rather
+    /// than the text read back, which cannot say everything (a paste).
+    macros: HashMap<char, (String, Vec<Key>)>,
+    last_macro: Option<char>,
 }
 
 impl Shared {
@@ -195,6 +244,7 @@ impl Shared {
                     Some(clip) if unnamed.is_none_or(|r| r.text != clip) => Some(Register {
                         linewise: clip.ends_with('\n'),
                         text: clip,
+                        blockwise: false,
                     }),
                     _ => unnamed.cloned(),
                 }
@@ -206,6 +256,15 @@ impl Shared {
     pub fn register(&self, name: char) -> Option<&Register> {
         self.registers.get(&name)
     }
+
+    #[cfg(test)]
+    pub(crate) fn registers_insert_for_test(&mut self, name: char, text: &str) {
+        let register = Register {
+            text: text.to_string(),
+            ..Register::default()
+        };
+        self.registers.insert(name, register);
+    }
 }
 
 pub struct Ctx<'a> {
@@ -214,6 +273,7 @@ pub struct Ctx<'a> {
     pub clipboard: &'a mut dyn Clipboard,
     pub viewport: Viewport,
     pub lang: &'a Lang,
+    pub syntax: Option<&'a mut dyn SyntaxTree>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,6 +317,8 @@ pub(crate) enum Operator {
     Upper,
     ToggleCase,
     Comment,
+    /// Put a delimiter, asked for next, around the target.
+    Surround,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -304,6 +366,16 @@ pub(crate) enum Motion {
     CurLine,
     /// `|`
     Column,
+    /// `'a` / `` `a ``
+    Mark {
+        name: char,
+        linewise: bool,
+    },
+    /// `]f`, `[a`…: the next or previous thing of a kind in the syntax tree.
+    Syntax {
+        kind: char,
+        forward: bool,
+    },
 }
 
 impl Motion {
@@ -319,6 +391,8 @@ impl Motion {
                 | Motion::ScreenBot
                 | Motion::SearchNext { .. }
                 | Motion::WordSearch { .. }
+                | Motion::Mark { .. }
+                | Motion::Syntax { .. }
         )
     }
 }
@@ -397,17 +471,46 @@ pub struct PendingKeys {
 /// What a command takes its next key as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Awaiting {
-    /// The name of a register, after `"`.
+    /// The name of a register, after `"`, `q` or `@`.
     Register,
-    /// A character to find or to replace with, after `f` or `r`.
+    /// A character to find or to replace with, after `f` or `r`, or a
+    /// delimiter to surround with.
     Char,
     /// What kind of text object, after `i` or `a`.
     TextObject,
+    /// The name of a mark, after `m`, `'` or `` ` ``.
+    Mark,
 }
 
 struct CmdLine {
     kind: char,
     text: String,
+}
+
+/// What a surround operator was given, until the delimiter is typed.
+struct Surround {
+    /// `start..end` in chars: one, or a block's line by line.
+    ranges: Vec<(usize, usize)>,
+    /// Whole lines were selected: the delimiters get lines of their own.
+    own_lines: bool,
+}
+
+/// An insert that began on a block (`I`, `A`, `c`): what is typed on its
+/// first line goes on every other line when the insert ends.
+struct BlockInsert {
+    /// Where the typing began.
+    start: usize,
+    /// The other lines, inclusive.
+    rows: (usize, usize),
+    col: usize,
+    /// Lines that end before `col` are filled up to it rather than left out.
+    pad: bool,
+}
+
+/// One step of `select.expand`, to step back from.
+struct Expansion {
+    from: (usize, usize, Mode),
+    to: (usize, usize),
 }
 
 pub struct Vim {
@@ -431,6 +534,21 @@ pub struct Vim {
     last_visual: Option<(usize, usize, Mode)>,
     /// A one-line message for the status bar (errors, substitution counts).
     pub message: Option<String>,
+    /// Places by name (`ma`), and `'` for where the last jump left from.
+    marks: HashMap<char, usize>,
+    /// The buffer version the marks are up to date with.
+    marks_version: u64,
+    surround: Option<Surround>,
+    block_insert: Option<BlockInsert>,
+    expansions: Vec<Expansion>,
+    /// The register keys are being recorded into, and the keys so far.
+    recording: Option<(char, Vec<Key>)>,
+    /// How many keys were recorded when the command being typed began.
+    record_mark: usize,
+    /// Keys a `@` asked to have run, once the command it ended is done.
+    macro_request: Option<Vec<Key>>,
+    /// The keys being run are a macro's: they are not recorded again.
+    playing: bool,
 }
 
 impl Default for Vim {
@@ -464,6 +582,15 @@ impl Vim {
             unread: Vec::new(),
             last_visual: None,
             message: None,
+            marks: HashMap::new(),
+            marks_version: 0,
+            surround: None,
+            block_insert: None,
+            expansions: Vec::new(),
+            recording: None,
+            record_mark: 0,
+            macro_request: None,
+            playing: false,
         }
     }
 
@@ -495,11 +622,63 @@ impl Vim {
             keys: format_keys(&self.pending.seq),
             typed: self.pending_display(),
             awaiting: self.pending.awaiting.map(|awaiting| match awaiting {
-                Await::Register => Awaiting::Register,
-                Await::Find { .. } | Await::Replace => Awaiting::Char,
+                Await::Register | Await::RecordRegister | Await::PlayRegister => Awaiting::Register,
+                Await::Find { .. }
+                | Await::Replace
+                | Await::SurroundAdd
+                | Await::SurroundDelete
+                | Await::SurroundChange
+                | Await::SurroundChangeTo(_) => Awaiting::Char,
                 Await::TextObject { .. } => Awaiting::TextObject,
+                Await::SetMark | Await::Mark { .. } => Awaiting::Mark,
             }),
         })
+    }
+
+    /// The register keys are being recorded into, after `q`.
+    pub fn recording(&self) -> Option<char> {
+        self.recording.as_ref().map(|(name, _)| *name)
+    }
+
+    /// Where the mark `name` is, if it is set.
+    pub fn mark(&self, name: char) -> Option<usize> {
+        match name {
+            '`' => self.marks.get(&'\'').copied(),
+            '<' | '>' => {
+                let (anchor, cursor, _) = self.last_visual?;
+                let (s, e) = minmax(anchor, cursor);
+                Some(if name == '<' { s } else { e })
+            }
+            name => self.marks.get(&name).copied(),
+        }
+    }
+
+    /// Move the marks along with the edits made to `buf` since they were
+    /// last looked at. The engine does this for its own edits; a host that
+    /// edits the buffer itself calls it before it takes the edits away.
+    pub fn sync(&mut self, buf: &Buffer) {
+        let version = buf.version();
+        if version == self.marks_version {
+            return;
+        }
+        let edits = buf.edits();
+        // Each edit is one version; the oldest still listed came after this.
+        let listed_from = version.saturating_sub(edits.len() as u64);
+        let skip = self.marks_version.saturating_sub(listed_from) as usize;
+        for edit in edits.iter().skip(skip) {
+            for mark in self.marks.values_mut() {
+                if *mark >= edit.old_end_char {
+                    *mark = *mark + edit.new_end_char - edit.old_end_char;
+                } else if *mark > edit.start_char {
+                    *mark = edit.start_char;
+                }
+            }
+        }
+        let max = buf.max_offset();
+        for mark in self.marks.values_mut() {
+            *mark = (*mark).min(max);
+        }
+        self.marks_version = version;
     }
 
     /// The visual selection as `start..end` chars, if any.
@@ -511,8 +690,45 @@ impl Vim {
                 buf.line_start(buf.line_of(s)),
                 buf.line_end(buf.line_of(e)) + 1,
             )),
+            // From the block's first char to its last: what it spans, not
+            // what it holds. See [`Vim::selections`].
+            Mode::VisualBlock => {
+                let ranges = self.block_ranges(buf);
+                Some((ranges.first()?.0, ranges.last()?.1))
+            }
             _ => None,
         }
+    }
+
+    /// Everything selected, as `start..end` chars: one range, or in
+    /// blockwise visual mode one for each line of the block.
+    pub fn selections(&self, buf: &Buffer) -> Vec<(usize, usize)> {
+        match self.mode {
+            Mode::VisualBlock => self.block_ranges(buf),
+            _ => self.selection(buf).into_iter().collect(),
+        }
+    }
+
+    /// The block between the anchor and the cursor, line by line: the part
+    /// of each line that lies within its columns, which for a short line
+    /// is nothing.
+    fn block_ranges(&self, buf: &Buffer) -> Vec<(usize, usize)> {
+        let (rows, cols) = self.block(buf);
+        (rows.0..=rows.1)
+            .map(|row| {
+                let (ls, len) = (buf.line_start(row), buf.line_len(row));
+                (ls + cols.0.min(len), ls + (cols.1 + 1).min(len))
+            })
+            .collect()
+    }
+
+    /// The rows and the columns of the block, both inclusive.
+    fn block(&self, buf: &Buffer) -> ((usize, usize), (usize, usize)) {
+        let (a, c) = (
+            buf.offset_to_point(self.anchor),
+            buf.offset_to_point(self.cursor),
+        );
+        (minmax(a.row, c.row), minmax(a.col, c.col))
     }
 
     /// Move the cursor from outside (mouse click, goto-definition…).
@@ -522,7 +738,18 @@ impl Vim {
         }
         self.cursor = offset;
         self.goal_col = None;
+        self.surround = None;
+        self.block_insert = None;
         self.pending = Pending::default();
+        self.clamp(buf);
+    }
+
+    /// Put the cursor somewhere without giving up what is going on: the
+    /// mode, a selection, a command half typed. For a host that has
+    /// edited the text and knows where the cursor now belongs.
+    pub fn place_cursor(&mut self, offset: usize, buf: &Buffer) {
+        self.cursor = offset;
+        self.goal_col = None;
         self.clamp(buf);
     }
 
@@ -591,7 +818,34 @@ impl Vim {
         let mut fx = Vec::new();
         self.message = None;
         self.dispatch(key, cx, &mut fx);
+        self.run_macros(cx, &mut fx);
         fx
+    }
+
+    /// Run the keys a `@` asked for, as if they were typed: each command
+    /// among them is one to undo and to repeat.
+    fn run_macros(&mut self, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        let Some(keys) = self.macro_request.take() else {
+            return;
+        };
+        let mut queue: VecDeque<Key> = keys.into();
+        let was_playing = std::mem::replace(&mut self.playing, true);
+        let mut run = 0;
+        while let Some(key) = queue.pop_front() {
+            run += 1;
+            if run > MAX_MACRO_KEYS {
+                self.message = Some("Macro never ends".to_string());
+                break;
+            }
+            self.dispatch(key, cx, fx);
+            // A macro that runs another: that one's keys come first.
+            if let Some(more) = self.macro_request.take() {
+                for key in more.into_iter().rev() {
+                    queue.push_front(key);
+                }
+            }
+        }
+        self.playing = was_playing;
     }
 
     /// True while the keys typed so far are a binding of their own that
@@ -612,12 +866,21 @@ impl Vim {
         if self.wants_timeout(cx.shared) {
             self.message = None;
             self.drive(None, cx, &mut fx);
+            self.run_macros(cx, &mut fx);
         }
         fx
     }
 
     fn dispatch(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         if !self.replaying {
+            if !self.playing
+                && let Some((_, recorded)) = &mut self.recording
+            {
+                if self.keys.is_empty() {
+                    self.record_mark = recorded.len();
+                }
+                recorded.push(key.clone());
+            }
             if self.keys.is_empty() {
                 self.cmd_start_mode = self.mode;
                 self.cmd_changed = false;
@@ -662,7 +925,11 @@ impl Vim {
         if cx.buf.version() != version {
             self.cmd_changed = true;
         }
+        self.sync(cx.buf);
         self.clamp(cx.buf);
+        if !self.mode.is_visual() {
+            self.expansions.clear();
+        }
 
         let settled = self.pending.is_idle() && !matches!(self.mode, Mode::Insert | Mode::Command);
         if settled && !self.replaying {
@@ -684,7 +951,7 @@ impl Vim {
                 self.pending.typed.push(key.clone());
                 self.map_key(key, cx, fx);
             }
-            Mode::Normal | Mode::Visual | Mode::VisualLine => {
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
                 // Escape always abandons a half-typed command, whatever
                 // the keymap says; then it is looked up like any other key.
                 if key.is_escape() && !self.pending.is_idle() {
@@ -700,7 +967,13 @@ impl Vim {
     }
 
     fn reset_pending(&mut self) {
+        let typed = std::mem::take(&mut self.pending.typed);
         self.pending = Pending::default();
+        // A surround operator has its target, and still wants a delimiter.
+        if self.surround.is_some() {
+            self.pending.awaiting = Some(Await::SurroundAdd);
+            self.pending.typed = typed;
+        }
     }
 
     /// The key table in force.
@@ -708,7 +981,7 @@ impl Vim {
         match self.mode {
             Mode::Insert => MapMode::Insert,
             _ if self.pending.op.is_some() => MapMode::Operator,
-            Mode::Visual | Mode::VisualLine => MapMode::Visual,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => MapMode::Visual,
             Mode::Normal | Mode::Command => MapMode::Normal,
         }
     }
@@ -806,6 +1079,8 @@ impl Vim {
             }
             Action::Builtin(Builtin::Cmd(Cmd::Undo)) => self.undo(false, cx),
             Action::Builtin(Builtin::Cmd(Cmd::Redo)) => self.undo(true, cx),
+            Action::Builtin(Builtin::Cmd(Cmd::Record)) => self.record_key(cx),
+            Action::Builtin(Builtin::Cmd(Cmd::Surround)) => self.surround_key(trigger),
             Action::Builtin(builtin) => {
                 cx.buf.begin(self.cursor);
                 match builtin {
@@ -848,8 +1123,174 @@ impl Vim {
                 self.reset_pending();
             }
             (Await::TextObject { around }, Key::Char(c)) => self.run_text_object(c, around, cx),
+            (Await::SetMark, Key::Char(c)) => {
+                if c.is_ascii_alphabetic() || c == '\'' || c == '`' {
+                    let name = if c == '`' { '\'' } else { c };
+                    self.marks.insert(name, self.cursor);
+                }
+                self.no_repeat = true;
+                self.reset_pending();
+            }
+            (Await::Mark { linewise }, Key::Char(name)) => {
+                self.run_motion(Motion::Mark { name, linewise }, cx, fx);
+            }
+            (Await::RecordRegister, Key::Char(c)) => {
+                if c.is_ascii_alphanumeric() {
+                    self.recording = Some((c.to_ascii_lowercase(), Vec::new()));
+                    self.record_mark = 0;
+                }
+                self.no_repeat = true;
+                self.reset_pending();
+            }
+            (Await::PlayRegister, Key::Char(c)) => {
+                let count = self.pending.count().unwrap_or(1).max(1);
+                self.reset_pending();
+                self.no_repeat = true;
+                self.play(c, count, cx);
+            }
+            (Await::SurroundAdd, key) => {
+                let surround = self.surround.take();
+                self.reset_pending();
+                if let (Some(surround), Key::Char(c)) = (surround, key) {
+                    self.surround_add(surround, c, cx);
+                }
+            }
+            (Await::SurroundDelete, Key::Char(c)) => {
+                self.reset_pending();
+                self.surround_replace(c, None, cx);
+            }
+            (Await::SurroundChange, Key::Char(c)) => {
+                self.pending.awaiting = Some(Await::SurroundChangeTo(c));
+            }
+            (Await::SurroundChangeTo(old), Key::Char(c)) => {
+                self.reset_pending();
+                self.surround_replace(old, Some(c), cx);
+            }
+            _ => {
+                self.surround = None;
+                self.reset_pending();
+            }
+        }
+    }
+
+    // ---- macros --------------------------------------------------------
+
+    /// `q`: stop recording, or wait for the register to record into.
+    fn record_key(&mut self, cx: &mut Ctx<'_>) {
+        self.reset_pending();
+        self.no_repeat = true;
+        match self.recording.take() {
+            Some((name, mut keys)) => {
+                // Without the `q` that ended it.
+                keys.truncate(self.record_mark);
+                let text = format_keys(&keys);
+                let register = Register {
+                    text: text.clone(),
+                    ..Register::default()
+                };
+                cx.shared.registers.insert(name, register);
+                cx.shared.macros.insert(name, (text, keys));
+            }
+            None => self.pending.awaiting = Some(Await::RecordRegister),
+        }
+    }
+
+    /// `@a`: have the keys in a register run, `count` times over. `@@`
+    /// runs the last one again.
+    fn play(&mut self, name: char, count: usize, cx: &mut Ctx<'_>) {
+        let name = match name {
+            '@' => cx.shared.last_macro,
+            name => Some(name.to_ascii_lowercase()),
+        };
+        let Some(name) = name else {
+            return;
+        };
+        let Some(register) = cx.shared.registers.get(&name) else {
+            self.message = Some(format!("Nothing in register {name}"));
+            return;
+        };
+        let keys = match cx.shared.macros.get(&name) {
+            Some((text, keys)) if *text == register.text => keys.clone(),
+            _ => parse_keys(&register.text),
+        };
+        cx.shared.last_macro = Some(name);
+        let mut all = Vec::with_capacity(keys.len() * count.min(1000));
+        for _ in 0..count.min(1000) {
+            all.extend(keys.iter().cloned());
+        }
+        self.macro_request = Some(all);
+    }
+
+    // ---- surround ------------------------------------------------------
+
+    /// `s` after an operator: `ys` makes the operator the one that
+    /// surrounds, `ds` and `cs` ask which delimiter is meant.
+    fn surround_key(&mut self, trigger: &Key) {
+        match self.pending.op {
+            Some(Operator::Yank) => {
+                self.pending.op = Some(Operator::Surround);
+                // `yss`: the `s` again is the whole line.
+                self.pending.op_key = Some(trigger.clone());
+            }
+            Some(Operator::Delete) => {
+                self.reset_pending();
+                self.pending.awaiting = Some(Await::SurroundDelete);
+            }
+            Some(Operator::Change) => {
+                self.reset_pending();
+                self.pending.awaiting = Some(Await::SurroundChange);
+            }
             _ => self.reset_pending(),
         }
+    }
+
+    /// Put the delimiter `c` stands for around what the operator was given.
+    fn surround_add(&mut self, surround: Surround, c: char, cx: &mut Ctx<'_>) {
+        let (open, close) = surround_pair(c);
+        let buf = &mut *cx.buf;
+        let Some(&(first, _)) = surround.ranges.first() else {
+            return;
+        };
+        if surround.own_lines {
+            let (start, end) = surround.ranges[0];
+            let indent = leading_ws(buf, buf.line_of(start));
+            buf.insert(end, &format!("\n{indent}{}", close.trim()));
+            buf.insert(start, &format!("{indent}{}\n", open.trim()));
+            self.cursor = start + indent.chars().count();
+        } else {
+            for &(start, end) in surround.ranges.iter().rev() {
+                buf.insert(end, &close);
+                buf.insert(start, &open);
+            }
+            self.cursor = first;
+        }
+        self.goal_col = None;
+    }
+
+    /// Take the delimiters `old` stands for away from around the cursor,
+    /// or put `new` in their place.
+    fn surround_replace(&mut self, old: char, new: Option<char>, cx: &mut Ctx<'_>) {
+        let buf = &mut *cx.buf;
+        let Some((open, close)) = textobj::delimiters(buf, self.cursor, old) else {
+            return;
+        };
+        let (new_open, new_close) = new.map(surround_pair).unwrap_or_default();
+        // The opening bracket names the pair with the blanks inside it.
+        let spaced = matches!(old, '(' | '[' | '{' | '<');
+        let inner_end = if spaced && close > open + 1 && buf.char_at(close - 1) == ' ' {
+            close - 1
+        } else {
+            close
+        };
+        let inner_start = if spaced && open + 1 < inner_end && buf.char_at(open + 1) == ' ' {
+            open + 2
+        } else {
+            open + 1
+        };
+        buf.edit(inner_end..close + 1, &new_close);
+        buf.edit(open..inner_start, &new_open);
+        self.cursor = open;
+        self.goal_col = None;
     }
 
     /// `u` / `ctrl-r`. Never inside an undo group, so `exec` keeps these
@@ -1074,7 +1515,34 @@ impl Vim {
             }
             Motion::CurLine => out(fnb((line + n - 1).min(last)), false, true),
             Motion::Column => out(ls + (n - 1).min(le - ls), false, false),
+            Motion::Mark { name, linewise } => {
+                let Some(pos) = self.mark(name) else {
+                    self.message = Some(format!("Mark {name} is not set"));
+                    return None;
+                };
+                let pos = pos.min(buf.max_offset());
+                if linewise {
+                    out(fnb(buf.line_of(pos)), false, true)
+                } else {
+                    out(pos, false, false)
+                }
+            }
+            Motion::Syntax { kind, forward } => {
+                let syntax = cx.syntax.as_deref_mut()?;
+                let mut pos = cur;
+                for _ in 0..n {
+                    pos = syntax.neighbor(buf, pos, kind, forward)?;
+                }
+                out(pos, false, false)
+            }
         }
+    }
+
+    /// The cursor is about to make a long jump: tell the host, and leave
+    /// the mark that `''` goes back to.
+    fn jump_from(&mut self, fx: &mut Vec<Effect>) {
+        self.marks.insert('\'', self.cursor);
+        fx.push(Effect::Jump { from: self.cursor });
     }
 
     fn run_motion(&mut self, motion: Motion, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
@@ -1123,7 +1591,7 @@ impl Vim {
             }
             None => {
                 if motion.is_jump() {
-                    fx.push(Effect::Jump { from: self.cursor });
+                    self.jump_from(fx);
                 }
                 self.cursor = out.pos;
                 if !out.keep_goal {
@@ -1180,7 +1648,10 @@ impl Vim {
     /// An operator key was pressed: apply it to the visual selection, to
     /// `count` lines if doubled (`dd`), or wait for a motion.
     fn operator_key(&mut self, op: Operator, cx: &mut Ctx<'_>) {
-        if self.mode.is_visual() {
+        if self.mode == Mode::VisualBlock {
+            self.apply_to_block(op, cx);
+            self.reset_pending();
+        } else if self.mode.is_visual() {
             let target = self.visual_target(cx.buf);
             self.apply_operator(op, target, cx);
             self.reset_pending();
@@ -1207,13 +1678,99 @@ impl Vim {
 
     fn store(&mut self, text: String, linewise: bool, yank: bool, cx: &mut Ctx<'_>) {
         let name = self.pending.register.take();
-        cx.shared
-            .write_register(name, Register { text, linewise }, yank, cx.clipboard);
+        let register = Register {
+            text,
+            linewise,
+            blockwise: false,
+        };
+        cx.shared.write_register(name, register, yank, cx.clipboard);
+    }
+
+    /// An operator on a block: on the part of each line that is in it.
+    fn apply_to_block(&mut self, op: Operator, cx: &mut Ctx<'_>) {
+        self.last_visual = Some((self.anchor, self.cursor, self.mode));
+        let (rows, cols) = self.block(cx.buf);
+        let ranges = self.block_ranges(cx.buf);
+        let first = ranges[0].0;
+        self.mode = Mode::Normal;
+        self.goal_col = None;
+        let text = |buf: &Buffer| {
+            let lines: Vec<String> = ranges
+                .iter()
+                .map(|&(s, e)| buf.slice_string(s..e))
+                .collect();
+            lines.join("\n")
+        };
+        let store = |this: &mut Self, yank: bool, cx: &mut Ctx<'_>| {
+            let register = Register {
+                text: text(cx.buf),
+                linewise: false,
+                blockwise: true,
+            };
+            let name = this.pending.register.take();
+            cx.shared.write_register(name, register, yank, cx.clipboard);
+        };
+        match op {
+            Operator::Yank => {
+                store(self, true, cx);
+                self.cursor = first;
+            }
+            Operator::Delete | Operator::Change => {
+                store(self, false, cx);
+                for &(s, e) in ranges.iter().rev() {
+                    cx.buf.delete(s..e);
+                }
+                self.cursor = first;
+                if op == Operator::Change {
+                    self.enter_insert(cx.buf);
+                    self.block_insert = Some(BlockInsert {
+                        start: first,
+                        rows: (rows.0 + 1, rows.1),
+                        col: cols.0,
+                        pad: false,
+                    });
+                }
+            }
+            Operator::Lower | Operator::Upper | Operator::ToggleCase => {
+                for &(s, e) in &ranges {
+                    change_case(cx.buf, op, s, e);
+                }
+                self.cursor = first;
+            }
+            Operator::Indent | Operator::Outdent | Operator::Comment => {
+                self.apply_to_lines(op, rows.0, rows.1, cx);
+            }
+            Operator::Surround => {
+                self.surround = Some(Surround {
+                    ranges: ranges.into_iter().filter(|(s, e)| e > s).collect(),
+                    own_lines: false,
+                });
+                self.cursor = first;
+            }
+        }
     }
 
     fn apply_operator(&mut self, op: Operator, target: Target, cx: &mut Ctx<'_>) {
         if self.mode.is_visual() {
             self.last_visual = Some((self.anchor, self.cursor, self.mode));
+        }
+        if op == Operator::Surround {
+            let buf = &*cx.buf;
+            let own_lines = self.mode == Mode::VisualLine;
+            let range = match target {
+                Target::Chars(s, e) => (s, e),
+                Target::Lines(a, b) if own_lines => (buf.line_start(a), buf.line_end(b)),
+                // `yss`: what is on the line, not its indentation.
+                Target::Lines(a, b) => (first_non_blank(buf, a), buf.line_end(b)),
+            };
+            self.surround = Some(Surround {
+                ranges: vec![range],
+                own_lines,
+            });
+            self.mode = Mode::Normal;
+            self.cursor = range.0;
+            self.goal_col = None;
+            return;
         }
         match target {
             Target::Lines(a, b) => self.apply_to_lines(op, a, b, cx),
@@ -1300,6 +1857,8 @@ impl Vim {
                 toggle_comment(cx.buf, cx.lang, a, b);
                 self.cursor = first_non_blank(cx.buf, a);
             }
+            // `apply_operator` keeps it for itself.
+            Operator::Surround => {}
         }
     }
 
@@ -1343,11 +1902,17 @@ impl Vim {
                 );
                 self.apply_to_lines(op, a, b, cx);
             }
+            Operator::Surround => {}
         }
     }
 
     fn run_text_object(&mut self, kind: char, around: bool, cx: &mut Ctx<'_>) {
-        let Some(obj) = textobj::text_object(cx.buf, self.cursor, kind, around) else {
+        let obj = match textobj::text_object(cx.buf, self.cursor, kind, around) {
+            Some(obj) => Some(obj),
+            // Not one the text alone can tell: ask the syntax tree.
+            None => self.syntax_object(kind, around, cx),
+        };
+        let Some(obj) = obj else {
             self.reset_pending();
             return;
         };
@@ -1359,6 +1924,9 @@ impl Vim {
             };
             self.apply_operator(op, target, cx);
         } else if self.mode.is_visual() {
+            if self.mode == Mode::VisualBlock {
+                self.mode = Mode::Visual;
+            }
             self.anchor = obj.start;
             if obj.linewise && kind == 'p' {
                 self.mode = Mode::VisualLine;
@@ -1371,6 +1939,130 @@ impl Vim {
             }
         }
         self.reset_pending();
+    }
+
+    /// A text object the syntax tree knows: a function, a type, an
+    /// argument, a comment.
+    fn syntax_object(&mut self, kind: char, around: bool, cx: &mut Ctx<'_>) -> Option<ObjRange> {
+        let buf = &*cx.buf;
+        let (start, end) = cx
+            .syntax
+            .as_deref_mut()?
+            .object(buf, self.cursor, kind, around)?;
+        if end <= start {
+            return None;
+        }
+        // A whole function or type that has its lines to itself goes with
+        // them, so that `daf` leaves no empty line behind.
+        let (first, last) = (buf.line_of(start), buf.line_of(end - 1));
+        let whole_lines = around
+            && matches!(kind, 'f' | 't')
+            && start == first_non_blank(buf, first)
+            && end == buf.line_end(last);
+        Some(if whole_lines {
+            ObjRange {
+                start: buf.line_start(first),
+                end: buf.line_end(last) + 1,
+                linewise: true,
+            }
+        } else {
+            ObjRange {
+                start,
+                end,
+                linewise: false,
+            }
+        })
+    }
+
+    /// `]x`: select the syntax node around the cursor, or the next one out
+    /// from what is selected.
+    fn expand_selection(&mut self, cx: &mut Ctx<'_>) {
+        let buf = &*cx.buf;
+        let (start, end) = match self.selection(buf) {
+            Some((start, end)) => (start, end.min(buf.max_offset())),
+            None => (self.cursor, self.cursor + 1),
+        };
+        let Some(syntax) = cx.syntax.as_deref_mut() else {
+            self.message = Some("No syntax tree for this file".to_string());
+            return;
+        };
+        let Some((start, end)) = syntax.enclosing(buf, start, end) else {
+            return;
+        };
+        // Steps back only lead from here if this is where they led to.
+        let here = (self.anchor, self.cursor);
+        if self.expansions.last().is_some_and(|last| last.to != here) || !self.mode.is_visual() {
+            self.expansions.clear();
+        }
+        let to = (start, end.saturating_sub(1).max(start));
+        self.expansions.push(Expansion {
+            from: (self.anchor, self.cursor, self.mode),
+            to,
+        });
+        (self.anchor, self.cursor) = to;
+        self.mode = Mode::Visual;
+        self.goal_col = None;
+    }
+
+    /// `[x`: back to what was selected before the last `]x`.
+    fn shrink_selection(&mut self) {
+        let here = (self.anchor, self.cursor);
+        match self.expansions.pop() {
+            Some(last) if last.to == here && self.mode.is_visual() => {
+                (self.anchor, self.cursor, self.mode) = last.from;
+                self.goal_col = None;
+            }
+            _ => self.expansions.clear(),
+        }
+    }
+
+    /// Enter the visual mode `target`, switch to it from another, or leave
+    /// it if that is where we are.
+    fn toggle_visual(&mut self, target: Mode) {
+        if self.mode == target {
+            self.exit_visual();
+        } else {
+            if !self.mode.is_visual() {
+                self.anchor = self.cursor;
+            }
+            self.mode = target;
+        }
+    }
+
+    /// `I` / `A` in visual mode: insert before the selection or after it.
+    /// On a block, what is typed goes on every line of it.
+    fn visual_insert(&mut self, append: bool, cx: &mut Ctx<'_>) {
+        let buf = &mut *cx.buf;
+        if self.mode != Mode::VisualBlock {
+            let (s, e) = match self.selection(buf) {
+                Some((s, e)) => (s, e.min(buf.max_offset())),
+                None => return,
+            };
+            let linewise = self.mode == Mode::VisualLine;
+            self.enter_insert(buf);
+            self.cursor = match (append, linewise) {
+                (false, true) => first_non_blank(buf, buf.line_of(s)),
+                (false, false) => s,
+                (true, true) => e.saturating_sub(1).max(s),
+                (true, false) => e,
+            };
+            return;
+        }
+        let (rows, cols) = self.block(buf);
+        let col = if append { cols.1 + 1 } else { cols.0 };
+        self.enter_insert(buf);
+        let (ls, len) = (buf.line_start(rows.0), buf.line_len(rows.0));
+        if append && len < col {
+            buf.insert(ls + len, &" ".repeat(col - len));
+        }
+        let start = ls + col.min(buf.line_len(rows.0));
+        self.cursor = start;
+        self.block_insert = Some(BlockInsert {
+            start,
+            rows: (rows.0 + 1, rows.1),
+            col,
+            pad: append,
+        });
     }
 
     // ---- simple commands -----------------------------------------------
@@ -1455,21 +2147,18 @@ impl Vim {
             }
             // `exec` runs these itself, outside its undo group.
             Cmd::Undo | Cmd::Redo => {}
-            Cmd::Visual { linewise } => {
-                let target = if linewise {
-                    Mode::VisualLine
-                } else {
-                    Mode::Visual
-                };
-                if self.mode == target {
-                    self.exit_visual();
-                } else {
-                    if !visual {
-                        self.anchor = self.cursor;
-                    }
-                    self.mode = target;
+            Cmd::Visual { linewise: true } => self.toggle_visual(Mode::VisualLine),
+            Cmd::Visual { linewise: false } => self.toggle_visual(Mode::Visual),
+            Cmd::VisualBlock => self.toggle_visual(Mode::VisualBlock),
+            Cmd::BlockInsert { append } => {
+                if visual {
+                    self.visual_insert(append, cx);
                 }
             }
+            Cmd::Expand => self.expand_selection(cx),
+            Cmd::Shrink => self.shrink_selection(),
+            // `exec` runs these itself: they keep something pending.
+            Cmd::Record | Cmd::Surround => {}
             Cmd::SwapEnds => {
                 if visual {
                     std::mem::swap(&mut self.anchor, &mut self.cursor);
@@ -1527,18 +2216,23 @@ impl Vim {
     fn replace_chars(&mut self, c: char, cx: &mut Ctx<'_>) {
         let buf = &mut *cx.buf;
         if self.mode.is_visual() {
-            let (s, e) = match self.visual_target(buf) {
-                Target::Chars(s, e) => (s, e),
-                Target::Lines(a, b) => (buf.line_start(a), buf.line_end(b)),
+            let ranges = match self.mode {
+                Mode::VisualBlock => self.block_ranges(buf),
+                _ => vec![match self.visual_target(buf) {
+                    Target::Chars(s, e) => (s, e),
+                    Target::Lines(a, b) => (buf.line_start(a), buf.line_end(b)),
+                }],
             };
-            let replaced: String = buf
-                .slice_string(s..e)
-                .chars()
-                .map(|ch| if ch == '\n' { '\n' } else { c })
-                .collect();
-            buf.edit(s..e, &replaced);
+            for &(s, e) in &ranges {
+                let replaced: String = buf
+                    .slice_string(s..e)
+                    .chars()
+                    .map(|ch| if ch == '\n' { '\n' } else { c })
+                    .collect();
+                buf.edit(s..e, &replaced);
+            }
             self.exit_visual();
-            self.cursor = s;
+            self.cursor = ranges[0].0;
             return;
         }
         let n = self.pending.count().unwrap_or(1).max(1);
@@ -1603,7 +2297,25 @@ impl Vim {
         }
         let buf = &mut *cx.buf;
         let line = buf.line_of(self.cursor);
-        if reg.linewise {
+        if reg.blockwise {
+            // A rectangle goes back as one: a line of it to a line, from
+            // the cursor's column down.
+            let ls = buf.line_start(line);
+            let after = !before && buf.line_len(line) > 0;
+            let col = self.cursor - ls + usize::from(after);
+            for (index, piece) in reg.text.split('\n').enumerate() {
+                let row = line + index;
+                while row > buf.last_line() {
+                    buf.insert(buf.len_chars(), "\n");
+                }
+                let (ls, len) = (buf.line_start(row), buf.line_len(row));
+                if len < col {
+                    buf.insert(ls + len, &" ".repeat(col - len));
+                }
+                buf.insert(ls + col, &piece.repeat(count));
+            }
+            self.cursor = buf.line_start(line) + col;
+        } else if reg.linewise {
             let mut unit = reg.text;
             if !unit.ends_with('\n') {
                 unit.push('\n');
@@ -1638,6 +2350,18 @@ impl Vim {
             return;
         };
         let buf = &mut *cx.buf;
+        if self.mode == Mode::VisualBlock {
+            // Over a block: in place of its first line's part, the rest gone.
+            let ranges = self.block_ranges(buf);
+            for &(s, e) in ranges.iter().skip(1).rev() {
+                buf.delete(s..e);
+            }
+            let (s, e) = ranges[0];
+            buf.edit(s..e, reg.text.strip_suffix('\n').unwrap_or(&reg.text));
+            self.exit_visual();
+            self.cursor = s;
+            return;
+        }
         let start = match self.visual_target(buf) {
             Target::Lines(a, b) => {
                 let (s, e) = (buf.line_start(a), buf.line_end(b));
@@ -1681,6 +2405,9 @@ impl Vim {
     }
 
     fn finish_insert(&mut self, buf: &mut Buffer) {
+        if let Some(block) = self.block_insert.take() {
+            self.repeat_on_block(block, buf);
+        }
         // Drop auto-indent that was never typed after.
         let line = buf.line_of(self.cursor);
         let (ls, le) = (buf.line_start(line), buf.line_end(line));
@@ -1692,6 +2419,62 @@ impl Vim {
         self.leave_insert(buf);
     }
 
+    /// What was typed on the first line of a block goes on the others.
+    fn repeat_on_block(&mut self, block: BlockInsert, buf: &mut Buffer) {
+        let typed_here = self.cursor >= block.start
+            && buf.line_of(self.cursor) == buf.line_of(block.start)
+            && block.rows.1 <= buf.last_line();
+        if !typed_here {
+            return;
+        }
+        let text = buf.slice_string(block.start..self.cursor);
+        if text.is_empty() {
+            return;
+        }
+        for row in block.rows.0..=block.rows.1 {
+            let (ls, len) = (buf.line_start(row), buf.line_len(row));
+            if len >= block.col {
+                buf.insert(ls + block.col, &text);
+            } else if block.pad {
+                let fill = " ".repeat(block.col - len);
+                buf.insert(ls + len, &format!("{fill}{text}"));
+            }
+        }
+    }
+
+    /// Typing an opening bracket or quote closes it; typing the closing
+    /// one that is already there steps over it. True if `c` was dealt with.
+    fn auto_pair(&mut self, c: char, cx: &mut Ctx<'_>) -> bool {
+        let buf = &mut *cx.buf;
+        let pairs = &cx.lang.pairs;
+        let next = buf.char_at(self.cursor);
+        let ls = buf.line_start(buf.line_of(self.cursor));
+        let prev = (self.cursor > ls).then(|| buf.char_at(self.cursor - 1));
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+
+        if next == c && pairs.iter().any(|&(_, close)| close == c) {
+            self.cursor += 1;
+            return true;
+        }
+        let Some(&(open, close)) = pairs.iter().find(|pair| pair.0 == c) else {
+            return false;
+        };
+        // Not in front of a word or of something that opens.
+        if is_word(next) || pairs.iter().any(|pair| pair.0 == next && pair.1 != next) {
+            return false;
+        }
+        // A quote after a word is an apostrophe, or closes a string.
+        if open == close && prev.is_some_and(|prev| is_word(prev) || prev == c || prev == '\\') {
+            return false;
+        }
+        let mut both = String::with_capacity(8);
+        both.push(open);
+        both.push(close);
+        buf.insert(self.cursor, &both);
+        self.cursor += 1;
+        true
+    }
+
     fn insert_raw(&mut self, c: char, buf: &mut Buffer) {
         let mut tmp = [0u8; 4];
         buf.insert(self.cursor, c.encode_utf8(&mut tmp));
@@ -1700,6 +2483,12 @@ impl Vim {
 
     /// A key with no binding in insert mode: typed text inserts itself.
     fn insert_default(&mut self, key: Key, cx: &mut Ctx<'_>) {
+        if let Key::Char(c) = key
+            && cx.shared.auto_pairs
+            && self.auto_pair(c, cx)
+        {
+            return;
+        }
         let buf = &mut *cx.buf;
         match key {
             Key::Char(c) => {
@@ -1753,7 +2542,14 @@ impl Vim {
                 } else {
                     1
                 };
-                buf.delete(self.cursor - n..self.cursor);
+                // Between a pair with nothing in it: both go.
+                let pair = (buf.char_at(self.cursor - 1), buf.char_at(self.cursor));
+                let end = if cx.shared.auto_pairs && cx.lang.pairs.contains(&pair) {
+                    self.cursor + 1
+                } else {
+                    self.cursor
+                };
+                buf.delete(self.cursor - n..end);
                 self.cursor -= n;
             }
             InsertCmd::Delete => {
@@ -1945,7 +2741,7 @@ impl Vim {
         cx.shared.hlsearch = true;
         match found {
             Some(pos) => {
-                fx.push(Effect::Jump { from: self.cursor });
+                self.jump_from(fx);
                 self.cursor = pos;
                 self.goal_col = None;
             }
@@ -1972,7 +2768,7 @@ impl Vim {
 
         if rest.is_empty() {
             if let Some((_, line)) = range {
-                fx.push(Effect::Jump { from: self.cursor });
+                self.jump_from(fx);
                 self.cursor = first_non_blank(cx.buf, line);
                 self.goal_col = None;
             }
@@ -2056,6 +2852,24 @@ impl Vim {
             forward: true,
         });
     }
+}
+
+/// The delimiters `c` stands for when surrounding: a closing bracket (or
+/// `b`, `r`, `B`, `a`) for the pair as it is, an opening one for the pair
+/// with a blank inside each, anything else for itself on both sides.
+fn surround_pair(c: char) -> (String, String) {
+    let (open, close) = match c {
+        '(' => ("( ", " )"),
+        ')' | 'b' => ("(", ")"),
+        '[' => ("[ ", " ]"),
+        ']' | 'r' => ("[", "]"),
+        '{' => ("{ ", " }"),
+        '}' | 'B' => ("{", "}"),
+        '<' => ("< ", " >"),
+        '>' | 'a' => ("<", ">"),
+        c => return (c.to_string(), c.to_string()),
+    };
+    (open.to_string(), close.to_string())
 }
 
 fn last_non_blank(buf: &Buffer, start: usize, end: usize) -> Option<char> {

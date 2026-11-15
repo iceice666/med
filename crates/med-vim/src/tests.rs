@@ -8,6 +8,14 @@ struct Harness {
     clipboard: MemClipboard,
     lang: Lang,
     effects: Vec<Effect>,
+    syntax: Option<Box<dyn SyntaxTree>>,
+}
+
+fn syntax_of(syntax: &mut Option<Box<dyn SyntaxTree>>) -> Option<&mut dyn SyntaxTree> {
+    match syntax {
+        Some(syntax) => Some(&mut **syntax),
+        None => None,
+    }
 }
 
 impl Harness {
@@ -27,6 +35,7 @@ impl Harness {
                 ..Lang::default()
             },
             effects: Vec::new(),
+            syntax: None,
         }
     }
 
@@ -38,6 +47,7 @@ impl Harness {
                 clipboard: &mut self.clipboard,
                 viewport: Viewport { top: 0, height: 10 },
                 lang: &self.lang,
+                syntax: syntax_of(&mut self.syntax),
             };
             let fx = self.vim.handle_key(key, &mut cx);
             self.effects.extend(fx);
@@ -52,6 +62,7 @@ impl Harness {
             clipboard: &mut self.clipboard,
             viewport: Viewport { top: 0, height: 10 },
             lang: &self.lang,
+            syntax: syntax_of(&mut self.syntax),
         };
         let fx = self.vim.timeout(&mut cx);
         self.effects.extend(fx);
@@ -391,6 +402,7 @@ fn typed_text_and_paste() {
         clipboard: &mut h.clipboard,
         viewport: Viewport { top: 0, height: 10 },
         lang: &h.lang,
+        syntax: None,
     };
     h.vim.type_text("\n好", &mut cx);
     h.vim.paste("\n  }\n", &mut cx);
@@ -641,6 +653,7 @@ fn insert_mode_mappings() {
         clipboard: &mut h.clipboard,
         viewport: Viewport { top: 0, height: 10 },
         lang: &h.lang,
+        syntax: None,
     };
     h.vim.handle_key(Key::Char('i'), &mut cx);
     h.vim.paste("jk", &mut cx);
@@ -665,4 +678,280 @@ fn every_builtin_command_runs() {
             h.keys(lead).keys("<c-q>").keys("w<esc><esc>");
         }
     }
+}
+
+#[test]
+fn marks() {
+    check("|a\nb\nc", "majjmb'a", "|a\nb\nc");
+    check("a\n  b|x\nc", "mzgg`z", "a\n  b|x\nc");
+    check("a\n  b|x\nc", "mzgg'z", "a\n  |bx\nc");
+    // Where the last jump left from.
+    check("|a\nb\nc", "G``", "|a\nb\nc");
+    check("a\n|b\nc\nd", "majd'a", "a\n|d");
+    check("|foo bar", "wmb0d`b", "|bar");
+    // A mark stays on its text when lines come and go above it.
+    check("|x\nfoo bar", "jwmaggOnew<Esc>`a", "new\nx\nfoo |bar");
+    check("|x\nfoo bar", "jwmaggdd`a", "foo |bar");
+
+    let mut h = Harness::new("|a");
+    h.keys("'q");
+    assert_eq!(h.vim.message.as_deref(), Some("Mark q is not set"));
+}
+
+#[test]
+fn macros() {
+    check("|a\nb\nc", "qqA!<Esc>jq@q@@", "a!\nb!\nc|!");
+    check("|1\n2\n3\n4", "qaxjq3@a", "\n\n\n|");
+    // `.` repeats the last change of the macro, not the macro.
+    check("|ab cd ef", "qqdwq@q.", "|");
+
+    let mut h = Harness::new("|ab cd");
+    assert_eq!(h.vim.recording(), None);
+    h.keys("qq");
+    assert_eq!(h.vim.recording(), Some('q'));
+    h.keys("dwq");
+    assert_eq!(h.vim.recording(), None);
+    // The keys are in the register, to look at and to put.
+    assert_eq!(h.shared.register('q').unwrap().text, "dw");
+    h.keys("u@q");
+    assert_eq!(h.state(), "|cd");
+    // Each command of a macro is undone by itself.
+    check("|a b c d", "qqdwdwq@qu", "|d");
+
+    // Keys yanked from the text run as a macro too.
+    check("|dw\nfoo bar", "\"ayiwj@a", "dw\n|bar");
+    // One that runs another.
+    check("|a b c d", "qadwqqb@ax<Esc>q@b", "|");
+    // One that runs itself is stopped.
+    let mut h = Harness::new("|a");
+    h.keys("qqa.<Esc>q");
+    h.shared.registers_insert_for_test('q', "a.<Esc>@q");
+    h.keys("@q");
+    assert_eq!(h.vim.message.as_deref(), Some("Macro never ends"));
+    assert_eq!(h.vim.mode, Mode::Normal);
+}
+
+#[test]
+fn visual_block() {
+    check("|abc\ndef\nghi", "<C-v>jld", "|c\nf\nghi");
+    check("|abc\ndef\nghi", "l<C-v>jlhd", "a|c\ndf\nghi");
+    check("|abc\ndef\nghi", "<C-v>jjIX<Esc>", "|Xabc\nXdef\nXghi");
+    check("|ab\nc\ndef", "<C-v>jjlA!<Esc>", "ab|!\nc !\nde!f");
+    check("|abc\ndef", "<C-v>jcX<Esc>", "|Xbc\nXef");
+    check("|abc\ndef", "<C-v>jcX<Esc>u", "abc\n|def");
+    check("|ab\ncd", "<C-v>jy$p", "ab|a\ncdc");
+    check("|ab\ncd", "<C-v>jyGo<Esc>p", "ab\ncd\n|a\nc");
+    check("|abc\ndef", "<C-v>jlrx", "|xxc\nxxf");
+    check("|abc\ndef", "<C-v>jU", "|Abc\nDef");
+    // A line the block does not reach gives it nothing.
+    check("|abcd\nx\nefgh", "<C-v>jjlld", "|d\n\nh");
+    check("ab|cd\nx\nefgh", "<C-v>jjIX<Esc>", "ab|Xcd\nx\nefXgh");
+    check("|a\nb\nc", "<C-v>j>", "    |a\n    b\nc");
+
+    let mut h = Harness::new("|abc\ndef");
+    h.keys("<C-v>jl");
+    assert_eq!(h.vim.mode, Mode::VisualBlock);
+    assert_eq!(h.vim.mode.label(), "V-BLOCK");
+    assert_eq!(h.vim.selections(&h.buf), [(0, 2), (4, 6)]);
+    h.keys("v");
+    assert_eq!(h.vim.mode, Mode::Visual);
+    assert_eq!(h.vim.selections(&h.buf), [(0, 6)]);
+    h.keys("<C-v><C-v>");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    h.keys("gv");
+    assert_eq!(h.vim.mode, Mode::VisualBlock);
+
+    // In the other visual modes `I` and `A` go to the ends of the selection.
+    check("a |bcd e", "veIX<Esc>", "a |Xbcd e");
+    check("a |bcd e", "veAX<Esc>", "a bcd|X e");
+}
+
+#[test]
+fn surround() {
+    check("|foo bar", "ysiw)", "|(foo) bar");
+    check("|foo bar", "ysiw(", "|( foo ) bar");
+    check("|foo bar", "ysiwb", "|(foo) bar");
+    check("|foo bar", "ys$\"", "|\"foo bar\"");
+    check("|foo bar", "ysiw*", "|*foo* bar");
+    check("  fo|o bar", "yss]", "  |[foo bar]");
+    check("(fo|o)", "ds)", "|foo");
+    check("( fo|o )", "ds(", "|foo");
+    check("a \"fo|o\" b", "ds\"", "a |foo b");
+    check("\"fo|o\"", "cs\"'", "|'foo'");
+    check("(fo|o)", "cs)]", "|[foo]");
+    check("(fo|o)", "cs){", "|{ foo }");
+    check("f(\n  |x\n)", "cs)]", "f|[\n  x\n]");
+    check("|foo bar", "veS]", "|[foo] bar");
+    check("  |foo\n  bar", "VjS}", "  |{\n  foo\n  bar\n  }");
+    check("|ab\ncd", "<C-v>jS)", "|(a)b\n(c)d");
+    // One change: to repeat, and to undo.
+    check("|a b", "ysiw)W.", "(a) |(b)");
+    check("|a b", "ysiw)u", "|a b");
+    // Escape gives the operator up; nothing is left waiting.
+    check("|foo", "ysiw<Esc>x", "|oo");
+    check("|foo", "ds<Esc>x", "|oo");
+    check("fo|o", "ds)", "fo|o");
+    // The operators `s` comes after are what they were.
+    check("|foo bar\nx", "yyp", "foo bar\n|foo bar\nx");
+    check("|foo bar", "dw", "|bar");
+    check("|foo bar", "cwx<Esc>", "|x bar");
+
+    let mut h = Harness::new("|foo");
+    h.keys("ysiw");
+    assert_eq!(h.vim.pending_keys().unwrap().awaiting, Some(Awaiting::Char));
+    assert_eq!(h.vim.pending_display(), "ysiw");
+}
+
+fn check_pairs(before: &str, keys: &str, after: &str) {
+    let mut h = Harness::new(before);
+    h.shared.auto_pairs = true;
+    h.keys(keys);
+    assert_eq!(h.state(), after, "keys: {keys}");
+}
+
+#[test]
+fn auto_pairs() {
+    check_pairs("|", "i(", "(|)");
+    check_pairs("|", "i()", "()|");
+    check_pairs("|", "i[{\"", "[{\"|\"}]");
+    check_pairs("|", "i\"x\"", "\"x\"|");
+    check_pairs("|", "if(x<Esc>", "f(|x)");
+    // Not in front of a word, and an apostrophe is not a quote.
+    check_pairs("|foo", "i(", "(|foo");
+    check_pairs("do|n", "a't", "don't|");
+    check_pairs("|", "i\\\"", "\\\"|");
+    // Taking the opening one back takes both.
+    check_pairs("|", "i(<BS>", "|");
+    check_pairs("|", "i(x<BS><BS>", "|");
+    check_pairs("(|)x", "i<BS>", "|x");
+    check_pairs("|", "i{<CR>", "{\n    |\n}");
+    // Repeated as it was typed.
+    check_pairs("|\n\n", "ifoo(x<Esc>j.", "foo(x)\nfoo(|x)");
+    // Pasted text is left alone.
+    let mut h = Harness::new("|");
+    h.shared.auto_pairs = true;
+    h.keys("i");
+    let mut cx = Ctx {
+        buf: &mut h.buf,
+        shared: &mut h.shared,
+        clipboard: &mut h.clipboard,
+        viewport: Viewport { top: 0, height: 10 },
+        lang: &h.lang,
+        syntax: None,
+    };
+    h.vim.paste("f(", &mut cx);
+    assert_eq!(h.buf.text(), "f(\n");
+    // And only what the language pairs is paired.
+    let mut h = Harness::new("|");
+    h.shared.auto_pairs = true;
+    h.lang.pairs.retain(|pair| pair.0 != '\'');
+    h.keys("i<'a");
+    assert_eq!(h.state(), "<'a|");
+    // Off unless asked for.
+    check("|", "i(", "(|");
+}
+
+/// A stand-in for a syntax tree: a word is in a line, a line in the text,
+/// and every line is a "function".
+struct Lines;
+
+impl SyntaxTree for Lines {
+    fn object(
+        &mut self,
+        buf: &Buffer,
+        pos: usize,
+        kind: char,
+        around: bool,
+    ) -> Option<(usize, usize)> {
+        let line = buf.line_of(pos);
+        let (start, end) = (motion::first_non_blank(buf, line), buf.line_end(line));
+        match (kind, around) {
+            ('f', true) => Some((start, end)),
+            ('f', false) => Some((start + 1, end - 1)),
+            _ => None,
+        }
+    }
+
+    fn enclosing(&mut self, buf: &Buffer, start: usize, end: usize) -> Option<(usize, usize)> {
+        let line = buf.line_of(start);
+        let word = motion::word_under_cursor(buf, start)?;
+        let line = (buf.line_start(line), buf.line_end(line));
+        let all = (0, buf.max_offset());
+        [word, line, all]
+            .into_iter()
+            .find(|&(s, e)| s <= start && end <= e && (s, e) != (start, end))
+    }
+
+    fn neighbor(&mut self, buf: &Buffer, pos: usize, kind: char, forward: bool) -> Option<usize> {
+        let line = buf.line_of(pos);
+        match (kind, forward) {
+            ('f', true) if line < buf.last_line() => Some(buf.line_start(line + 1)),
+            ('f', false) if line > 0 => Some(buf.line_start(line - 1)),
+            _ => None,
+        }
+    }
+}
+
+fn with_syntax(text: &str) -> Harness {
+    let mut h = Harness::new(text);
+    h.syntax = Some(Box::new(Lines));
+    h
+}
+
+#[test]
+fn syntax_objects_and_motions() {
+    let mut h = with_syntax("a\n  [f|oo]\nb");
+    h.keys("dif");
+    assert_eq!(h.state(), "a\n  [|]\nb");
+    // A whole one that has its lines to itself goes with them.
+    let mut h = with_syntax("a\n  [f|oo]\nb");
+    h.keys("daf");
+    assert_eq!(h.state(), "a\n|b");
+    let mut h = with_syntax("a\n  [f|oo]\nb");
+    h.keys("vaf");
+    assert_eq!(h.vim.selection(&h.buf), Some((2, 9)));
+
+    let mut h = with_syntax("|a\nb\nc");
+    h.keys("2]f");
+    assert_eq!(h.state(), "a\nb\n|c");
+    h.keys("[f");
+    assert_eq!(h.state(), "a\n|b\nc");
+    h.keys("d]f");
+    assert_eq!(h.state(), "a\n|\nc");
+    // `''` goes back over one of these jumps.
+    h.keys("gg]f''");
+    assert_eq!(h.state(), "|a\n\nc");
+
+    // With no syntax tree they do nothing, and leave nothing pending.
+    check("|foo(a)", "difx", "|oo(a)");
+    check("|a\nb", "]fx", "|\nb");
+}
+
+#[test]
+fn expands_and_shrinks_the_selection() {
+    let mut h = with_syntax("foo b|ar baz\nqux");
+    h.keys("]x");
+    assert_eq!(h.vim.mode, Mode::Visual);
+    assert_eq!(h.vim.selection(&h.buf), Some((4, 7)));
+    h.keys("]x");
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 11)));
+    h.keys("]x");
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 15)));
+    h.keys("[x");
+    assert_eq!(h.vim.selection(&h.buf), Some((0, 11)));
+    h.keys("[x[x");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert_eq!(h.state(), "foo b|ar baz\nqux");
+    // A selection moved by hand has no steps back.
+    h.keys("]xl[x");
+    assert_eq!(h.vim.mode, Mode::Visual);
+    assert_eq!(h.vim.selection(&h.buf), Some((4, 8)));
+
+    let mut h = Harness::new("|foo");
+    h.keys("]x");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert_eq!(
+        h.vim.message.as_deref(),
+        Some("No syntax tree for this file")
+    );
 }
