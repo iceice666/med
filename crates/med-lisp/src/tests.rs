@@ -230,6 +230,34 @@ fn works_on_lists_and_text() {
     check("(str)", "\"\"");
 
     check(
+        "(list (min 3 1 2) (max 3 1 2) (max 1 2.5) (min 4))",
+        "(1 3 2.5 4)",
+    );
+    check("(list (last '(1 2 3)) (last nil))", "(3 nil)");
+    check(
+        "(list (member? 2 '(1 2)) (member? \"b\" '(\"a\")) (member? 1 nil))",
+        "(true false false)",
+    );
+    check(
+        "(list (find-index (fn (n) (> n 1)) '(1 2 3)) (find-index nil? '(1)))",
+        "(1 nil)",
+    );
+    check(
+        "(list (lowercase \"MiXed\") (trim \"  a b \\n\") (replace \"a\\tb\" \"\\t\" \"  \"))",
+        "(\"mixed\" \"a b\" \"a  b\")",
+    );
+    check(
+        "(list (starts-with? \"+++ a\" \"+\") (ends-with? \"a.rs\" \".md\")
+               (contains? \"needle\" \"eed\"))",
+        "(true false true)",
+    );
+    check("(lines \"one\\ntwo\\n\")", "(\"one\" \"two\")");
+    check("(split \"a/b/c\" \"/\")", "(\"a\" \"b\" \"c\")");
+    check("(join '(\"a\" 1 b) \", \")", "\"a, 1, b\"");
+    assert_eq!(fail("(split \"a\" \"\")").kind, ErrorKind::Raised);
+    assert_eq!(fail("(min \"a\")").kind, ErrorKind::Type);
+
+    check(
         "(def entry '(:name \"a.rs\" :depth 2 :dir false))
          (list (get entry :name) (get entry :depth) (get entry :dir)
                (get entry :nope) (get entry :nope 'none) (get nil :name))",

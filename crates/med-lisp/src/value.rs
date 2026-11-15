@@ -273,6 +273,11 @@ impl Arity {
         }
     }
 
+    /// Whether a call with `count` arguments is one this allows.
+    pub fn allows(self, count: usize) -> bool {
+        count >= self.min && self.max.is_none_or(|max| count <= max)
+    }
+
     pub(crate) fn check(self, name: &str, got: usize) -> Result<()> {
         if got >= self.min && self.max.is_none_or(|max| got <= max) {
             return Ok(());
@@ -343,6 +348,15 @@ impl Value {
     pub fn as_foreign<T: Any>(&self) -> Option<Rc<T>> {
         match self {
             Value::Foreign(value) => value.clone().downcast::<T>().ok(),
+            _ => None,
+        }
+    }
+
+    /// How many arguments this takes, if it is a function.
+    pub fn arity(&self) -> Option<Arity> {
+        match self {
+            Value::Fn(lambda) => Some(lambda.arity()),
+            Value::Native(native) => Some(native.arity),
             _ => None,
         }
     }

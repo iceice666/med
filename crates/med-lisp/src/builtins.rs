@@ -1,11 +1,13 @@
 //! The functions every program starts out with.
 //!
-//! Numbers: `+ - * / mod`, `= < > <= >=`, `not`.
-//! Lists: `list cons first rest nth length append reverse`, with `car` and
-//! `cdr` as the old names of `first` and `rest`; `map filter reduce apply`;
-//! `get`, for a list of names and their values.
+//! Numbers: `+ - * / mod`, `min max`, `= < > <= >=`, `not`.
+//! Lists: `list cons first rest last nth length append reverse`, with `car`
+//! and `cdr` as the old names of `first` and `rest`; `map filter reduce
+//! apply`; `member? find-index`; `get`, for a list of names and their
+//! values.
 //! Kinds: `nil? list? number? string? symbol? fn?`.
-//! Text: `str`. Giving up: `error`.
+//! Text: `str`, `lowercase trim replace`, `starts-with? ends-with?
+//! contains?`, `lines split join`. Giving up: `error`.
 
 use crate::eval::{Call, Interp};
 use crate::value::{Arity, Error, ErrorKind, Result, Value};
@@ -87,6 +89,18 @@ fn divide_by_zero() -> Error {
     Error::new(ErrorKind::Arithmetic, "division by zero")
 }
 
+/// The argument that stands in `holds` to every other.
+fn extreme(args: &[Value], holds: fn(Ordering) -> bool) -> Result<Value> {
+    let mut best = Number::of(&args[0])?;
+    for value in &args[1..] {
+        let number = Number::of(value)?;
+        if number.compare(best).is_some_and(holds) {
+            best = number;
+        }
+    }
+    Ok(best.value())
+}
+
 /// Whether every number stands in `holds` to the next.
 fn ordered(args: &[Value], holds: fn(Ordering) -> bool) -> Result<Value> {
     let numbers: Vec<Number> = args.iter().map(Number::of).collect::<Result<_>>()?;
@@ -158,6 +172,9 @@ pub(crate) fn install(interp: &mut Interp) {
             |a, b| ((a % b) + b) % b,
         )
     });
+    // The least and the greatest of the arguments.
+    interp.define_native("min", some, |_, args| extreme(args, Ordering::is_lt));
+    interp.define_native("max", some, |_, args| extreme(args, Ordering::is_gt));
     interp.define_native("=", some, |_, args| {
         Ok(Value::Bool(args.windows(2).all(|pair| pair[0] == pair[1])))
     });
@@ -176,6 +193,12 @@ pub(crate) fn install(interp: &mut Interp) {
     interp.define_native("car", 1, first);
     interp.define_native("rest", 1, rest);
     interp.define_native("cdr", 1, rest);
+    interp.define_native("last", 1, |_, args| {
+        if !matches!(args[0], Value::Nil | Value::Pair(_)) {
+            return Err(Error::wrong_type("a list", &args[0]));
+        }
+        Ok(args[0].iter().last().cloned().unwrap_or(Value::Nil))
+    });
     // (nth index list), counting from 0; nil past the end.
     interp.define_native("nth", 2, |_, args| {
         let index = args[0].as_int()?;
@@ -235,6 +258,23 @@ pub(crate) fn install(interp: &mut Interp) {
         }
         Ok(result)
     });
+    // (member? value list): whether the list has a value equal to it.
+    interp.define_native("member?", 2, |_, args| {
+        if !matches!(args[1], Value::Nil | Value::Pair(_)) {
+            return Err(Error::wrong_type("a list", &args[1]));
+        }
+        Ok(Value::Bool(args[1].iter().any(|item| *item == args[0])))
+    });
+    // (find-index function list): where the first value the function holds
+    // for is, counting from 0, or nil.
+    interp.define_native("find-index", 2, |call, args| {
+        for (index, item) in args[1].to_vec()?.into_iter().enumerate() {
+            if call.apply(&args[0], &[item])?.is_truthy() {
+                return Ok(Value::Int(index as i64));
+            }
+        }
+        Ok(Value::Nil)
+    });
     // (apply function list): call it with the list's values as arguments.
     interp.define_native("apply", 2, |call, args| {
         call.apply(&args[0], &args[1].to_vec()?)
@@ -286,6 +326,47 @@ pub(crate) fn install(interp: &mut Interp) {
         Ok(Value::from(
             args.iter().map(Value::display).collect::<String>(),
         ))
+    });
+    interp.define_native("lowercase", 1, |_, args| {
+        Ok(Value::from(args[0].as_str()?.to_lowercase()))
+    });
+    // Without the space at either end.
+    interp.define_native("trim", 1, |_, args| {
+        Ok(Value::from(args[0].as_str()?.trim()))
+    });
+    // (replace text old new): every `old` in the text made `new`.
+    interp.define_native("replace", 3, |_, args| {
+        let (text, old, new) = (args[0].as_str()?, args[1].as_str()?, args[2].as_str()?);
+        Ok(Value::from(text.replace(old, new)))
+    });
+    // (starts-with? text part), (ends-with? text part), (contains? text part)
+    interp.define_native("starts-with?", 2, |_, args| {
+        Ok(Value::Bool(
+            args[0].as_str()?.starts_with(args[1].as_str()?),
+        ))
+    });
+    interp.define_native("ends-with?", 2, |_, args| {
+        Ok(Value::Bool(args[0].as_str()?.ends_with(args[1].as_str()?)))
+    });
+    interp.define_native("contains?", 2, |_, args| {
+        Ok(Value::Bool(args[0].as_str()?.contains(args[1].as_str()?)))
+    });
+    // The lines of a text, without their ends.
+    interp.define_native("lines", 1, |_, args| {
+        Ok(Value::list(args[0].as_str()?.lines().map(Value::from)))
+    });
+    // (split text separator): the parts between the separators.
+    interp.define_native("split", 2, |_, args| {
+        let (text, separator) = (args[0].as_str()?, args[1].as_str()?);
+        if separator.is_empty() {
+            return Err(Error::new(ErrorKind::Raised, "split: nothing to split at"));
+        }
+        Ok(Value::list(text.split(separator).map(Value::from)))
+    });
+    // (join list separator): the values as text, the separator between.
+    interp.define_native("join", 2, |_, args| {
+        let parts: Vec<String> = args[0].to_vec()?.iter().map(Value::display).collect();
+        Ok(Value::from(parts.join(args[1].as_str()?)))
     });
     // Stop the program, with the arguments as the message.
     interp.define_native("error", some, |_, args| {

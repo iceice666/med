@@ -61,12 +61,16 @@ impl Lambda {
         self.name
     }
 
-    /// A scope with the parameters bound to `args`.
-    fn bind(&self, args: Vec<Value>) -> Result<Rc<Scope>> {
-        let arity = match self.rest {
+    pub fn arity(&self) -> Arity {
+        match self.rest {
             Some(_) => Arity::at_least(self.params.len()),
             None => Arity::exactly(self.params.len()),
-        };
+        }
+    }
+
+    /// A scope with the parameters bound to `args`.
+    fn bind(&self, args: Vec<Value>) -> Result<Rc<Scope>> {
+        let arity = self.arity();
         let name = self.name.map(Symbol::name);
         arity.check(name.as_deref().unwrap_or("fn"), args.len())?;
 
