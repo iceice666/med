@@ -1,3 +1,5 @@
+English | [繁體中文](examples.zh-TW.md)
+
 # The example programs
 
 ## The example panels

@@ -1,3 +1,5 @@
+English | [繁體中文](README.zh-TW.md)
+
 # med
 
 A modal (vim-style) code editor built on [GPUI](https://www.gpui.rs/), the UI

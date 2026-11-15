@@ -1,3 +1,5 @@
+English | [繁體中文](keys.zh-TW.md)
+
 # Keys and commands
 
 ## Keys

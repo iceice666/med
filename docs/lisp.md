@@ -1,3 +1,5 @@
+English | [繁體中文](lisp.zh-TW.md)
+
 # Scripting
 
 ## Panels
