@@ -2,7 +2,6 @@
 //! simulated keystrokes.
 
 use crate::keymap::PanelKeymaps;
-use crate::panel::{Layouts, Node};
 use crate::workspace::Workspace;
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
 use med_vim::{MapMode, Mode};
@@ -276,11 +275,22 @@ fn navigates_the_file_tree(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
-    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
     let (ws, cx) = open(&project, &[], cx);
     let click = |y: f32, cx: &mut VisualTestContext| {
         cx.simulate_click(point(px(40.), px(y)), Modifiers::none());
         cx.run_until_parked();
+    };
+    let message = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+    // Set a layout as the init file would: with no workspace behind it.
+    let set_layout = |source: &str, cx: &mut VisualTestContext| {
+        let result = cx.update(|_, cx| crate::script::eval(source, cx));
+        cx.run_until_parked();
+        result
+            .map(|value| value.to_string())
+            .map_err(|error| error.to_string())
     };
 
     // The built-in layout: a 32px header, then 24px rows that open on a
@@ -288,46 +298,78 @@ fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
     click(32. + 24. + 12., cx);
     assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
 
-    // A layout of the user's: a button where the header was, taller rows.
-    let layout = Node::parse(
-        r#"{
-            "type": "col",
-            "style": { "width": "full", "height": "full" },
-            "children": [
-                {
-                    "type": "text",
-                    "text": "Find in {root_name}",
-                    "style": { "height": 40 },
-                    "on_click": "workspace.find_file"
-                },
-                {
-                    "type": "list",
-                    "source": "entries",
-                    "style": { "grow": true },
-                    "item": {
-                        "type": "row",
-                        "style": { "height": 30, "width": "full" },
-                        "on_click": "tree.open",
-                        "children": [{ "type": "text", "text": "{name}" }]
-                    }
-                }
-            ]
-        }"#,
-    )
-    .unwrap();
-    cx.update(|_, cx| {
-        cx.global_mut::<Layouts>().set("file_tree", layout);
-        cx.refresh_windows();
-    });
-    cx.run_until_parked();
+    // A layout of the user's: a button where the header was, taller rows,
+    // and directories left out of the picture.
+    let layout = r#"
+        (set-layout 'tree
+          (fn (panel)
+            (col :width 'full :height 'full
+              (text (str "Find in " (get panel :root-name))
+                    :height 40 :on-click "workspace.find_file")
+              (rows 'entries :grow true
+                (fn (entry)
+                  (row :height 30 :width 'full
+                       :bg (when (get entry :selected) 'list-active)
+                       :on-click (fn ()
+                                   (run "tree.open")
+                                   (message "opened " (get entry :name)))
+                    (when (get entry :dir) (text "/"))
+                    (text (get entry :name))))))))"#;
+    assert_eq!(set_layout(layout, cx), Ok("nil".to_string()));
 
-    // Rows are now 30px under a 40px button: the first is a.txt.
+    // Rows are now 30px under a 40px button: the first is a.txt. Its
+    // click is a function, which runs a command and then says so, the
+    // row's own values still at hand.
     click(40. + 15., cx);
     assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    assert_eq!(message(cx), "opened a.txt");
+    click(40. + 60. + 15., cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
+    assert_eq!(message(cx), "opened c.txt");
     // The button runs a command that is not the tree's own.
     assert!(ws.read_with(cx, |ws, _| ws.picker.is_none()));
     click(20., cx);
     assert!(ws.read_with(cx, |ws, _| ws.picker.is_some()));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // A layout that fails is drawn as its error, row by row or whole; one
+    // that tries to do more than describe is refused; one that never ends
+    // is cut short. None of it takes the editor down, and the next layout
+    // works.
+    for broken in [
+        "(set-layout 'tree (fn (panel) (col (rows 'entries (fn (entry) (car 5))))))",
+        "(set-layout 'tree (fn (panel) (nope)))",
+        "(set-layout 'tree (fn (panel) 5))",
+        "(set-layout 'tree (fn (panel) (message \"drawn\") (col)))",
+        "(set-layout 'tree (fn (panel) (while true)))",
+    ] {
+        assert_eq!(set_layout(broken, cx), Ok("nil".to_string()), "{broken}");
+        click(40. + 15., cx);
+    }
+    assert_eq!(cx.update(|_, cx| crate::script::take_message(cx)), None);
+    assert_eq!(set_layout(layout, cx), Ok("nil".to_string()));
+    click(40. + 30. + 15., cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+
+    // What is not a panel, or not a function, is not a layout.
+    assert_eq!(
+        set_layout("(set-layout 'git (fn (panel) (col)))", cx),
+        Err("1:1: git is not a panel with a layout (tree)".to_string())
+    );
+    assert_eq!(
+        set_layout("(set-layout 'tree 5)", cx),
+        Err("1:1: set-layout: expected a function, got 5".to_string())
+    );
+
+    // Running the init file starts from the built-in layouts again.
+    let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
+    assert!(!ran);
+    cx.run_until_parked();
+    // 95px down is the third of the 24px rows under the 32px header; it
+    // was the second of the 30px ones.
+    click(95., cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
 }
 
 #[gpui::test]

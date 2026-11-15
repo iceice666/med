@@ -19,6 +19,7 @@
 //!     (run "workspace.close_tab")))
 //! (run "workspace.edit" "notes.md")    ; a command, with its argument
 //! (current-file)  (project-root)
+//! (set-layout 'tree (fn (panel) ...))  ; how a panel is drawn: panel.rs
 //! ```
 //!
 //! A mode, a panel or an option is named by a symbol, a keyword or a
@@ -44,6 +45,9 @@ use std::path::{Path, PathBuf};
 /// stopped after this many steps, a fraction of a second.
 const STEP_LIMIT: u64 = 10_000_000;
 
+/// A layout is run every time its panel is drawn, and gets far less.
+const DRAW_STEP_LIMIT: u64 = 200_000;
+
 const MODES: &[(&str, MapMode)] = &[
     ("normal", MapMode::Normal),
     ("visual", MapMode::Visual),
@@ -60,6 +64,9 @@ pub struct Script {
     messages: Vec<String>,
     /// The workspace the running program was started from, if any.
     origin: Option<Origin>,
+    /// The running program is describing a panel that is being drawn: it
+    /// may compute, but not change the editor.
+    drawing: bool,
 }
 
 impl Global for Script {}
@@ -89,6 +96,7 @@ pub fn init(cx: &mut App) {
     let mut interp = Interp::new();
     interp.set_step_limit(Some(STEP_LIMIT));
     define_functions(&mut interp);
+    crate::panel::define_functions(&mut interp);
     for (name, value) in INVOCATION.iter().zip(invocation(&Args::default())) {
         interp.define(name, value);
     }
@@ -96,7 +104,28 @@ pub fn init(cx: &mut App) {
         interp: Some(interp),
         messages: Vec::new(),
         origin: None,
+        drawing: false,
     });
+    reset_layouts(cx);
+}
+
+/// Put the built-in panel layouts back.
+fn reset_layouts(cx: &mut App) {
+    if let Err(error) = eval(crate::panel::BUILT_IN, cx) {
+        panic!("built-in panel layouts: {error}");
+    }
+}
+
+/// Call a layout's function while its panel is being drawn.
+pub(crate) fn call_to_draw(function: &Value, args: &[Value], cx: &mut App) -> Result<Value, Error> {
+    with_interp(None, cx, |interp, cx| {
+        cx.global_mut::<Script>().drawing = true;
+        interp.set_step_limit(Some(DRAW_STEP_LIMIT));
+        let result = interp.call(function, args, cx);
+        interp.set_step_limit(Some(STEP_LIMIT));
+        cx.global_mut::<Script>().drawing = false;
+        result
+    })
 }
 
 /// Lend the interpreter to `program`, with the application as its host.
@@ -160,7 +189,8 @@ pub fn eval_from(source: String, window: &Window, cx: &mut Context<Workspace>) {
     });
 }
 
-/// Run a command of the user's for a workspace.
+/// Run a command of the user's, or a function a layout gave a click, for a
+/// workspace.
 pub fn run_command(function: Value, args: Args, window: &Window, cx: &mut Context<Workspace>) {
     start(window, cx, move |interp, cx| {
         invoke(interp, cx, &function, &args)?;
@@ -204,15 +234,23 @@ pub fn load_file(path: &Path, cx: &mut App) {
     }
 }
 
-/// Run `init.lisp` from the configuration directory, if there is one, and
-/// say which file that was.
+/// Run the init file at `path`, if there is one. The built-in panel
+/// layouts are put back first, in case the file no longer sets one it set
+/// last time; the keys and options it set are not undone.
+pub fn run_init(path: &Path, cx: &mut App) -> bool {
+    reset_layouts(cx);
+    if !path.is_file() {
+        return false;
+    }
+    load_file(path, cx);
+    true
+}
+
+/// Run `init.lisp` from the configuration directory, and say which file
+/// that was, if there was one.
 pub fn load_init(cx: &mut App) -> Option<PathBuf> {
     let path = crate::config_dir()?.join("init.lisp");
-    if !path.is_file() {
-        return None;
-    }
-    load_file(&path, cx);
-    Some(path)
+    run_init(&path, cx).then_some(path)
 }
 
 /// The last thing programs had to say since this was last asked.
@@ -277,8 +315,15 @@ fn keys(value: &Value) -> Result<&str, Error> {
     }
 }
 
-fn app<'a>(call: &'a mut Call<'_>) -> Result<&'a mut App, Error> {
-    call.host::<App>()
+/// The application, for a function that changes it or reads from it.
+pub(crate) fn app<'a>(call: &'a mut Call<'_>) -> Result<&'a mut App, Error> {
+    let cx = call.host::<App>()?;
+    if cx.global::<Script>().drawing {
+        return Err(failed(
+            "a layout can only describe its panel, not do anything else",
+        ));
+    }
+    Ok(cx)
 }
 
 fn define_functions(interp: &mut Interp) {

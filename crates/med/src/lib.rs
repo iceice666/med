@@ -126,7 +126,6 @@ pub fn run() {
         .run(move |cx| {
             init(cx);
             // Not in `init`: tests must not depend on what is in $HOME.
-            panel::load_user_layouts(cx);
             script::load_init(cx);
             cx.activate(true);
 

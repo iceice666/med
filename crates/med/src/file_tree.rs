@@ -1,12 +1,12 @@
 //! The project file tree in the sidebar, driven with vim-style keys.
 //!
-//! This is what the tree holds and does. How it looks is the `file_tree`
-//! layout (`panels/file_tree.json`), which draws from the values handed
-//! out in the [`Host`] implementation below.
+//! This is what the tree holds and does. How it looks is the `tree` layout
+//! (`panels/tree.lisp`), which draws from the values handed out in the
+//! [`Host`] implementation below.
 
 use crate::commands::{Args, Commands, Handler};
 use crate::keymap::{KeySequence, Press, panel_key};
-use crate::panel::{self, Host, Layouts, Vars};
+use crate::panel::{self, Click, Host, Vars};
 use gpui::prelude::*;
 use gpui::*;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +18,8 @@ pub enum FileTreeEvent {
     Dismiss,
     /// A key bound to a command that is not the tree's to run.
     Command(SharedString),
+    /// A click the layout answers with a function of its own.
+    Call(med_lisp::Value),
 }
 
 struct Entry {
@@ -331,11 +333,10 @@ pub(crate) fn register(commands: &mut Commands) {
     );
 }
 
-/// What the `file_tree` layout can draw from. Everywhere: the text
-/// `root_name` and the flag `focused`. In a row of the list `entries`: the
-/// texts `name` and `status` (git's letter for the entry, if any), the
-/// number `depth`, and the flags `selected`, `dir`, `expanded`, `added`
-/// and `modified`.
+/// What the `tree` layout can draw from. Of the panel: `:root-name` and
+/// `:focused`. Of a row of the list `entries`: `:name`, `:status` (git's
+/// letter for the entry, or ""), `:depth`, and the flags `:selected`,
+/// `:dir`, `:expanded`, `:added` and `:modified`.
 impl Host for FileTree {
     fn vars(&self, window: &Window, _: &App) -> Vars {
         let root_name = self
@@ -344,8 +345,8 @@ impl Host for FileTree {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.root.display().to_string());
         Vars::default()
-            .text("root_name", root_name)
-            .flag("focused", self.focus_handle.is_focused(window))
+            .set("root-name", root_name)
+            .set("focused", self.focus_handle.is_focused(window))
     }
 
     fn row_count(&self, _: &str) -> usize {
@@ -359,24 +360,24 @@ impl Host for FileTree {
         let status = self.git_status.get(&entry.path).copied();
         let added = matches!(status, Some('?' | 'A'));
         Vars::default()
-            .text("name", entry.name.clone())
-            .text("status", status.map(String::from).unwrap_or_default())
-            .number("depth", entry.depth as f32)
-            .flag("selected", index == self.selected)
-            .flag("dir", entry.is_dir)
-            .flag("expanded", self.expanded.contains(&entry.path))
-            .flag("added", added)
-            .flag("modified", status.is_some() && !added)
+            .set("name", entry.name.as_str())
+            .set("status", status.map(String::from).unwrap_or_default())
+            .set("depth", entry.depth as i64)
+            .set("selected", index == self.selected)
+            .set("dir", entry.is_dir)
+            .set("expanded", self.expanded.contains(&entry.path))
+            .set("added", added)
+            .set("modified", status.is_some() && !added)
     }
 
     fn scroll_handle(&self, _: &str) -> Option<&UniformListScrollHandle> {
         Some(&self.scroll)
     }
 
-    /// A click on a row selects it before the row's command runs.
+    /// A click on a row selects it before what the layout asked for.
     fn click(
         &mut self,
-        command: &str,
+        action: &Click,
         row: Option<(&str, usize)>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -385,18 +386,20 @@ impl Host for FileTree {
         if let Some((_, index)) = row {
             self.select(index, cx);
         }
-        self.run_command(SharedString::new(command), cx);
+        match action {
+            Click::Command(name) => self.run_command(name.clone(), cx),
+            Click::Function(function) => cx.emit(FileTreeEvent::Call(function.clone())),
+        }
     }
 }
 
 impl Render for FileTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let layout = cx.global::<Layouts>().get("file_tree");
         div()
             .size_full()
             .track_focus(&self.focus_handle)
             .key_context("FileTree")
             .on_key_down(cx.listener(Self::on_key_down))
-            .child(panel::render(&layout, self, window, cx))
+            .child(panel::render("tree", self, window, cx))
     }
 }

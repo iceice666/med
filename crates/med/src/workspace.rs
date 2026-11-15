@@ -6,7 +6,6 @@ use crate::editor::{Editor, EditorEvent};
 use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::git_view::{GitEvent, GitView};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
-use crate::panel::Layouts;
 use crate::picker::{Item, Picker, PickerEvent, PickerMode};
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::*;
@@ -103,12 +102,8 @@ impl Workspace {
         } else {
             this.activate(0, window, cx);
         }
-        // A layout file that was not used should not go unnoticed, nor
-        // what the init file had to say.
-        let problem = cx.global::<Layouts>().problems.first().cloned();
-        this.message = problem
-            .or_else(|| crate::script::take_message(cx))
-            .map(SharedString::from);
+        // What the init file had to say, or what was wrong with it.
+        this.message = crate::script::take_message(cx).map(SharedString::from);
         this
     }
 
@@ -404,6 +399,9 @@ impl Workspace {
             }
             FileTreeEvent::Dismiss => self.focus_editor(window, cx),
             FileTreeEvent::Command(name) => self.run_command(name, &Args::default(), window, cx),
+            FileTreeEvent::Call(function) => {
+                crate::script::run_command(function.clone(), Args::default(), window, cx);
+            }
         }
     }
 
@@ -977,18 +975,6 @@ pub(crate) fn register(commands: &mut Commands) {
                 Some(path) => format!("Ran {}", path.display()),
                 None => "There is no init.lisp".to_string(),
             });
-            ws.set_message(message, cx);
-        }),
-    );
-    commands.register(
-        "workspace.reload_panels",
-        "Read the panel layout files again",
-        W(|ws, _, _, cx| {
-            crate::panel::load_user_layouts(cx);
-            let message = match cx.global::<Layouts>().problems.first() {
-                Some(problem) => problem.clone(),
-                None => "Panel layouts reloaded".to_string(),
-            };
             ws.set_message(message, cx);
         }),
     );
