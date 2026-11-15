@@ -25,10 +25,12 @@ impl Harness {
         let buf = Buffer::new(&text.replacen('|', "", 1));
         let mut vim = Vim::new();
         vim.cursor = cursor;
+        let mut shared = Shared::default();
+        shared.keymap = Keymap::vim();
         Self {
             buf,
             vim,
-            shared: Shared::default(),
+            shared,
             clipboard: MemClipboard::default(),
             lang: Lang {
                 line_comment: Some("//".into()),
@@ -557,6 +559,18 @@ fn rebinding() {
     h.shared.keymap = Keymap::empty();
     h.keys("xdd");
     assert_eq!(h.state(), "|abc");
+    // But `:` opens the command line, for keys to be bound from there,
+    // until the first binding of normal mode.
+    h.keys(":");
+    assert_eq!(h.vim.mode, Mode::Command);
+    h.keys("<esc>");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    h.shared
+        .keymap
+        .bind(MapMode::Normal, "x", "edit.delete_char");
+    h.keys(":");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert!(h.shared.keymap.unbind(MapMode::Normal, "x"));
     h.shared.keymap.bind(MapMode::Normal, "i", "mode.insert");
     h.keys("ix<esc>");
     assert_eq!(h.vim.mode, Mode::Insert);

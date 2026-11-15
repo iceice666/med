@@ -71,6 +71,8 @@ impl Drop for Project {
     }
 }
 
+const VIM: &str = include_str!("../../../examples/vim.lisp");
+const KEYS: &str = include_str!("../../../examples/keys.lisp");
 const TREE: &str = include_str!("../../../examples/tree.lisp");
 const PICKER: &str = include_str!("../../../examples/picker.lisp");
 const GIT: &str = include_str!("../../../examples/git.lisp");
@@ -85,8 +87,28 @@ fn open<'a>(
     open_with(&[], project, files, cx)
 }
 
-/// Open a window after running `programs`, as an init file would have.
+/// The keys of `examples/`, which every test types: med binds none.
+fn bind_example_keys(cx: &mut gpui::App) {
+    for program in [VIM, KEYS] {
+        if let Err(error) = crate::script::eval(program, cx) {
+            panic!("{error}");
+        }
+    }
+}
+
+/// Open a window after the example keys and `programs` have run, as an
+/// init file would have.
 fn open_with<'a>(
+    programs: &[&str],
+    project: &Project,
+    files: &[&str],
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    open_window(true, programs, project, files, cx)
+}
+
+fn open_window<'a>(
+    keys: bool,
     programs: &[&str],
     project: &Project,
     files: &[&str],
@@ -97,6 +119,9 @@ fn open_with<'a>(
         // Language servers wake tasks from their own threads, which the
         // deterministic test executor rejects; tests/lsp.rs covers them.
         cx.global_mut::<crate::Settings>().lsp = false;
+        if keys {
+            bind_example_keys(cx);
+        }
         for program in programs {
             if let Err(error) = crate::script::eval(program, cx) {
                 panic!("{error}");
@@ -1436,6 +1461,7 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     let said = cx.update(|cx| {
         crate::init(cx);
         cx.global_mut::<crate::Settings>().lsp = false;
+        bind_example_keys(cx);
         assert!(crate::script::run_init(&init, cx));
         crate::script::take_message(cx)
     });
@@ -1480,6 +1506,53 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("i z escape : w enter");
     cx.run_until_parked();
     assert_eq!(lisp("seen", cx), "(changed opened)");
+}
+
+#[gpui::test]
+fn installs_keys_into_an_editor_that_has_none(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\ntwo\n")]);
+    let (ws, cx) = open_window(false, &[], &project, &["a.txt"], cx);
+    let said = ws.read_with(cx, |ws, _| ws.message.clone()).unwrap();
+    assert!(said.contains(":install_default_config"), "{said}");
+
+    // No key does anything but `:`.
+    cx.simulate_keystrokes("j d d");
+    assert_eq!(text(&ws, cx), "one\ntwo\n");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    cx.simulate_keystrokes(":");
+    assert_eq!(mode(&ws, cx), Mode::Command);
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    // And what is typed after it runs.
+    cx.simulate_keystrokes(": w enter");
+    cx.run_until_parked();
+    let said = ws.read_with(cx, |ws, _| ws.message.clone()).unwrap();
+    assert!(said.contains("written"), "{said}");
+
+    let config = project.path("config");
+    ws.update_in(cx, |ws, window, cx| {
+        ws.install_default_config(&config, false, window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.message.clone()).as_deref(),
+        Some(format!("Wrote the example configuration to {}", config.display()).as_str())
+    );
+    assert!(config.join("init.lisp").is_file());
+    cx.simulate_keystrokes("j d d");
+    assert_eq!(text(&ws, cx), "one\n");
+
+    // A second time, nothing is overwritten unless asked.
+    fs::write(config.join("keys.lisp"), "; mine\n").unwrap();
+    ws.update_in(cx, |ws, window, cx| {
+        ws.install_default_config(&config, false, window, cx)
+    });
+    let said = ws.read_with(cx, |ws, _| ws.message.clone()).unwrap();
+    assert!(said.contains(":install_default_config!"), "{said}");
+    assert_eq!(
+        fs::read_to_string(config.join("keys.lisp")).unwrap(),
+        "; mine\n"
+    );
 }
 
 #[gpui::test]

@@ -125,7 +125,6 @@ pub fn init(cx: &mut App) {
         format_on_save: false,
     });
     init_globals(cx);
-    defaults::bind_app_keys(cx);
     // With no window to ask about unsaved work, quitting just quits.
     cx.on_action(|action: &RunCommand, cx| {
         if action.0 == "workspace.quit_all" {

@@ -1,84 +1,19 @@
-//! What is bound out of the box: the tables a configuration will edit.
+//! What is built in: the names ex commands go by, and no keys.
 //!
-//! The vim layout itself is [`med_vim::Keymap::vim`]; this adds the keys
-//! that reach beyond the buffer, the ones of flash (`s`, `S`, `f`…), the
-//! app shortcuts and the ex command names. Every right-hand side is a command name from [`Commands`] or the
-//! engine's [`med_vim::command_names`]. A panel's keys, and the keys that
-//! bring it up, are bound by the program that defines the panel.
+//! Every key, vim's included, is bound by the init file: the vim layout
+//! is `examples/vim.lisp`, and the keys that reach beyond the buffer, the
+//! ones of flash and the app shortcuts are `examples/keys.lisp`. A panel's
+//! keys, and the keys that bring it up, are bound by the program that
+//! defines the panel. Those files are in the binary as well, for
+//! `:install_default_config` to write where an init file is looked for.
 
 use crate::VimGlobal;
-use crate::commands::{Commands, RunCommand};
+use crate::commands::Commands;
 use crate::keymap::PanelKeymaps;
-use gpui::{App, KeyBinding};
-use med_vim::MapMode::{self, Insert, Normal, Operator, Visual};
-
-const NVO: &[MapMode] = &[Normal, Visual, Operator];
-const NV: &[MapMode] = &[Normal, Visual];
-const NO: &[MapMode] = &[Normal, Operator];
-const N: &[MapMode] = &[Normal];
-const O: &[MapMode] = &[Operator];
-const I: &[MapMode] = &[Insert];
-
-/// Editor keys, on top of the vim layout: modes, key sequence, command.
-pub const EDITOR_KEYS: &[(&[MapMode], &str, &str)] = &[
-    (NV, "gd", "editor.goto_definition"),
-    (NV, "gD", "editor.goto_definition"),
-    (NV, "gr", "editor.references"),
-    (NV, "gh", "editor.hover"),
-    (NV, "K", "editor.hover"),
-    (NV, "]d", "editor.next_diagnostic"),
-    (NV, "[d", "editor.prev_diagnostic"),
-    (NV, "gt", "workspace.next_tab"),
-    (NV, "gT", "workspace.prev_tab"),
-    (NV, "<C-o>", "workspace.jump_back"),
-    (NV, "<C-i>", "workspace.jump_forward"),
-    (NV, "<Tab>", "workspace.jump_forward"),
-    (I, "<C-n>", "editor.complete"),
-    (I, "<C-p>", "editor.complete"),
-    (I, "<C-Space>", "editor.complete"),
-    (I, "<C-s>", "editor.signature_help"),
-    // To text on screen, by typing some of it and then its label. In place
-    // of vim's `s`, which `cl` and `c` also are; after an operator `s` is
-    // surround's, so there it is `z`.
-    (NV, "s", "motion.flash"),
-    (O, "z", "motion.flash"),
-    // The same for an operator to work there, and come back.
-    (O, "r", "motion.flash_remote"),
-    // A syntax node around the cursor, by its label. In place of vim's
-    // `S`, which `cc` also is; on a selection `S` is surround's.
-    (NO, "S", "select.flash"),
-    // `f` and `t` on every line on screen, with where they could go next
-    // marked, and their key going on from there.
-    (NVO, "f", "motion.flash_find_forward"),
-    (NVO, "F", "motion.flash_find_backward"),
-    (NVO, "t", "motion.flash_till_forward"),
-    (NVO, "T", "motion.flash_till_backward"),
-    (NV, "<Space>a", "editor.code_action"),
-    (N, "<Space>=", "editor.format"),
-    // Leader keys. `space` alone still moves right, after a pause.
-    (N, "<Space>w", "workspace.save"),
-    (N, "<Space>q", "workspace.close_tab"),
-];
-
-/// Editor keys that stand for other keys: modes, key sequence, the keys.
-pub const EDITOR_KEYS_FOR_KEYS: &[(&[MapMode], &str, &str)] = &[
-    // The new name is typed on the command line.
-    (N, "<Space>r", ":rename<Space>"),
-];
-
-/// Shortcuts handled by the window system rather than a view's key table:
-/// GPUI keystroke, GPUI key context, command.
-pub const APP_KEYS: &[(&str, Option<&str>, &str)] = &[
-    ("cmd-q", None, "workspace.quit_all"),
-    ("cmd-s", Some("Workspace"), "workspace.save"),
-    ("cmd-w", Some("Workspace"), "workspace.close_tab"),
-    ("cmd-shift-]", Some("Workspace"), "workspace.next_tab"),
-    ("cmd-shift-[", Some("Workspace"), "workspace.prev_tab"),
-    ("ctrl-tab", Some("Workspace"), "workspace.next_tab"),
-    ("ctrl-shift-tab", Some("Workspace"), "workspace.prev_tab"),
-    ("cmd-v", Some("Editor"), "editor.paste"),
-    ("cmd-c", Some("Editor"), "editor.copy"),
-];
+use gpui::App;
+use med_vim::MapMode;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// Ex command names: what can be typed after `:`, and the command it runs.
 /// (Line ranges, `:s`, `:d`, `:y`, `:>`, `:<` and `:noh` are the engine's.)
@@ -91,6 +26,10 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["qa", "qall"], "workspace.quit_all"),
     (&["e", "edit"], "workspace.edit"),
     (&["eval"], "workspace.eval"),
+    (
+        &["install_default_config"],
+        "workspace.install_default_config",
+    ),
     (&["rename"], "editor.rename"),
     (&["format", "fmt"], "editor.format"),
     (&["bn", "bnext", "tabn", "tabnext"], "workspace.next_tab"),
@@ -100,20 +39,67 @@ pub const EX: &[(&[&str], &str)] = &[
     ),
 ];
 
-/// Load the tables above into the globals they configure.
-pub fn init(cx: &mut App) {
-    let keymap = &mut cx.global_mut::<VimGlobal>().0.keymap;
-    for (modes, keys, command) in EDITOR_KEYS {
-        for mode in *modes {
-            keymap.bind(*mode, keys, command);
-        }
-    }
-    for (modes, keys, to) in EDITOR_KEYS_FOR_KEYS {
-        for mode in *modes {
-            keymap.bind_keys(*mode, keys, to);
-        }
-    }
+/// The configuration `:install_default_config` writes: every file of
+/// `examples/`, by its name there, `init.lisp` loading the others.
+pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
+    ("init.lisp", include_str!("../../../examples/init.lisp")),
+    ("vim.lisp", include_str!("../../../examples/vim.lisp")),
+    ("keys.lisp", include_str!("../../../examples/keys.lisp")),
+    ("tree.lisp", include_str!("../../../examples/tree.lisp")),
+    ("picker.lisp", include_str!("../../../examples/picker.lisp")),
+    ("git.lisp", include_str!("../../../examples/git.lisp")),
+    (
+        "which-key.lisp",
+        include_str!("../../../examples/which-key.lisp"),
+    ),
+    ("todo.lisp", include_str!("../../../examples/todo.lisp")),
+];
 
+/// Why the default configuration was not written.
+#[derive(Debug)]
+pub enum InstallError {
+    /// These files are there already, and were not to be overwritten.
+    Exists(Vec<&'static str>),
+    Io(PathBuf, io::Error),
+}
+
+/// Write [`DEFAULT_CONFIG`] into `dir`, made if it is not there. Unless
+/// `overwrite`, nothing is written while any of its files is there
+/// already. Other files in `dir` are left as they are.
+pub fn install_default_config(dir: &Path, overwrite: bool) -> Result<(), InstallError> {
+    if !overwrite {
+        let there: Vec<&str> = DEFAULT_CONFIG
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| dir.join(name).exists())
+            .collect();
+        if !there.is_empty() {
+            return Err(InstallError::Exists(there));
+        }
+    }
+    std::fs::create_dir_all(dir).map_err(|error| InstallError::Io(dir.to_path_buf(), error))?;
+    for (name, text) in DEFAULT_CONFIG {
+        let path = dir.join(name);
+        std::fs::write(&path, text).map_err(|error| InstallError::Io(path, error))?;
+    }
+    Ok(())
+}
+
+/// What to say while nothing is bound in normal mode: that an editor with
+/// no keys is not broken, and how to give it some. `:` works then, and
+/// only then.
+pub fn no_keys_hint(cx: &App) -> Option<String> {
+    let keymap = &cx.global::<VimGlobal>().0.keymap;
+    keymap.is_empty(MapMode::Normal).then(|| {
+        let at = crate::config_dir()
+            .map(|dir| format!(" to {}", dir.display()))
+            .unwrap_or_default();
+        format!("No key is bound: :install_default_config writes the example configuration{at}")
+    })
+}
+
+/// Load the table above, and start the panels' key tables empty.
+pub fn init(cx: &mut App) {
     cx.set_global(PanelKeymaps::default());
 
     let commands = cx.global_mut::<Commands>();
@@ -122,33 +108,21 @@ pub fn init(cx: &mut App) {
     }
 }
 
-pub fn bind_app_keys(cx: &mut App) {
-    cx.bind_keys(APP_KEYS.iter().map(|(keystroke, context, command)| {
-        KeyBinding::new(keystroke, RunCommand((*command).into()), *context)
-    }));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use med_vim::MapMode::{Insert, Normal, Operator, Visual};
 
     #[gpui::test]
-    fn every_default_names_a_command(cx: &mut gpui::TestAppContext) {
+    fn every_ex_name_names_a_command(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             crate::init_globals(cx);
             let registry = cx.global::<Commands>();
-            let known = |command: &str| {
-                registry.get(command).is_some() || med_vim::command_names().any(|c| c == command)
-            };
-            let editor = EDITOR_KEYS
-                .iter()
-                .map(|(_, keys, command)| (*keys, *command));
-            let app = APP_KEYS.iter().map(|(keys, _, command)| (*keys, *command));
-            let ex = EX.iter().map(|(names, command)| (names[0], *command));
-            for (keys, command) in editor.chain(app).chain(ex) {
+            for (names, command) in EX {
                 assert!(
-                    known(command),
-                    "{keys} is bound to unknown command {command}"
+                    registry.get(command).is_some(),
+                    ":{} is the name of unknown command {command}",
+                    names[0]
                 );
             }
 
@@ -162,5 +136,96 @@ mod tests {
                 assert!(!command.description.is_empty(), "{}", command.name);
             }
         });
+    }
+
+    #[gpui::test]
+    fn no_key_is_bound_without_an_init_file(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::init_globals(cx);
+            let keymap = &cx.global::<crate::VimGlobal>().0.keymap;
+            for mode in [Normal, Visual, Operator, Insert] {
+                assert_eq!(keymap.next_keys(mode, ""), [], "{mode:?}");
+            }
+        });
+    }
+
+    /// Every file of `examples/` is installed, and runs from where it is
+    /// written without an error.
+    #[gpui::test]
+    fn installs_the_examples(cx: &mut gpui::TestAppContext) {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut names: Vec<String> = std::fs::read_dir(&examples)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".lisp"))
+            .collect();
+        names.sort();
+        let mut installed: Vec<&str> = DEFAULT_CONFIG.iter().map(|(name, _)| *name).collect();
+        installed.sort();
+        assert_eq!(names, installed);
+
+        let dir = std::env::temp_dir().join(format!("med-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("med");
+        install_default_config(&config, false).unwrap();
+        for (name, text) in DEFAULT_CONFIG {
+            assert_eq!(std::fs::read_to_string(config.join(name)).unwrap(), *text);
+        }
+
+        // What is there already is kept, unless it is to be overwritten;
+        // what is not one of them is kept either way.
+        std::fs::write(config.join("keys.lisp"), "; mine\n").unwrap();
+        std::fs::write(config.join("notes.lisp"), "; mine\n").unwrap();
+        match install_default_config(&config, false) {
+            Err(InstallError::Exists(there)) => assert_eq!(there.len(), DEFAULT_CONFIG.len()),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(config.join("keys.lisp")).unwrap(),
+            "; mine\n"
+        );
+        install_default_config(&config, true).unwrap();
+        assert_ne!(
+            std::fs::read_to_string(config.join("keys.lisp")).unwrap(),
+            "; mine\n"
+        );
+        assert!(config.join("notes.lisp").is_file());
+
+        cx.update(|cx| {
+            crate::init(cx);
+            assert!(no_keys_hint(cx).is_some());
+            assert!(crate::script::run_init(&config.join("init.lisp"), cx));
+            assert_eq!(crate::script::take_message(cx), None);
+            assert_eq!(no_keys_hint(cx), None);
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `examples/vim.lisp` is the engine's stock layout, binding for
+    /// binding.
+    #[gpui::test]
+    fn the_example_vim_layout_is_the_engines(cx: &mut gpui::TestAppContext) {
+        let source = include_str!("../../../examples/vim.lisp");
+        cx.update(|cx| {
+            crate::init_globals(cx);
+            if let Err(error) = crate::script::eval(source, cx) {
+                panic!("{error}");
+            }
+            let keymap = &cx.global::<crate::VimGlobal>().0.keymap;
+            for (modes, keys, command) in med_vim::VIM_LAYOUT {
+                for mode in *modes {
+                    assert_eq!(
+                        keymap.command(*mode, keys),
+                        Some(*command),
+                        "{mode:?} {keys}"
+                    );
+                }
+            }
+        });
+        let binds = source
+            .lines()
+            .filter(|line| line.starts_with("(bind "))
+            .count();
+        assert_eq!(binds, med_vim::VIM_LAYOUT.len());
     }
 }

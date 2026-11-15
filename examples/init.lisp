@@ -1,6 +1,6 @@
-; An init file that has everything in this directory: the file tree, the
-; picker, the git screen, the keys that can come next, and the signs on
-; the lines that say TODO. Put a line
+; An init file that has everything in this directory: the vim keys and
+; the editor's, the file tree, the picker, the git screen, the keys that
+; can come next, and the signs on the lines that say TODO. Put a line
 ; like this in your own `init.lisp`, with the path of your checkout:
 ;
 ;   (load "/path/to/med/examples/init.lisp")
@@ -8,6 +8,8 @@
 ; or copy the files beside your `init.lisp`, take what you want of them,
 ; and change it: they are programs like any other you would write there.
 
+(load "vim.lisp")
+(load "keys.lisp")
 (load "tree.lisp")
 (load "picker.lisp")
 (load "git.lisp")

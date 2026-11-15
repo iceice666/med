@@ -2,6 +2,7 @@
 //! programs define, and the ex commands that act on them.
 
 use crate::commands::{Args, Commands, Handler, RunCommand};
+use crate::defaults::{self, InstallError};
 use crate::editor::{Editor, EditorEvent};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::script;
@@ -125,8 +126,11 @@ impl Workspace {
         } else {
             this.activate(0, window, cx);
         }
-        // What the init file had to say, or what was wrong with it.
-        this.message = script::take_message(cx).map(SharedString::from);
+        // What the init file had to say, or what was wrong with it; or, with
+        // no keys bound, how to get some.
+        this.message = script::take_message(cx)
+            .or_else(|| defaults::no_keys_hint(cx))
+            .map(SharedString::from);
         this.read_branch(cx);
         // The panels have a project to show.
         script::run_hook("opened", Vec::new(), window, cx);
@@ -154,6 +158,40 @@ impl Workspace {
 
     /// Files may have changed underneath us (another program, a git
     /// command): reload clean buffers, and tell the panels.
+    /// Write the example configuration into `dir` and run its init file,
+    /// as `:install_default_config` does with the configuration directory.
+    /// Files that are there already are only overwritten if `overwrite`.
+    pub(crate) fn install_default_config(
+        &mut self,
+        dir: &Path,
+        overwrite: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match defaults::install_default_config(dir, overwrite) {
+            Ok(()) => {
+                script::run_init(&dir.join("init.lisp"), cx);
+                let message = script::take_message(cx).unwrap_or_else(|| {
+                    format!("Wrote the example configuration to {}", dir.display())
+                });
+                self.set_message(message, cx);
+                // The panels it defined have a project to show.
+                script::run_hook("opened", Vec::new(), window, cx);
+            }
+            Err(InstallError::Exists(names)) => self.set_message(
+                format!(
+                    "{} has {} already: :install_default_config! to overwrite",
+                    dir.display(),
+                    names.join(" ")
+                ),
+                cx,
+            ),
+            Err(InstallError::Io(path, error)) => {
+                self.set_message(format!("{}: {error}", path.display()), cx)
+            }
+        }
+    }
+
     fn sync_with_disk(&mut self, window: &Window, cx: &mut Context<Self>) {
         for tab in self.tabs.clone() {
             tab.update(cx, |editor, cx| editor.reload_if_changed(cx));
@@ -1174,13 +1212,23 @@ pub(crate) fn register(commands: &mut Commands) {
         "Run the init file again",
         W(|ws, _, window, cx| {
             let ran = script::reload_init(cx);
-            let message = script::take_message(cx).unwrap_or_else(|| match ran {
-                Some(path) => format!("Ran {}", path.display()),
-                None => "There is no init.lisp".to_string(),
-            });
+            let message = script::take_message(cx)
+                .or_else(|| defaults::no_keys_hint(cx))
+                .unwrap_or_else(|| match ran {
+                    Some(path) => format!("Ran {}", path.display()),
+                    None => "There is no init.lisp".to_string(),
+                });
             ws.set_message(message, cx);
             // The panels it defined anew have a project to show.
             script::run_hook("opened", Vec::new(), window, cx);
+        }),
+    );
+    commands.register(
+        "workspace.install_default_config",
+        "Write the example configuration where the init file is looked for, and run it (! to overwrite)",
+        W(|ws, args, window, cx| match crate::config_dir() {
+            Some(dir) => ws.install_default_config(&dir, args.bang, window, cx),
+            None => ws.set_message("There is no configuration directory: set MED_CONFIG_DIR", cx),
         }),
     );
 }

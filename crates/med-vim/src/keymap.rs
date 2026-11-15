@@ -1,10 +1,12 @@
 //! Key sequences and what they are bound to.
 //!
-//! [`Keymap::vim`] is the stock vim layout, written as a table of key
-//! sequence → command name; a host changes it with [`Keymap::bind`] and
-//! friends. What stays in the engine is vim's grammar — counts, registers,
-//! operator + motion, the doubled operator (`dd`) — which works the same
-//! whatever the keys are.
+//! A [`Keymap`] starts out empty, and a host fills it with [`Keymap::bind`]
+//! and friends; med does it from the user's init file, whose example is
+//! `examples/vim.lisp`. [`Keymap::vim`] is that stock vim layout as a
+//! table of key sequence → command name, kept for tests: the engine's own,
+//! and med's check that the example still says the same. What stays in
+//! the engine is vim's grammar — counts, registers, operator + motion, the
+//! doubled operator (`dd`) — which works the same whatever the keys are.
 
 use crate::command::{self, Action};
 use crate::vim::Key;
@@ -137,6 +139,11 @@ impl<T> Default for KeyTrie<T> {
 impl<T: Clone> KeyTrie<T> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Nothing is bound.
+    pub fn is_empty(&self) -> bool {
+        self.root.value.is_none() && self.root.children.is_empty()
     }
 
     /// Bind `keys`, replacing what they were bound to. An empty sequence
@@ -275,7 +282,7 @@ pub struct Keymap {
 
 impl Default for Keymap {
     fn default() -> Self {
-        Self::vim()
+        Self::empty()
     }
 }
 
@@ -287,10 +294,10 @@ impl Keymap {
         }
     }
 
-    /// The stock vim layout.
+    /// The stock vim layout, [`VIM_LAYOUT`].
     pub fn vim() -> Self {
         let mut keymap = Self::empty();
-        for (modes, keys, command) in DEFAULTS {
+        for (modes, keys, command) in VIM_LAYOUT {
             for mode in *modes {
                 keymap.bind(*mode, keys, command);
             }
@@ -358,12 +365,34 @@ impl Keymap {
             .collect()
     }
 
+    /// Nothing is bound in `mode`.
+    pub fn is_empty(&self, mode: MapMode) -> bool {
+        self.maps[mode as usize].is_empty()
+    }
+
     pub(crate) fn lookup(&self, mode: MapMode, keys: &[Key]) -> Lookup<Action> {
-        self.maps[mode as usize].lookup(keys)
+        match self.fallback(mode, keys) {
+            Some(action) => Lookup::Found(action),
+            None => self.maps[mode as usize].lookup(keys),
+        }
     }
 
     pub(crate) fn longest_prefix(&self, mode: MapMode, keys: &[Key]) -> Option<(usize, Action)> {
-        self.maps[mode as usize].longest_prefix(keys)
+        match self.fallback(mode, keys.get(..1).unwrap_or_default()) {
+            Some(action) => Some((1, action)),
+            None => self.maps[mode as usize].longest_prefix(keys),
+        }
+    }
+
+    /// While nothing at all is bound in normal mode, `:` still opens the
+    /// command line: an editor whose init file binds no key can then be
+    /// given some (`:install_default_config`, `:eval`). The first binding
+    /// of normal mode, whatever it is, takes this away.
+    fn fallback(&self, mode: MapMode, keys: &[Key]) -> Option<Action> {
+        let bare = mode == MapMode::Normal && self.is_empty(MapMode::Normal);
+        (bare && keys == [Key::Char(':')])
+            .then(|| command::builtin("cmdline.ex").map(Action::Builtin))
+            .flatten()
     }
 }
 
@@ -377,7 +406,9 @@ const N: &[MapMode] = &[Normal];
 const V: &[MapMode] = &[Visual];
 const I: &[MapMode] = &[Insert];
 
-const DEFAULTS: &[(&[MapMode], &str, &str)] = &[
+/// The stock vim layout: modes, key sequence, command. `examples/vim.lisp`
+/// is the same table as an init file binds it.
+pub const VIM_LAYOUT: &[(&[MapMode], &str, &str)] = &[
     (NVO, "h", "motion.left"),
     (NVO, "<Left>", "motion.left"),
     (NVO, "<BS>", "motion.left"),
@@ -614,9 +645,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_name_real_commands() {
+    fn layout_names_real_commands() {
+        assert_eq!(Keymap::default().next_keys(MapMode::Normal, ""), []);
         let keymap = Keymap::vim();
-        for (modes, keys, command) in DEFAULTS {
+        for (modes, keys, command) in VIM_LAYOUT {
             assert!(
                 command::builtin(command).is_some(),
                 "{keys} is bound to unknown command {command}"

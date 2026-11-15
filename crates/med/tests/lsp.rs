@@ -270,6 +270,13 @@ fn main() {
     let cleanup = dir.clone();
     gpui::platform::headless().run(move |cx| {
         med::init_globals(cx);
+        // med binds no key: the scenario types the example ones.
+        for program in [
+            include_str!("../../../examples/vim.lisp"),
+            include_str!("../../../examples/keys.lisp"),
+        ] {
+            med::script::eval(program, cx).unwrap();
+        }
         let store = cx.new(|_| LspStore::new(dir.clone(), true));
         let editor = cx.new(|cx| Editor::new(Some(file.clone()), SOURCE, Some(store), cx));
 
