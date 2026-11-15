@@ -121,42 +121,61 @@ moves right) waits a second for the rest before acting.
 
 ## Panel layouts
 
-How a panel looks is a layout: a JSON tree the panel's view is drawn from.
-The file tree is the first panel done this way. Its layout is
-`crates/med/src/panels/file_tree.json`; a copy at
-`<config>/panels/file_tree.json` replaces it, and `:workspace.reload_panels`
-reads it again while running. A file that cannot be used is reported in the
-status bar and the built-in layout stays.
+How a panel looks is a layout: a function, written in the init file's
+language, that is called each time the panel is drawn and describes it.
+The file tree is the first panel drawn this way. Its layout is
+`crates/med/src/panels/tree.lisp`, and `set-layout` in `init.lisp` replaces
+it:
 
-A node has a `type` and, all optional, a `style`, `when` (styles added
-while flags hold: `{ "if": ["selected", "!focused"], "style": … }`),
-`hover`, `if` (flags that must hold for the node to be there) and
-`on_click` (a command name).
+```lisp
+(set-layout 'tree
+  (fn (panel)
+    (col :width 'full :height 'full :bg 'sidebar
+      (text (get panel :root-name) :bold true :padding-x 12 :height 32)
+      (rows 'entries :grow true
+        (fn (entry)
+          (row :height 24 :align 'center
+               :padding-left (+ 10 (* 14 (get entry :depth)))
+               :bg (when (get entry :selected) 'list-active)
+               :on-click "tree.open"
+            (when (get entry :dir) (text "/ " :color 'muted-foreground))
+            (text (get entry :name))))))))
+```
 
-| Type | Also takes |
+| Function | Makes |
 | --- | --- |
-| `row`, `col` | `children` |
-| `text` | `text`, with `{name}` for a value of the panel |
-| `list` | `source` (a list of the panel) and `item`, the layout of one row |
+| `(row styles... children...)`, `(col ...)` | a row or a column of its children |
+| `(text value styles...)` | text |
+| `(rows list styles... function)` | one of the panel's lists; the function describes a row |
 
-Styles: `width` and `height` (pixels or `"full"`), `grow`, `shrink`,
-`padding_x` `padding_y` `padding_left` `padding_right`, `gap`, `align` and
-`justify` (`start` `center` `end`, and `between`), `bg`, `color`,
-`border_top` `border_right` `border_bottom` `border_left`, `border_color`,
-`bold`, `nowrap`. A color is a theme color (`sidebar`, `muted_foreground`,
-`list_active`, `warning`…) or `#rrggbb`. A padding or gap can grow with a
-number of the panel: `{ "base": 10, "step": 14, "times": "depth" }`.
+Styles are `:name value` pairs: `width` and `height` (pixels or `'full`),
+`grow`, `shrink`, `padding-x` `padding-y` `padding-left` `padding-right`,
+`gap`, `align` and `justify` (`'start` `'center` `'end`, and `'between`),
+`bg`, `color`, `border-top` `border-right` `border-bottom` `border-left`,
+`border-color`, `bold`, `nowrap`; `hover`, a list of styles for under the
+pointer, as in `(list :bg 'list-hover)`; and `on-click`, a command's name
+or a function. A color is one of the theme's (`'sidebar`,
+`'muted-foreground`, `'list-active`, `'warning`…) or `"#rrggbb"`.
 
-The file tree has the text `root_name` and the flag `focused`; in a row of
-its list `entries`, the texts `name` and `status`, the number `depth` and
-the flags `selected`, `dir`, `expanded`, `added`, `modified`. A click on a
-row selects it, then runs the row's command.
+A style given `nil` is left alone and a `nil` child is no child, so what
+depends on the panel is written with `if`, `when` and `cond`. A child can
+also be a string, or a list of children, as `map` makes.
+
+The file tree's `panel` has `:root-name` and `:focused`; an `entry` of its
+list `entries` has `:name`, `:status`, `:depth` and the flags `:selected`,
+`:dir`, `:expanded`, `:added`, `:modified`. A click on a row selects it
+first.
+
+A layout only describes: it cannot bind keys or run commands while it is
+being drawn, though the function it gives `on-click` can when clicked. One
+that fails is drawn as its error message.
 
 ## Scripting language
 
 `med-lisp` is a small Lisp, the language of the init file and of `:eval`.
-So far a program can change keys and options, define commands (above) and
-say something with `(message ...)`; it cannot yet draw anything. One
+A program can change keys and options, define commands, lay out a panel
+(all above) and say something with `(message ...)`; it cannot yet make a
+panel of its own. One
 interpreter serves the whole session, so what `init.lisp` defines can be
 used from `:eval`. A program that never ends is stopped after ten million
 steps rather than left to hang the window.
