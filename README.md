@@ -160,6 +160,7 @@ there. Each brings its commands and its keys:
 | | `i` | in a listing: edit the names, as wdired |
 | `statusline.lisp` | | the status bar, as a layout to change: the one the window draws without it |
 | `titlebar.lisp` | | the title bar: what is being edited, the project and its branch |
+| | click the branch | switch branch (also `:titlebar.branches`) |
 
 With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
 lists what can follow at the bottom of the window once nothing has been
