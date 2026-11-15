@@ -77,15 +77,44 @@ named command, and keys are bound to names in tables:
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
 can also be run by its full name, as in `:workspace.find_file`.
 
-There is no configuration file yet; the tables are changed in code:
+The tables are changed from the init file, `<config>/init.lisp`, which is
+run at startup, or from the command line with `:eval`:
 
-```rust
-let keymap = &mut cx.global_mut::<med::VimGlobal>().0.keymap;
-keymap.bind(MapMode::Normal, "<Space>n", "workspace.next_tab");
-keymap.bind(MapMode::Insert, "jk", "insert.escape");
-keymap.bind_keys(MapMode::Normal, "Y", "y$");
-cx.global_mut::<PanelKeymaps>().bind("git.files", "x", "git.discard");
+```lisp
+(bind 'normal "<Space>n" "workspace.next_tab")
+(bind 'insert "jk" "insert.escape")
+(bind '(normal visual) "gh" "editor.hover")   ; several modes at once
+(bind-keys 'normal "Y" "y$")                  ; keys typed in place of others
+(bind 'git.files "x" "git.discard")           ; a panel's keys
+(unbind 'normal "gt")
+(set-option 'font-size 16)                    ; also font-family, lsp
 ```
+
+The modes are `normal`, `visual`, `operator` and `insert`; the panels are
+`tree`, `git`, `git.files`, `git.branches` and `git.stash`. `bind` refuses
+a command that does not exist. `:workspace.reload_init` runs the file
+again; what is wrong with it is said in the status bar, with the line.
+
+A command can be written there too. It is a function of no arguments, and
+from then on a name like any other: for keys, for the command line, and
+for `run`, which runs a command by any name the command line knows it by.
+
+```lisp
+(defcommand "user.save-and-close" "Write the file, then close its tab"
+  (fn ()
+    (run "workspace.save")
+    (run "workspace.close_tab")))
+(bind 'normal "<Space>x" "user.save-and-close")
+
+(defcommand "user.note" "Open the note named on the command line"
+  (fn () (run "workspace.edit" (str "notes/" command-arg ".md"))))
+```
+
+`:user.note today` opens `notes/today.md`. Besides `command-arg`, the rest
+of the command line, there are `command-bang` (was there a `!`) and
+`command-count` (the count typed before the key, or `nil`).
+`(current-file)` and `(project-root)` say where the editor is. A command
+cannot take the name of one of the editor's own.
 
 A key that is a binding by itself and also starts longer ones (`space`, which
 moves right) waits a second for the rest before acting.
@@ -123,6 +152,33 @@ its list `entries`, the texts `name` and `status`, the number `depth` and
 the flags `selected`, `dir`, `expanded`, `added`, `modified`. A click on a
 row selects it, then runs the row's command.
 
+## Scripting language
+
+`med-lisp` is a small Lisp, the language of the init file and of `:eval`.
+So far a program can change keys and options, define commands (above) and
+say something with `(message ...)`; it cannot yet draw anything. One
+interpreter serves the whole session, so what `init.lisp` defines can be
+used from `:eval`. A program that never ends is stopped after ten million
+steps rather than left to hang the window.
+
+The language itself can be tried without the editor:
+
+```sh
+cargo run -p med-lisp --example repl
+```
+
+```lisp
+(defn leader-key (key command)       ; lexical scope, one namespace
+  (bind (str "<Space>" key) command))
+(map (fn (n) (* n n)) '(1 2 3))      ; => (1 4 9)
+```
+
+Forms: `quote if def defn fn let do set! and or cond when unless while`.
+`nil` (also the empty list) and `false` are the only values that do not
+hold. A call in tail position takes no stack. Errors carry the line and
+column of the form they happened in and of the forms around it. Functions are listed in `crates/med-lisp/src/builtins.rs`;
+there are no macros yet.
+
 ## Layout
 
 | Crate | What |
@@ -131,4 +187,5 @@ row selects it, then runs the row's command.
 | `med-vim` | modal editing engine |
 | `med-lsp` | JSON-RPC transport for language servers |
 | `med-git` | wrapper around the `git` CLI |
+| `med-lisp` | scripting language |
 | `med` | the GPUI application |
