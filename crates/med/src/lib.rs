@@ -17,6 +17,7 @@ pub mod user_panel;
 pub mod workspace;
 
 use commands::RunCommand;
+use gpui::component::TitleBar;
 use gpui::*;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -146,13 +147,15 @@ pub fn run() {
 
             let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
             gpui::open_window(
+                // The title bar is drawn by the workspace, which a program
+                // can give a layout of its own (`defpanel :at 'title`).
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
                         title: Some("med".into()),
-                        ..Default::default()
+                        ..TitleBar::title_bar_options()
                     }),
-                    ..Default::default()
+                    ..TitleBar::window_options()
                 },
                 cx,
                 |window, cx| cx.new(|cx| Workspace::new(root, files, window, cx)),

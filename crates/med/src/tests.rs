@@ -79,6 +79,12 @@ const GIT: &str = include_str!("../../../examples/git.lisp");
 const WHICH_KEY: &str = include_str!("../../../examples/which-key.lisp");
 const TODO: &str = include_str!("../../../examples/todo.lisp");
 const DIRED: &str = include_str!("../../../examples/dired.lisp");
+const STATUSLINE: &str = include_str!("../../../examples/statusline.lisp");
+const TITLEBAR: &str = include_str!("../../../examples/titlebar.lisp");
+
+/// How tall the title bar is, which the window's other bars and panels are
+/// below.
+const TITLE: f32 = 34.; // gpui::component::TITLE_BAR_HEIGHT
 
 fn open<'a>(
     project: &Project,
@@ -456,8 +462,9 @@ fn the_file_tree_shows_what_git_says(cx: &mut TestAppContext) {
 fn the_file_tree_is_a_panel_like_any_other(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
     let (ws, cx) = open_with(&[TREE], &project, &[], cx);
+    // `y` from the top of the tree, which is under the title bar.
     let click = |y: f32, cx: &mut VisualTestContext| {
-        cx.simulate_click(point(px(40.), px(y)), Modifiers::none());
+        cx.simulate_click(point(px(40.), px(TITLE + y)), Modifiers::none());
         cx.run_until_parked();
     };
     let message = |cx: &mut VisualTestContext| {
@@ -870,7 +877,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
                  (text "x" :height 30 :on-click (fn () (set! clicks 100))))))"#,
         cx,
     );
-    click(50., 15., cx);
+    click(50., TITLE + 15., cx);
     assert_eq!(eval("clicks", cx), "100");
 
     // A list of the program's, a row to a value. It is to the right of
@@ -886,7 +893,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
                      (text letter))))))"#,
         cx,
     );
-    click(width - 60., 30. + 15., cx);
+    click(width - 60., TITLE + 30. + 15., cx);
     assert_eq!(eval("picked", cx), "\"b\"");
     click(width - 120. - 100., 100., cx);
     assert_eq!(eval("clicks", cx), "101");
@@ -899,7 +906,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
                  (text "reset" :height 30 :on-click (fn () (set! clicks 0))))))"#,
         cx,
     );
-    click(width - 120. - 100., 15., cx);
+    click(width - 120. - 100., TITLE + 15., cx);
     assert_eq!(eval("clicks", cx), "0");
 
     // A popup, over the editor. Its own click can put it away...
@@ -960,7 +967,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(defpanel 'x :at 'top (fn (panel) (col)))", cx),
-        "1:1: at: expected 'left, 'right, 'bottom, 'popup, 'full, got top"
+        "1:1: at: expected 'left, 'right, 'bottom, 'popup, 'full, 'status, 'title, got top"
     );
     assert_eq!(
         eval("(defpanel 'x :colour 1 (fn (panel) (col)))", cx),
@@ -1580,7 +1587,15 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     };
     assert_eq!(
         panels(cx),
-        ["tree", "picker", "git", "git-prompt", "which-key"]
+        [
+            "tree",
+            "picker",
+            "git",
+            "git-prompt",
+            "which-key",
+            "statusline",
+            "titlebar"
+        ]
     );
 
     // The leader keys work from the tree as they do from an editor.
@@ -1619,7 +1634,15 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     );
     assert_eq!(
         panels(cx),
-        ["tree", "picker", "git", "git-prompt", "which-key"]
+        [
+            "tree",
+            "picker",
+            "git",
+            "git-prompt",
+            "which-key",
+            "statusline",
+            "titlebar"
+        ]
     );
     assert_eq!(lisp("(length tree-entries)", cx), "2");
     cx.simulate_keystrokes("space g");
@@ -2905,4 +2928,97 @@ fn programs_give_buffers_keys_of_their_own(cx: &mut TestAppContext) {
     assert_eq!(project.read("x.txt"), "one\ntwo\n");
     cx.simulate_keystrokes("x");
     assert_eq!(text(&ws, cx), "one\nwo\n");
+}
+
+#[gpui::test]
+fn programs_draw_the_status_and_title_bars(cx: &mut TestAppContext) {
+    use crate::user_panel::At;
+    let project = Project::new(&[("a.txt", "one\ntwo\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let eval = |source: &str, cx: &mut VisualTestContext| {
+        let value = lisp(source, cx);
+        cx.run_until_parked();
+        value
+    };
+    let click = |x: f32, y: f32, cx: &mut VisualTestContext| {
+        cx.simulate_click(point(px(x), px(y)), Modifiers::none());
+        cx.run_until_parked();
+    };
+    let height = cx.update(|window, _| f32::from(window.viewport_size().height));
+    let bar = |at: At, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            cx.global::<UserPanels>()
+                .bar(at)
+                .map(|name| name.to_string())
+        })
+    };
+
+    // A panel at 'status is up once defined, in place of the window's bar,
+    // and told what that bar shows. Its click tells what it was drawn with.
+    eval("(def seen nil)", cx);
+    let layout = r#"(fn (panel)
+        (row :width 'full :height 26
+             :on-click (fn () (set! seen (list (get panel :mode) (get panel :line)
+                                               (get panel :col) (get panel :path)
+                                               (get panel :cmdline) (get panel :modified))))
+          (text "bar")))"#;
+    eval(&format!("(defpanel 'bar :at 'status {layout})"), cx);
+    assert_eq!(bar(At::Status, cx), Some("bar".to_string()));
+    click(50., height - 13., cx);
+    assert_eq!(eval("seen", cx), r#"(normal 1 1 "a.txt" nil false)"#);
+    // It is drawn again as the editor changes.
+    cx.simulate_keystrokes("j l x");
+    click(50., height - 13., cx);
+    assert_eq!(eval("seen", cx), r#"(normal 2 2 "a.txt" nil true)"#);
+    // The command line is the bar's to show while it is typed.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("ab");
+    cx.run_until_parked();
+    click(50., height - 13., cx);
+    assert_eq!(eval("seen", cx), r#"(command 2 2 "a.txt" ":ab" true)"#);
+    cx.simulate_keystrokes("escape");
+
+    // A layout that fails gives way to the window's own bar, which says
+    // why, until the panel has a layout again.
+    eval("(set! seen nil)", cx);
+    eval("(set-layout 'bar (fn (panel) (car 5)))", cx);
+    assert_eq!(bar(At::Status, cx), None);
+    let message = ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default());
+    assert!(message.starts_with("bar: "), "{message}");
+    click(50., height - 13., cx);
+    assert_eq!(eval("seen", cx), "nil");
+    eval(&format!("(set-layout 'bar {layout})"), cx);
+    click(50., height - 13., cx);
+    assert_eq!(eval("(car seen)", cx), "normal");
+    // Put away, the window's bar is back.
+    eval("(hide-panel 'bar)", cx);
+    assert_eq!(bar(At::Status, cx), None);
+    eval("(set! seen nil)", cx);
+    click(50., height - 13., cx);
+    assert_eq!(eval("seen", cx), "nil");
+
+    // A panel at 'title is drawn in the title bar, after the room the
+    // window's buttons take.
+    eval(
+        r#"(defpanel 'top :at 'title
+             (fn (panel)
+               (row :width 'full :height 'full
+                    :on-click (fn () (set! seen (get panel :title)))
+                 (text "top"))))"#,
+        cx,
+    );
+    assert_eq!(bar(At::Title, cx), Some("top".to_string()));
+    click(300., TITLE / 2., cx);
+    assert_eq!(eval("seen", cx), r#""a.txt — med""#);
+
+    // The examples draw both bars without failing.
+    for program in [STATUSLINE, TITLEBAR] {
+        eval(program, cx);
+    }
+    cx.simulate_keystrokes(":");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(bar(At::Status, cx), Some("statusline".to_string()));
+    assert_eq!(bar(At::Title, cx), Some("titlebar".to_string()));
 }

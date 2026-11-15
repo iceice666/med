@@ -192,7 +192,11 @@ const THEME_COLORS: &[(&str, ThemeColor)] = &[
     ("sidebar", |theme| theme.sidebar),
     ("sidebar-border", |theme| theme.sidebar_border),
     ("sidebar-foreground", |theme| theme.sidebar_foreground),
+    ("status-bar", |theme| theme.status_bar),
     ("success", |theme| theme.success),
+    ("tab-bar", |theme| theme.tab_bar),
+    ("title-bar", |theme| theme.title_bar),
+    ("title-bar-border", |theme| theme.title_bar_border),
     ("warning", |theme| theme.warning),
 ];
 
@@ -590,6 +594,7 @@ pub(crate) fn define_functions(interp: &mut Interp) {
             ));
         }
         cx.global_mut::<Layouts>().set(&panel, args[1].clone());
+        cx.global_mut::<UserPanels>().layout_changed(&panel);
         cx.refresh_windows();
         Ok(Value::Nil)
     });

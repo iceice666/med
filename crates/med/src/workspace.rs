@@ -7,10 +7,11 @@ use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::script;
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
-use gpui::component::ActiveTheme as _;
+use gpui::component::{ActiveTheme as _, TitleBar};
 use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
+use med_lisp::Value;
 use med_vim::Mode;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -239,6 +240,81 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The window's title: what is being edited, and the editor's name.
+    fn title(&self, cx: &App) -> String {
+        let Some(editor) = self.active_editor().map(|editor| editor.read(cx)) else {
+            return "med".to_string();
+        };
+        match (&editor.scratch, &editor.path) {
+            (Some(scratch), _) => format!("{} — med", scratch.name),
+            (None, Some(path)) => format!("{} — med", self.relative(path)),
+            (None, None) => "med".to_string(),
+        }
+    }
+
+    /// What the window's own bars show, for a program's bar to draw from:
+    /// see the README's "The bars".
+    pub(crate) fn bar_vars(&self, cx: &App) -> Vec<(&'static str, Value)> {
+        let text = |text: Option<String>| {
+            text.filter(|t| !t.is_empty())
+                .map_or(Value::Nil, Value::from)
+        };
+        let lsp = self.lsp.read(cx);
+        let (errors, warnings) = lsp.diagnostic_counts();
+        let mut vars = vec![
+            ("title", Value::from(self.title(cx))),
+            (
+                "message",
+                text(self.message.as_ref().map(|m| m.to_string())),
+            ),
+            ("branch", text(self.branch.as_ref().map(|b| b.to_string()))),
+            ("errors", Value::from(errors as i64)),
+            ("warnings", Value::from(warnings as i64)),
+        ];
+        let Some(editor) = self.active_editor().map(|editor| editor.read(cx)) else {
+            return vars;
+        };
+        let (line, col) = editor.cursor_position();
+        let mode = editor.vim.mode;
+        vars.extend([
+            ("mode", Value::symbol(crate::buffer_api::mode_name(mode))),
+            ("mode-label", Value::from(mode.label())),
+            (
+                "path",
+                text(editor.path.as_deref().map(|path| self.relative(path))),
+            ),
+            (
+                "scratch",
+                text(editor.scratch.as_ref().map(|s| s.name.to_string())),
+            ),
+            ("modified", Value::from(editor.is_dirty())),
+            ("line", Value::from(line as i64)),
+            ("col", Value::from(col as i64)),
+            ("language", Value::from(editor.language_name())),
+            (
+                "cmdline",
+                editor.vim.cmdline().map_or(Value::Nil, |(kind, text)| {
+                    Value::from(format!("{kind}{text}"))
+                }),
+            ),
+            ("pending", text(Some(editor.vim.pending_display()))),
+            ("recording", text(editor.vim.recording().map(String::from))),
+            (
+                "diagnostic",
+                text(
+                    editor
+                        .diagnostic_at_cursor()
+                        .and_then(|d| d.message.lines().next().map(str::to_string)),
+                ),
+            ),
+            (
+                "lsp",
+                text(editor.path.as_deref().and_then(|path| lsp.status(path))),
+            ),
+        ]);
+        vars
+    }
+
     fn relative(&self, path: &Path) -> String {
         path.strip_prefix(&self.root)
             .unwrap_or(path)
@@ -259,12 +335,7 @@ impl Workspace {
         self.active = index.min(self.tabs.len() - 1);
         let editor = self.tabs[self.active].clone();
         editor.read(cx).focus_handle(cx).focus(window, cx);
-        let title = match (&editor.read(cx).scratch, &editor.read(cx).path) {
-            (Some(scratch), _) => format!("{} — med", scratch.name),
-            (None, Some(path)) => format!("{} — med", self.relative(path)),
-            (None, None) => "med".to_string(),
-        };
-        window.set_window_title(&title);
+        window.set_window_title(&self.title(cx));
         self.editor_changed(window, cx);
         cx.notify();
     }
@@ -888,6 +959,50 @@ impl Workspace {
             }))
     }
 
+    /// The panel a program draws in place of a bar of the window, if any.
+    fn bar_view(&mut self, at: At, cx: &mut Context<Self>) -> Option<Entity<PanelView>> {
+        let name = cx.global::<UserPanels>().bar(at).cloned()?;
+        Some(self.panel_view(&name, cx))
+    }
+
+    /// The title bar, which the window leaves to be drawn: a program's
+    /// panel at `'title`, or the window's title.
+    fn render_title(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bar = TitleBar::new();
+        match self.bar_view(At::Title, cx) {
+            Some(view) => bar.child(div().size_full().child(view)),
+            None => {
+                let muted = cx.theme().muted_foreground;
+                bar.child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .justify_center()
+                        .text_color(muted)
+                        .text_size(px(12.))
+                        // Centred on the window rather than on what the
+                        // traffic lights leave of it.
+                        .when(cfg!(target_os = "macos") && !window.is_fullscreen(), |el| {
+                            el.mr(px(80.))
+                        })
+                        .child(self.title(cx)),
+                )
+            }
+        }
+    }
+
+    /// The status bar: a program's panel at `'status`, or the window's own.
+    fn render_status_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        match self.bar_view(At::Status, cx) {
+            Some(view) => div()
+                .w_full()
+                .flex_shrink_0()
+                .child(view)
+                .into_any_element(),
+            None => self.render_status(cx).into_any_element(),
+        }
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (fg, muted, border) = (theme.foreground, theme.muted_foreground, theme.border);
@@ -1027,7 +1142,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let user_panels = self.shown_user_panels(cx);
         let theme = cx.theme();
         let (popover, popover_foreground) = (theme.popover, theme.popover_foreground);
@@ -1173,9 +1288,10 @@ impl Render for Workspace {
                     this.panels_changed(window, cx);
                 }
             }))
+            .child(self.render_title(window, cx))
             .child(body)
             .children(bottoms)
-            .child(self.render_status(cx))
+            .child(self.render_status_bar(cx))
             .children(popups)
     }
 }

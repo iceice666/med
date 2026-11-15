@@ -18,8 +18,10 @@
 //!
 //! A panel is at the `'left` or `'right` of the editor, at the `'bottom`
 //! of the window, as tall as what is in it, a `'popup` over the editor,
-//! which a click beside it or escape puts away, or `'full`, in place of
-//! the editor. Its layout is written as in `panel.rs` and gets a
+//! which a click beside it or escape puts away, `'full`, in place of
+//! the editor, or `'status` or `'title`, in place of what the window's
+//! status bar or title bar shows, which a bar's layout is told
+//! (`Workspace::bar_vars`). Its layout is written as in `panel.rs` and gets a
 //! `panel` with `:name`, `:file` (the file being edited, or nil), `:root`
 //! and `:focused`.
 //!
@@ -57,6 +59,17 @@ pub enum At {
     Popup,
     /// In place of the editor and the sidebars.
     Full,
+    /// In place of the status bar.
+    Status,
+    /// In place of what the title bar shows, at the top of the window.
+    Title,
+}
+
+impl At {
+    /// Whether a panel there is drawn in place of one of the window's bars.
+    pub fn is_bar(self) -> bool {
+        matches!(self, At::Status | At::Title)
+    }
 }
 
 /// The key tables a panel with the keyboard looks its keys up in.
@@ -86,6 +99,9 @@ pub struct UserPanels {
     /// panel up when it is first defined and not each time the init file
     /// is run again.
     known: HashSet<SharedString>,
+    /// Bars whose layout failed: the window's own bar is drawn in their
+    /// place until they are given a layout again.
+    failed: HashSet<SharedString>,
 }
 
 impl Global for UserPanels {}
@@ -100,6 +116,34 @@ impl UserPanels {
         self.panels
             .iter()
             .filter(|panel| self.shown.contains(&panel.name))
+    }
+
+    /// Where the panel `name` is drawn, if it is defined.
+    pub fn at(&self, name: &str) -> Option<At> {
+        self.panels
+            .iter()
+            .find(|panel| *panel.name == *name)
+            .map(|panel| panel.at)
+    }
+
+    /// The panel to draw in place of a bar of the window: the last one put
+    /// up there, unless its layout failed.
+    pub fn bar(&self, at: At) -> Option<&SharedString> {
+        self.shown()
+            .filter(|panel| panel.at == at)
+            .last()
+            .map(|panel| &panel.name)
+            .filter(|name| !self.failed.contains(*name))
+    }
+
+    /// The layout of the bar `name` failed: draw the window's own instead.
+    pub fn bar_failed(&mut self, name: &SharedString) {
+        self.failed.insert(name.clone());
+    }
+
+    /// The panel `name` has a new layout, to be tried again.
+    pub(crate) fn layout_changed(&mut self, name: &str) {
+        self.failed.remove(name);
     }
 
     pub fn is_shown(&self, name: &str) -> bool {
@@ -145,7 +189,9 @@ pub fn init(cx: &mut App) {
 /// Forget the panels that were defined, as before the init file is run
 /// again. Which ones were up is remembered for those it defines anew.
 pub(crate) fn reset(cx: &mut App) {
-    cx.global_mut::<UserPanels>().panels.clear();
+    let panels = cx.global_mut::<UserPanels>();
+    panels.panels.clear();
+    panels.failed.clear();
     cx.global_mut::<Layouts>().clear();
 }
 
@@ -201,7 +247,8 @@ fn view_of(name: &SharedString, cx: &mut App) -> Result<Entity<PanelView>, Error
 
 pub(crate) fn define_functions(interp: &mut Interp) {
     // (defpanel name options... function): options are :at ('left 'right
-    // 'bottom 'popup 'full), :width, :shown to have it up from the start, and
+    // 'bottom 'popup 'full, and 'status and 'title for the window's bars),
+    // :width, :shown to have it up from the start, and
     // :contexts, the key tables it looks its keys up in.
     interp.define_native("defpanel", Arity::at_least(2), |call, args| {
         let Some(name) = panel::word(&args[0]).filter(|name| !name.is_empty()) else {
@@ -231,6 +278,8 @@ pub(crate) fn define_functions(interp: &mut Interp) {
                         ("bottom", At::Bottom),
                         ("popup", At::Popup),
                         ("full", At::Full),
+                        ("status", At::Status),
+                        ("title", At::Title),
                     ];
                     at = panel::choice("at", value, &places)?;
                 }
@@ -275,9 +324,11 @@ pub(crate) fn define_functions(interp: &mut Interp) {
             Some(known) => *known = panel,
             None => panels.panels.push(panel),
         }
-        if panels.known.insert(name.clone()) && shown {
+        // A bar is up once it is defined, unless it is put away.
+        if panels.known.insert(name.clone()) && (shown || at.is_bar()) {
             panels.show(&name);
         }
+        panels.layout_changed(&name);
         cx.global_mut::<Layouts>().set(&name, function.clone());
         cx.refresh_windows();
         Ok(Value::from(name.as_ref()))
@@ -684,11 +735,26 @@ impl PanelView {
         };
         let (file, root) = self.workspace.read_with(cx, read).ok().unzip();
         let path = |path: std::path::PathBuf| Value::from(path.display().to_string());
-        Vars::default()
+        let vars = Vars::default()
             .set("name", self.name.as_ref())
             .set("file", file.flatten().map_or(Value::Nil, path))
             .set("root", root.map_or(Value::Nil, path))
-            .set("focused", self.has_focus(window, cx))
+            .set("focused", self.has_focus(window, cx));
+        // A bar is told what the window's own would show.
+        if !cx
+            .global::<UserPanels>()
+            .at(&self.name)
+            .is_some_and(At::is_bar)
+        {
+            return vars;
+        }
+        let bar = |workspace: &Workspace, cx: &App| workspace.bar_vars(cx);
+        match self.workspace.read_with(cx, bar) {
+            Ok(more) => more
+                .into_iter()
+                .fold(vars, |vars, (name, value)| vars.set(name, value)),
+            Err(_) => vars,
+        }
     }
 }
 
@@ -701,7 +767,18 @@ impl Render for PanelView {
                 self.sync_inputs(&node, window, cx);
                 panel::draw(&node, self, cx)
             }
-            Err(error) => panel::problem(&error, cx),
+            Err(error) => {
+                // A bar that fails gives way to the window's own, which
+                // says why: without it the command line could not be seen.
+                if cx.global::<UserPanels>().at(&name).is_some_and(At::is_bar) {
+                    cx.global_mut::<UserPanels>().bar_failed(&name);
+                    let message = format!("{name}: {error}");
+                    self.workspace
+                        .update(cx, |workspace, cx| workspace.set_message(message, cx))
+                        .ok();
+                }
+                panel::problem(&error, cx)
+            }
         };
         div()
             .id(name)
