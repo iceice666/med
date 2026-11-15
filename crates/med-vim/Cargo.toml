@@ -1,0 +1,9 @@
+[package]
+name = "med-vim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+med-core = { path = "../med-core" }
+regex = "1"
