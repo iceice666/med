@@ -18,6 +18,6 @@ pub use keymap::{
     Bound, KeyTrie, Keymap, KeysFor, Lookup, MapMode, NextKey, VIM_LAYOUT, format_keys, parse_keys,
 };
 pub use vim::{
-    Awaiting, Clipboard, Ctx, Effect, Key, Lang, MemClipboard, Mode, PAIRS, PendingKeys, Register,
-    Scroll, Search, Shared, SyntaxTree, Viewport, Vim, find_match,
+    Awaiting, Clipboard, Ctx, EX_NAMES, Effect, Key, Lang, MemClipboard, Mode, PAIRS, PendingKeys,
+    Register, Scroll, Search, Shared, SyntaxTree, Viewport, Vim, find_match,
 };

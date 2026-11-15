@@ -40,6 +40,22 @@ pub const EX: &[(&[&str], &str)] = &[
     ),
 ];
 
+/// What the argument of a command is, for `Tab` to complete it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExArg {
+    /// A path, relative to the project's root.
+    File,
+    /// A command, by any of its names.
+    Command,
+}
+
+/// The commands whose argument `Tab` completes on the command line.
+pub const EX_ARGS: &[(&str, ExArg)] = &[
+    ("workspace.edit", ExArg::File),
+    ("workspace.save", ExArg::File),
+    ("workspace.help", ExArg::Command),
+];
+
 /// The configuration `:install_default_config` writes: every file of
 /// `examples/`, by its name there, `init.lisp` loading the others.
 pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
@@ -134,6 +150,10 @@ mod tests {
                     ":{} is the name of unknown command {command}",
                     names[0]
                 );
+            }
+
+            for (command, _) in EX_ARGS {
+                assert!(registry.get(command).is_some(), "{command}");
             }
 
             // And the other way round: nothing registered is unreachable

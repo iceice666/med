@@ -3741,3 +3741,120 @@ fn a_listing_runs_every_command(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!tab_titles(&ws, cx).iter().any(|title| title.ends_with('/')));
 }
+
+#[gpui::test]
+fn tab_completes_the_command_line(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("src/main.rs", "fn main() {}\n"),
+        ("src/menu.rs", "\n"),
+        ("sub/x.txt", "\n"),
+        ("my notes/n.txt", "\n"),
+        (".hidden", "\n"),
+    ]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let line = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            editor
+                .vim
+                .cmdline()
+                .map(|(kind, text)| format!("{kind}{text}"))
+        })
+    };
+    let typed = |text: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes("escape :");
+        cx.simulate_input(text);
+    };
+
+    // Command names: one match is all there is.
+    typed("wr", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":write"));
+
+    // Several: each `Tab` the next, then back to what was typed;
+    // `S-Tab` the other way.
+    typed("q", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":q"));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":qa"));
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    assert_eq!(line(cx).as_deref(), Some(":q"));
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(line(cx).as_deref(), Some(":quit"));
+
+    // Typing in between starts again from what is there now.
+    typed("q", cx);
+    cx.simulate_keystrokes("tab tab");
+    cx.simulate_input("l");
+    assert_eq!(line(cx).as_deref(), Some(":qal"));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":qall"));
+
+    // A new command line starts afresh, though it reads like the last
+    // one did.
+    typed("e s", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e src/"));
+    typed("e src/", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e src/main.rs"));
+
+    // The engine's own commands, after a range.
+    typed("%nohls", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":%nohlsearch"));
+
+    // Files, from the project's root; into a directory with the next `Tab`;
+    // no dot files unless asked for.
+    typed("e s", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e src/"));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e sub/"));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e s"));
+    typed("e src/", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e src/main.rs"));
+    typed("w! ", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":w! a.txt"));
+    typed("e .h", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e .hidden"));
+    typed("e my n", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":e my notes/"));
+    let absolute = format!("e {}/sub/", project.0.display());
+    typed(&absolute, cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx), Some(format!(":{absolute}x.txt")));
+
+    // Help topics are commands, the engine's too.
+    typed("h motion.word_f", cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some(":h motion.word_forward"));
+
+    // Nothing to complete, or an argument nothing completes: no change,
+    // and no tab typed.
+    for text in ["zzz", "rename fo", "e nothing/"] {
+        typed(text, cx);
+        cx.simulate_keystrokes("tab");
+        assert_eq!(line(cx), Some(format!(":{text}")));
+    }
+
+    // A search is not completed.
+    cx.simulate_keystrokes("escape /");
+    cx.simulate_input("fo");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(line(cx).as_deref(), Some("/fo\t"));
+
+    // And what was completed runs.
+    cx.simulate_keystrokes("escape");
+    typed("e sub/", cx);
+    cx.simulate_keystrokes("tab enter");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("sub/x.txt")));
+}

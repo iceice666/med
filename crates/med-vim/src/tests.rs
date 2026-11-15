@@ -370,6 +370,27 @@ fn ex_commands() {
 }
 
 #[test]
+fn the_engines_ex_names_are_its_own() {
+    for name in EX_NAMES {
+        let mut h = Harness::new("|a\nb");
+        h.keys(&format!(":{name}<cr>"));
+        assert_eq!(h.effects, vec![], ":{name} was left to the host");
+    }
+}
+
+#[test]
+fn the_host_replaces_the_command_line() {
+    let mut h = Harness::new("|a");
+    h.vim.set_cmdline_text("ignored");
+    assert_eq!(h.vim.cmdline(), None);
+    h.keys(":wr");
+    h.vim.set_cmdline_text("write");
+    assert_eq!(h.vim.cmdline(), Some((':', "write")));
+    h.keys("<cr>");
+    assert_eq!(h.effects, vec![Effect::Ex("write".into())]);
+}
+
+#[test]
 fn effects() {
     let mut h = Harness::new("|a");
     h.keys("zzzt<c-e>");

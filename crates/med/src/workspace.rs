@@ -551,6 +551,8 @@ impl Workspace {
     }
 
     fn add_tab(&mut self, editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.root.clone();
+        editor.update(cx, |editor, _| editor.root = Some(root));
         self._subscriptions
             .push(cx.subscribe_in(&editor, window, Self::on_editor_event));
         // The empty buffer there for want of a file gives way to the first

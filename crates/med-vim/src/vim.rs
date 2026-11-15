@@ -293,6 +293,11 @@ pub enum Scroll {
     Lines(isize),
 }
 
+/// The ex commands the engine runs itself rather than leave to the host
+/// as [`Effect::Ex`], by every name each goes by. Line ranges and `:s`
+/// are the engine's too, but are not names to complete.
+pub const EX_NAMES: &[&str] = &["d", "delete", "y", "yank", "noh", "nohl", "nohlsearch"];
+
 /// Something the host has to do on the engine's behalf.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
@@ -651,6 +656,14 @@ impl Vim {
     /// The command line being edited: its prompt char and text.
     pub fn cmdline(&self) -> Option<(char, &str)> {
         self.cmdline.as_ref().map(|c| (c.kind, c.text.as_str()))
+    }
+
+    /// Replace the text of the open command line (what the host completes
+    /// it to). With no command line open there is nothing to replace.
+    pub fn set_cmdline_text(&mut self, text: impl Into<String>) {
+        if let Some(cl) = &mut self.cmdline {
+            cl.text = text.into();
+        }
     }
 
     /// Keys typed so far for an unfinished command (vim's `showcmd`).
@@ -3041,6 +3054,7 @@ impl Vim {
         }
     }
 
+    // Keep `EX_NAMES` in step with the names matched here.
     fn run_ex(&mut self, text: &str, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         let text = text.trim();
         if text.is_empty() {

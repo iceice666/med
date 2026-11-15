@@ -102,6 +102,11 @@ impl Commands {
         names
     }
 
+    /// Every name given to [`Commands::ex`], in no order.
+    pub fn all_ex_names(&self) -> impl Iterator<Item = &str> {
+        self.ex.keys().map(|name| name.as_ref())
+    }
+
     /// Every command, sorted by name.
     pub fn all(&self) -> Vec<&Command> {
         let mut commands: Vec<&Command> = self.commands.values().collect();

@@ -237,6 +237,11 @@ pub struct Editor {
     decorations: Vec<(SharedString, Vec<Decoration>)>,
     completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
+    /// `Tab` going through what the `:` line could be.
+    cmdline_completion: Option<crate::cmdline::Completion>,
+    /// The project's root, which a file named on the command line is
+    /// relative to; set by the workspace.
+    pub(crate) root: Option<PathBuf>,
     key_timeout: Option<Task<()>>,
     /// What the keys typed so far waited for when that was last told.
     pending_keys: Option<PendingKeys>,
@@ -374,6 +379,8 @@ pub(crate) fn translate_key(keystroke: &Keystroke, mode: Mode) -> Option<Key> {
         "enter" => Some(Key::Enter),
         "backspace" => Some(Key::Backspace),
         "delete" => Some(Key::Delete),
+        // Back through what the command line completes to.
+        "tab" if m.shift && mode == Mode::Command => Some(Key::BackTab),
         "tab" => Some(Key::Tab),
         "left" => Some(Key::Left),
         "right" => Some(Key::Right),
@@ -462,6 +469,8 @@ impl Editor {
             decorations: Vec::new(),
             completion: None,
             completion_task: None,
+            cmdline_completion: None,
+            root: None,
             key_timeout: None,
             pending_keys: None,
             hover: None,
@@ -867,6 +876,10 @@ impl Editor {
     /// edits to the syntax tree and the language server, keep the cursor on
     /// screen, repaint.
     fn after_change(&mut self, cx: &mut Context<Self>) {
+        // What `Tab` went through was for the command line just closed.
+        if self.vim.cmdline().is_none() {
+            self.cmdline_completion = None;
+        }
         // Marks follow the edits made here as they do the engine's own.
         self.vim.sync(&self.buf);
         let edits = self.buf.take_edits();
@@ -1556,12 +1569,44 @@ impl Editor {
         self.press(key, cx);
     }
 
-    /// A key press as the user makes it: the completion menu gets first
-    /// refusal, then the vim engine.
+    /// A key press as the user makes it: the menus get first refusal, then
+    /// completion on the `:` line, then the vim engine.
     pub fn press(&mut self, key: Key, cx: &mut Context<Self>) {
-        if !self.menu_key(&key, cx) && !self.completion_key(&key, cx) {
+        if !self.menu_key(&key, cx)
+            && !self.completion_key(&key, cx)
+            && !self.cmdline_complete(&key, cx)
+        {
             self.handle_key(key, cx);
         }
+    }
+
+    /// `Tab` and `S-Tab` on the `:` line. Returns true if consumed.
+    fn cmdline_complete(&mut self, key: &Key, cx: &mut Context<Self>) -> bool {
+        let forward = match key {
+            Key::Tab => true,
+            Key::BackTab => false,
+            _ => return false,
+        };
+        let Some((':', line)) = self.vim.cmdline() else {
+            return false;
+        };
+        let line = line.to_string();
+        let previous = self.cmdline_completion.take();
+        let commands = cx.global::<Commands>();
+        // With nothing to complete, the key does nothing: a tab in a
+        // command is never what was meant.
+        if let Some((shown, state)) = crate::cmdline::Completion::step(
+            previous,
+            &line,
+            forward,
+            self.root.as_deref(),
+            commands,
+        ) {
+            self.cmdline_completion = state;
+            self.vim.set_cmdline_text(shown);
+            self.after_change(cx);
+        }
+        true
     }
 
     /// Labels of the completion menu's entries, best match first.
