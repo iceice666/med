@@ -79,6 +79,7 @@ pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
         "titlebar.lisp",
         include_str!("../../../examples/titlebar.lisp"),
     ),
+    ("rss.lisp", include_str!("../../../examples/rss.lisp")),
 ];
 
 /// Why the default configuration was not written.

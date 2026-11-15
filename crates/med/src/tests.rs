@@ -81,6 +81,7 @@ const TODO: &str = include_str!("../../../examples/todo.lisp");
 const DIRED: &str = include_str!("../../../examples/dired.lisp");
 const STATUSLINE: &str = include_str!("../../../examples/statusline.lisp");
 const TITLEBAR: &str = include_str!("../../../examples/titlebar.lisp");
+const RSS: &str = include_str!("../../../examples/rss.lisp");
 
 /// How tall the title bar is, which the window's other bars and panels are
 /// below.
@@ -2301,6 +2302,84 @@ fn programs_decorate_the_file(cx: &mut TestAppContext) {
             .starts_with("1:1: bg: no-such is not a color of the theme")
     );
     assert_eq!(decoration_lines(&ws, "other", cx), [2]);
+}
+
+/// The feed reader of `examples/rss.lisp`, on feeds that curl reads from
+/// the disk rather than from YouTube.
+#[gpui::test]
+fn the_rss_example_reads_feeds(cx: &mut TestAppContext) {
+    let entry = |id: &str, title: &str, date: &str| {
+        format!(
+            "<entry><title>{title}</title>\
+             <link rel=\"alternate\" href=\"https://www.youtube.com/watch?v={id}\"/>\
+             <published>{date}T13:49:18+00:00</published>\
+             <media:group><media:title>{title}</media:title>\
+             <media:description>first line\nsecond &amp; last</media:description>\
+             </media:group></entry>"
+        )
+    };
+    let feed = format!(
+        "<?xml version=\"1.0\"?><feed><title>The channel</title>{}{}</feed>",
+        entry("a1", "Webdev in Jai", "2026-11-14"),
+        entry("b2", "C &quot;Strings&quot; &lt;3", "2026-11-05"),
+    );
+    let project = Project::new(&[("a.txt", "a\n"), ("feed.xml", &feed)]);
+    let (_ws, cx) = open_with(&[RSS], &project, &["a.txt"], cx);
+    let root = project.0.display();
+    lisp(
+        &format!(
+            "(set! newsticker-feeds (list (list :name \"Local\" :url \"file://{root}/feed.xml\") \
+             (list :name \"Gone\" :url \"file://{root}/gone.xml\")))"
+        ),
+        cx,
+    );
+    // Hidden: nothing is fetched until it is asked for.
+    assert!(!shown("newsticker", cx));
+    assert_eq!(lisp("newsticker-fetched", cx), "false");
+
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("newsticker");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(shown("newsticker", cx));
+    assert!(wait_for(cx, |cx| lisp("newsticker-waiting", cx) == "0"));
+    assert_eq!(
+        lisp(
+            "(map (fn (item) (get item :title)) (newsticker-items-of (first newsticker-feeds)))",
+            cx
+        ),
+        r#"("Webdev in Jai" "C \"Strings\" <3")"#
+    );
+    assert_eq!(
+        lisp("(get (newsticker-current) :date)", cx),
+        r#""2026-11-14""#
+    );
+    assert_eq!(
+        lisp("(newsticker-description)", cx),
+        r#"("first line" "second & last")"#
+    );
+
+    cx.simulate_keystrokes("j");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(get (newsticker-current) :link)", cx),
+        r#""https://www.youtube.com/watch?v=b2""#
+    );
+    // The last item stays the last; another feed starts at its first.
+    cx.simulate_keystrokes("j l");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list newsticker-feed newsticker-item)", cx), "(1 0)");
+    assert!(
+        lisp(
+            "(get (newsticker-news-of (newsticker-current-feed)) :error)",
+            cx
+        )
+        .starts_with("\"curl: exit ")
+    );
+
+    cx.simulate_keystrokes("q");
+    cx.run_until_parked();
+    assert!(!shown("newsticker", cx));
 }
 
 #[gpui::test]
