@@ -5,7 +5,7 @@
 ;
 ; A panel at 'status is drawn in place of the window's status bar, and
 ; its `panel` says what that bar would show: `:mode`, `:path`, `:line`,
-; `:col`, `:cmdline` and the rest, listed in the README under "The bars".
+; `:col`, `:cmdline` and the rest, listed in docs/lisp.md under "The bars".
 ; Whatever else it shows is the program's own, as in any panel. A layout
 ; that fails gives way to the window's bar, which says why.
 ;

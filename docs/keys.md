@@ -1,0 +1,183 @@
+# Keys and commands
+
+## Keys
+
+med binds no key by itself: with no init file, no key does anything
+but `:`, which opens the command line for as long as nothing at all is
+bound in normal mode, and the status bar says so. There,
+`:install_default_config` writes every file of [`examples/`](../examples)
+to the configuration directory and runs its `init.lisp`; it leaves files
+that are there already alone and says which, and
+`:install_default_config!` overwrites them.
+
+The keys below are the ones of [`examples/vim.lisp`](../examples/vim.lisp)
+(vim's) and [`examples/keys.lisp`](../examples/keys.lisp) (the rest), which
+an init file loads, in that order:
+
+```lisp
+; ~/.config/med/init.lisp
+(load "/path/to/med/examples/vim.lisp")
+(load "/path/to/med/examples/keys.lisp")
+```
+
+Editing is vim: modes (`v`, `V` and the block of `ctrl-v`, with `I`, `A`
+and `c` on every line of it), counts, operators (`d c y > < gu gU g~ gc`),
+motions, text objects (`iw i" i( i{ ip` …), registers, marks (`ma`, `'a`,
+`` `a ``, `''`), macros (`qa` … `q`, `@a`, `@@`), `.`, `/ ? n N * #`, `:s`,
+`:w :q :wq :e :bn :bp :bd :wa :qa :vs :sp :close :only`. The unnamed register is the system
+clipboard.
+
+| Key | Action |
+| --- | --- |
+| `gd` / `gr` / `K` | definition / references / hover |
+| `]d` / `[d` | next / previous diagnostic |
+| `space r` | rename: the new name is typed after `:rename` |
+| `space a` | code actions, for the cursor or the selection: `j` `k`, `enter` or a number |
+| `space =`, `:format` | format the file |
+| `ctrl-s` (insert) | the signature of what is being called; it comes up by itself after `(` |
+| `ctrl-n` `ctrl-p` `tab` | completion menu: next, previous, accept |
+| `tab` / `shift-tab` (on `:`) | complete a command's name, a file after `:e` `:w`, or a topic after `:h`; again for the next / previous match |
+| `ctrl-o` / `ctrl-i` | jump back / forward |
+| `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |
+| `ctrl-w v` / `ctrl-w s`, `:vs` / `:sp` | split the pane: a new one, with an empty buffer, to the right / below |
+| `ctrl-w h j k l`, `ctrl-w w` / `ctrl-w W` | the pane to the left, below, above, right; the next / previous one |
+| `ctrl-w c` / `:close`, `ctrl-w o` / `:only` | close the pane / every other pane: their tabs go to the pane left with the keys |
+| `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
+
+Surround, as in nvim-surround: `ys` and a motion or text object, then the
+delimiter (`ysiw)`, `yss"` for the line), `ds"` to take one away, `cs"'`
+to change it, and `S` on a selection. A closing bracket, or `b` `r` `B`
+`a`, is the pair as it is; an opening one has a blank inside each.
+
+To go to text on screen, as in flash.nvim: `s`, then some of the text.
+Every place that has it is marked and gets a letter, the nearest ones the
+letters easiest to type, and the rest of the text is dimmed. The letter
+goes to its place, `enter` to the first place after the cursor; backspace
+takes a character back and escape gives up, as does text that is nowhere
+on screen. A letter that could be more of the text is never a label, and
+small letters are capitals as well until a capital is typed. In visual
+mode the selection goes there. After an operator the key is `z`, `s` being
+surround's, and what is found goes with its first character: `dzfoa`. The
+command is `motion.flash`; what `s` is in vim, `cl` still is.
+
+The rest of flash.nvim goes by the same marks:
+
+| Key | Action |
+| --- | --- |
+| `f` `F` `t` `T` | look on every line on screen, not only the cursor's. Where else they could go is marked, and while it is the key again goes on to the next, as `;` does, and `F` after `f` back, as `,` does; any other key is itself again |
+| `S` | a label before and after each syntax node around the cursor, the smallest `a`. The label selects its node, `enter` the smallest; `]x` and `[x` go on from there. After an operator the node is what it acts on: `dSs` |
+| `r` after an operator | `s` for the operator to go and work elsewhere: the text and its label, then a motion or text object there, and the cursor comes back to where it was. `yrfoaiw` yanks a word further down |
+
+Those are `motion.flash_find_forward` and the three like it, `select.flash`
+and `motion.flash_remote`. Vim's own `f` and `t`, which stay on their line,
+are `motion.find_forward` and the like, and what `S` was, `cc` still is.
+
+Brackets and quotes close as they are typed, the closing one is stepped
+over, and backspace between the two takes both; `(set-option 'auto-pairs
+false)` turns that off.
+
+Where a file has a syntax tree:
+
+| Key | Action |
+| --- | --- |
+| `if` `af`, `it` `at` | a function, a type: its body, or all of it |
+| `ia` `aa` | an argument or parameter, with its comma |
+| `ic` `ac` | a comment, lines that follow each other as one |
+| `]f` `[f`, `]t` `[t`, `]a` `[a`, `]c` `[c` | the next / previous of each |
+| `]x` / `[x` | select the node around the cursor, then the one around that; and back |
+
+
+## Commands and key bindings
+
+No key is wired to behaviour directly. Everything the editor can do is a
+named command, and keys are bound to names in tables:
+
+- The vim engine's commands (`motion.word_forward`, `operator.delete`,
+  `insert.newline`, … — `med_vim::command_names()`). Counts, registers
+  and operator + motion are grammar, and work with whatever keys are
+  bound. Its stock layout is `examples/vim.lisp`; `Keymap::vim()` in
+  `med-vim/src/keymap.rs` is the same table, kept for the tests.
+- The application's commands (`workspace.*`, `editor.*`), registered by
+  each view in `Commands`, and the ones programs define (`tree.*`, `git.*`
+  and `picker.*` are the examples').
+- `examples/keys.lisp`: the editor keys that reach outside the buffer
+  (`gd`, the `space` leader keys), the keys of flash and the `⌘`
+  shortcuts.
+- `med/src/defaults.rs`: the names ex commands go by (`:w` is
+  `workspace.save`), the one table that is built in, and the copy of
+  `examples/` that `:install_default_config` writes.
+
+Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
+can also be run by its full name, as in `:workspace.find_file`.
+
+`:help` (`:h`) says what a command does: `:help w` or `:help
+workspace.save` gives what it says of itself, the names the command line
+knows it by, and every key bound to it, in the modes' tables, the
+buffers', the panels' and `app`. Nothing in it is written by hand: the
+page is made when it is asked for, so it has the keys and the commands of
+the init file as they are then. `:help` alone lists every command, and
+the vim engine's with their keys in normal mode. The pages come up in a
+tab of their own, called `help`, which each `:help` reuses.
+
+The tables are changed from the init file, `<config>/init.lisp`, which is
+run at startup, or from the command line with `:eval`:
+
+```lisp
+(bind 'normal "<Space>n" "workspace.next_tab")
+(bind 'insert "jk" "insert.escape")
+(bind '(normal visual) "gh" "editor.hover")   ; several modes at once
+(bind-keys 'normal "Y" "y$")                  ; keys typed in place of others
+(bind 'git.files "x" "git.discard")           ; a panel's keys
+(bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
+(unbind 'normal "gt")
+(set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
+                                              ; auto-pairs, format-on-save, project-env
+```
+
+The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
+goes by the panel's name, or by its name and a part of it (`git.files`).
+`app` is the table of the shortcuts that work wherever the keyboard is,
+written as the window system has them (`cmd-shift-p`). `bind` refuses a
+command that does not exist.
+
+A tab can have keys of its own, in tables a program names with
+`defkeys`. The tab looks a key up in its tables first, and what none of
+them knows in its mode's:
+
+```lisp
+(defkeys 'listing)
+(bind 'listing "<CR>" "user.open")          ; in normal mode
+(bind 'listing.insert "<C-j>" "user.next")  ; also .visual, .operator
+(set-buffer-keys '(listing))                ; the tab up is in it, nil for none
+(buffer-keys)                               ; => ("listing")
+```
+
+A key a table binds is run at once, even where the mode's table has
+longer bindings that start with it. `:workspace.reload_init` runs the file
+again; what is wrong with it is said in the status bar, with the line.
+
+A command can be written there too. It is a function of no arguments, and
+from then on a name like any other: for keys, for the command line, and
+for `run`, which runs a command by any name the command line knows it by.
+
+```lisp
+(defcommand "user.save-and-close" "Write the file, then close its tab"
+  (fn ()
+    (run "workspace.save")
+    (run "workspace.close_tab")))
+(bind 'normal "<Space>x" "user.save-and-close")
+
+(defcommand "user.note" "Open the note named on the command line"
+  (fn () (run "workspace.edit" (str "notes/" command-arg ".md"))))
+```
+
+`:user.note today` opens `notes/today.md`. Besides `command-arg`, the rest
+of the command line, there are `command-bang` (was there a `!`) and
+`command-count` (the count typed before the key, or `nil`).
+`(current-file)` and `(project-root)` say where the editor is. A command
+cannot take the name of one of the editor's own.
+
+A key that is a binding by itself and also starts longer ones (`space`, which
+moves right) waits a second for the rest before acting. `(set-option
+'key-timeout 300)` gives it another time, in milliseconds, and `nil` has it
+wait for the next key however long that takes.

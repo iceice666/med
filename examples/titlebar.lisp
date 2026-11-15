@@ -6,7 +6,7 @@
 ; A panel at 'title is drawn in the window's title bar, which can still
 ; be dragged to move the window and double-clicked to zoom it. On macOS
 ; it starts after the window's buttons. Its `panel` has what the status
-; bar's has (the README, under "The bars"), `:title` among it: the
+; bar's has (docs/lisp.md, under "The bars"), `:title` among it: the
 ; window's own title, "file — med".
 ;
 ; A click on the branch lists the project's branches, and a click on one

@@ -411,7 +411,7 @@ impl Workspace {
     }
 
     /// What the window's own bars show, for a program's bar to draw from:
-    /// see the README's "The bars".
+    /// see "The bars" in docs/lisp.md.
     pub(crate) fn bar_vars(&self, cx: &App) -> Vec<(&'static str, Value)> {
         let text = |text: Option<String>| {
             text.filter(|t| !t.is_empty())
