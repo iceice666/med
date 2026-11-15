@@ -21,7 +21,7 @@ pub mod workspace;
 use commands::RunCommand;
 use gpui::component::TitleBar;
 use gpui::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use workspace::Workspace;
 
@@ -80,9 +80,21 @@ fn parse_args() -> (PathBuf, Vec<PathBuf>) {
             .and_then(|file| med_git::Repo::discover(file))
             .map(|repo| repo.root)
             .or_else(|| files.first().and_then(|f| f.parent().map(PathBuf::from)))
-            .unwrap_or(cwd.clone())
+            .unwrap_or_else(|| default_root(&cwd))
     });
     (root, files)
+}
+
+/// The root when the command line names none: the current directory, unless
+/// that is `/`, which is where Finder and `open` start an app bundle. Home
+/// is what someone double-clicking med.app means; `med /` still opens `/`.
+fn default_root(cwd: &Path) -> PathBuf {
+    if cwd.parent().is_none()
+        && let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty())
+    {
+        return PathBuf::from(home);
+    }
+    cwd.to_path_buf()
 }
 
 /// Where the user's files are: `$MED_CONFIG_DIR`, `$XDG_CONFIG_HOME/med` or
