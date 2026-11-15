@@ -241,7 +241,7 @@ fn edits_with_vim_keys_and_saves(cx: &mut TestAppContext) {
 fn refuses_to_drop_unsaved_changes(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
     let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
-    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 2);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs().len()), 2);
 
     // gt / gT switch tabs.
     assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
@@ -252,12 +252,12 @@ fn refuses_to_drop_unsaved_changes(cx: &mut TestAppContext) {
 
     cx.simulate_keystrokes("x : q enter");
     assert_eq!(
-        ws.read_with(cx, |ws, _| ws.tabs.len()),
+        ws.read_with(cx, |ws, _| ws.tabs().len()),
         2,
         ":q must not close a dirty tab"
     );
     cx.simulate_keystrokes(": q ! enter");
-    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 1);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs().len()), 1);
     assert_eq!(project.read("a.txt"), "one\n");
 
     // :e opens (or creates) a file relative to the project root.
@@ -516,9 +516,9 @@ fn the_file_tree_is_a_panel_like_any_other(cx: &mut TestAppContext) {
     assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
     assert_eq!(message(cx), "opened c.txt");
     // The button runs a command by its name.
-    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 3);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs().len()), 3);
     click(20., cx);
-    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 2);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs().len()), 2);
 
     // A layout that fails is drawn as its error, row by row or whole; one
     // that tries to do more than describe is refused; one that never ends
@@ -1993,7 +1993,7 @@ fn mouse_and_app_shortcuts(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("cmd-shift-]");
     assert_eq!(active_file(&ws, cx), Some(project.path("b.rs")));
     cx.simulate_keystrokes("cmd-w");
-    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 1);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs().len()), 1);
     assert_eq!(active_file(&ws, cx), Some(project.path("a.rs")));
 
     // ⌘V pastes the system clipboard, in insert mode and in normal mode.
@@ -2168,7 +2168,7 @@ fn an_empty_buffer_stands_in_for_no_file(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
     let (ws, cx) = open(&project, &[], cx);
     let tabs = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
-        ws.read_with(cx, |ws, _| ws.tabs.len())
+        ws.read_with(cx, |ws, _| ws.tabs().len())
     };
     assert_eq!(tabs(&ws, cx), 1);
     assert_eq!(active_file(&ws, cx), None);
@@ -2796,7 +2796,7 @@ fn dirty(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
 
 fn tab_titles(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
     workspace.read_with(cx, |ws, cx| {
-        ws.tabs.iter().map(|tab| tab.read(cx).title()).collect()
+        ws.tabs().iter().map(|tab| tab.read(cx).title()).collect()
     })
 }
 
@@ -3643,7 +3643,7 @@ fn help_is_made_from_the_commands_and_their_keys(cx: &mut TestAppContext) {
         assert!(page.contains(line), "{line:?} in\n{page}");
     }
     assert_eq!(cursor(&ws, cx), (1, 1));
-    let tabs = ws.read_with(cx, |ws, _| ws.tabs.len());
+    let tabs = ws.read_with(cx, |ws, _| ws.tabs().len());
     assert_eq!(tabs, 2);
 
     // The engine's commands have keys, and no command line.
@@ -3936,4 +3936,137 @@ fn tab_completes_the_command_line(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("tab enter");
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("sub/x.txt")));
+}
+
+/// What the panes show, from the top left: each's file name or scratch
+/// name ("" for an empty buffer), the focused one with a * after it.
+fn panes(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+    workspace.read_with(cx, |ws, cx| {
+        let infos = ws.pane_infos(cx);
+        infos
+            .into_iter()
+            .map(|info| {
+                let name = match (info.scratch, info.path) {
+                    (Some(name), _) => name.to_string(),
+                    (None, Some(path)) => path.file_name().unwrap().to_string_lossy().into_owned(),
+                    (None, None) => String::new(),
+                };
+                format!("{name}{}", if info.focused { "*" } else { "" })
+            })
+            .collect()
+    })
+}
+
+/// Evaluate Lisp for the workspace, as `:eval` does, and give what it
+/// comes to.
+fn eval_here(workspace: &Entity<Workspace>, source: &str, cx: &mut VisualTestContext) -> String {
+    let source = source.to_string();
+    workspace.update_in(cx, |_, window, cx| {
+        crate::script::eval_from(source, window, cx)
+    });
+    cx.run_until_parked();
+    message(workspace, cx)
+}
+
+#[gpui::test]
+fn splits_into_panes_and_moves_between_them(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
+    assert_eq!(panes(&ws, cx), ["a.txt*"]);
+
+    // A new pane, to the right, with an empty buffer and the keys.
+    cx.simulate_keystrokes("ctrl-w v");
+    assert_eq!(panes(&ws, cx), ["a.txt", "*"]);
+    assert_eq!(active_file(&ws, cx), None);
+
+    // A file open in another pane comes over: one buffer to a file. The
+    // pane it left shows the tab it has left.
+    cx.simulate_keystrokes(": e space a . t x t enter");
+    assert_eq!(panes(&ws, cx), ["b.txt", "a.txt*"]);
+    assert_eq!(tab_titles(&ws, cx), ["a.txt"]);
+
+    // Below the right one, then about by direction: across the column,
+    // in at its top.
+    cx.simulate_keystrokes("ctrl-w s");
+    assert_eq!(panes(&ws, cx), ["b.txt", "a.txt", "*"]);
+    cx.simulate_keystrokes("ctrl-w k");
+    assert_eq!(panes(&ws, cx), ["b.txt", "a.txt*", ""]);
+    cx.simulate_keystrokes("ctrl-w h");
+    assert_eq!(panes(&ws, cx), ["b.txt*", "a.txt", ""]);
+    cx.simulate_keystrokes("ctrl-w h");
+    assert_eq!(panes(&ws, cx), ["b.txt*", "a.txt", ""]);
+    cx.simulate_keystrokes("ctrl-w l ctrl-w j");
+    assert_eq!(panes(&ws, cx), ["b.txt", "a.txt", "*"]);
+    cx.simulate_keystrokes("ctrl-w w");
+    assert_eq!(panes(&ws, cx), ["b.txt*", "a.txt", ""]);
+    cx.simulate_keystrokes("ctrl-w shift-w");
+    assert_eq!(panes(&ws, cx), ["b.txt", "a.txt", "*"]);
+
+    // :q on the last tab of a pane closes the pane, not med; the keys go
+    // to the pane before it.
+    cx.simulate_keystrokes(": q enter");
+    assert_eq!(panes(&ws, cx), ["b.txt", "a.txt*"]);
+
+    // A pane closed keeps its tabs, in the pane that gets the keys.
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    assert_eq!(panes(&ws, cx), ["", "b.txt*"]);
+    cx.simulate_keystrokes("ctrl-w h ctrl-w c");
+    assert_eq!(panes(&ws, cx), ["b.txt*"]);
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", "b.txt"]);
+    cx.simulate_keystrokes("ctrl-w c");
+    assert_eq!(panes(&ws, cx), ["b.txt*"]);
+    assert!(
+        message(&ws, cx).contains("last pane"),
+        "{}",
+        message(&ws, cx)
+    );
+
+    // :only takes the others' tabs in, from the top left.
+    cx.simulate_keystrokes(": v s enter : e space a . t x t enter");
+    cx.simulate_keystrokes(": s p enter : e space b . t x t enter");
+    assert_eq!(panes(&ws, cx), ["", "a.txt", "b.txt*"]);
+    cx.simulate_keystrokes(": o n l y enter");
+    assert_eq!(panes(&ws, cx), ["b.txt*"]);
+    assert_eq!(tab_titles(&ws, cx), ["b.txt", "a.txt"]);
+}
+
+#[gpui::test]
+fn an_editor_of_another_pane_that_gets_keys_is_the_focused_one(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\ntwo\n"), ("b.txt", "three\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    cx.simulate_keystrokes("ctrl-w v : e space b . t x t enter");
+    assert_eq!(panes(&ws, cx), ["a.txt", "b.txt*"]);
+
+    // As a click in it would: the keyboard goes to the left editor.
+    let left = ws.read_with(cx, |ws, cx| {
+        let infos = ws.pane_infos(cx);
+        assert!(!infos[0].focused);
+        ws.find_editor(&project.path("a.txt"), cx).unwrap()
+    });
+    cx.update(|window, cx| gpui::Focusable::focus_handle(left.read(cx), cx).focus(window, cx));
+    cx.simulate_keystrokes("j");
+    assert_eq!(panes(&ws, cx), ["a.txt*", "b.txt"]);
+    assert_eq!(cursor(&ws, cx), (2, 1));
+}
+
+#[gpui::test]
+fn programs_see_the_panes_and_work_in_them(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    cx.simulate_keystrokes("ctrl-w v : e space b . t x t enter");
+
+    let said = eval_here(&ws, "(map (fn (pane) (get pane :focused)) (panes))", cx);
+    assert_eq!(said, "(false true)");
+
+    // The function works in the left pane; the right one keeps the keys.
+    let said = eval_here(
+        &ws,
+        "(with-pane 0 (fn () (open-scratch \"notes\" \"hi\") (scratch-name)))",
+        cx,
+    );
+    assert_eq!(said, "\"notes\"");
+    assert_eq!(panes(&ws, cx), ["notes", "b.txt*"]);
+    assert_eq!(text(&ws, cx), "two\n");
+    let said = eval_here(&ws, "(with-pane 5 (fn () 1))", cx);
+    assert!(said.contains("no pane 5"), "{said}");
 }

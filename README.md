@@ -108,7 +108,7 @@ Editing is vim: modes (`v`, `V` and the block of `ctrl-v`, with `I`, `A`
 and `c` on every line of it), counts, operators (`d c y > < gu gU g~ gc`),
 motions, text objects (`iw i" i( i{ ip` …), registers, marks (`ma`, `'a`,
 `` `a ``, `''`), macros (`qa` … `q`, `@a`, `@@`), `.`, `/ ? n N * #`, `:s`,
-`:w :q :wq :e :bn :bp :bd :wa :qa`. The unnamed register is the system
+`:w :q :wq :e :bn :bp :bd :wa :qa :vs :sp :close :only`. The unnamed register is the system
 clipboard.
 
 | Key | Action |
@@ -123,6 +123,9 @@ clipboard.
 | `tab` / `shift-tab` (on `:`) | complete a command's name, a file after `:e` `:w`, or a topic after `:h`; again for the next / previous match |
 | `ctrl-o` / `ctrl-i` | jump back / forward |
 | `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |
+| `ctrl-w v` / `ctrl-w s`, `:vs` / `:sp` | split the pane: a new one, with an empty buffer, to the right / below |
+| `ctrl-w h j k l`, `ctrl-w w` / `ctrl-w W` | the pane to the left, below, above, right; the next / previous one |
+| `ctrl-w c` / `:close`, `ctrl-w o` / `:only` | close the pane / every other pane: their tabs go to the pane left with the keys |
 | `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
 
 Surround, as in nvim-surround: `ys` and a motion or text object, then the
@@ -623,6 +626,8 @@ own:
 (open-scratch "notes" "one\ntwo")            ; with this text, as written
 (open-scratch "notes" nil (fn (text) (message (length (lines text)) " lines")))
 (scratch-name)                               ; "notes" while it is up, else nil
+(panes)                                      ; ((:focused true :scratch "notes" :path nil)...)
+(with-pane 1 (fn () (scratch-name)))         ; in the second pane, the keys staying
 ```
 
 Given a function, `:w` calls it with the text, as a command
@@ -632,6 +637,12 @@ nowhere to write it. `(current-file)` is `nil` there, and `:w name`
 makes the tab a file, without the tab's own keys. [`examples/dired.lisp`](examples/dired.lisp) lists a directory in
 one, does what Emacs's dired does to the files, and renames them with
 what is written.
+
+A tab is in one pane, so that a file has one buffer: opening a tab that
+another pane has (`open-scratch`, `open-file`, `:e`) brings it over, and
+that pane shows the tab before it. `(panes)` says what each pane shows,
+from the top left, and `(with-pane n f)` calls `f` with the `n`th of them
+(from 0) as the one being edited, the keys staying where they are.
 
 ## Scripting language
 

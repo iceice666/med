@@ -10,6 +10,7 @@ pub mod help;
 pub mod host;
 pub mod keymap;
 pub mod lsp;
+mod pane;
 pub mod panel;
 pub mod script;
 pub mod search;

@@ -6,6 +6,7 @@ use crate::defaults::{self, InstallError};
 use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::env::{self, EnvCell, ProjectEnv};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
+use crate::pane::{Axis, Direction, Layout, PaneId};
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
 use crate::{help, script};
 use gpui::component::{ActiveTheme as _, TitleBar};
@@ -25,8 +26,12 @@ pub struct Workspace {
     /// The environment the project's programs run in.
     env: Arc<EnvCell>,
     _env_task: Option<Task<()>>,
-    pub(crate) tabs: Vec<Entity<Editor>>,
-    pub(crate) active: usize,
+    /// The panes, each with its tabs, in no order: `layout` places them.
+    panes: Vec<Pane>,
+    layout: Layout,
+    /// The pane the keys go to, as an index into `panes`.
+    focused: usize,
+    next_pane: PaneId,
     /// The views of the panels, made as each is first drawn or asked for.
     user_panels: HashMap<SharedString, Entity<PanelView>>,
     /// The branch the project is on, for the status bar.
@@ -40,6 +45,28 @@ pub struct Workspace {
     /// The editor programs were last told about, and how it was then.
     seen: Option<Seen>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A pane of the window: tabs of editors, one of them shown. A tab is in
+/// one pane only, so that a file has one buffer.
+struct Pane {
+    id: PaneId,
+    tabs: Vec<Entity<Editor>>,
+    active: usize,
+}
+
+/// What a program is told of a pane: see `(panes)`.
+pub(crate) struct PaneInfo {
+    pub focused: bool,
+    pub scratch: Option<SharedString>,
+    pub path: Option<PathBuf>,
+}
+
+/// The pane to go back to after `(with-pane)`, and what had the keyboard
+/// then: its editor, or a panel.
+pub(crate) struct LeftPane {
+    id: PaneId,
+    focus: Option<FocusHandle>,
 }
 
 /// What of an editor the hooks are about: see [`Workspace::editor_changed`].
@@ -120,8 +147,14 @@ impl Workspace {
             lsp,
             env,
             _env_task: None,
-            tabs: Vec::new(),
-            active: 0,
+            panes: vec![Pane {
+                id: 0,
+                tabs: Vec::new(),
+                active: 0,
+            }],
+            layout: Layout::Pane(0),
+            focused: 0,
+            next_pane: 1,
             user_panels: HashMap::new(),
             branch: None,
             _branch_task: None,
@@ -134,7 +167,7 @@ impl Workspace {
         for file in files {
             this.open_path(&file, window, cx);
         }
-        if this.tabs.is_empty() {
+        if this.tabs().is_empty() {
             this.open_empty(window, cx);
         } else {
             this.activate(0, window, cx);
@@ -153,12 +186,48 @@ impl Workspace {
         this
     }
 
+    /// The editor the keys go to: the tab shown in the focused pane.
     pub(crate) fn active_editor(&self) -> Option<&Entity<Editor>> {
-        self.tabs.get(self.active)
+        let pane = self.pane();
+        pane.tabs.get(pane.active)
+    }
+
+    fn pane(&self) -> &Pane {
+        &self.panes[self.focused]
+    }
+
+    fn pane_mut(&mut self) -> &mut Pane {
+        &mut self.panes[self.focused]
+    }
+
+    /// The tabs of the focused pane.
+    pub(crate) fn tabs(&self) -> &[Entity<Editor>] {
+        &self.pane().tabs
+    }
+
+    /// The tabs of every pane.
+    fn all_tabs(&self) -> impl Iterator<Item = &Entity<Editor>> {
+        self.panes.iter().flat_map(|pane| pane.tabs.iter())
+    }
+
+    /// Where the tab is that `which` is true of, as (pane, tab): the
+    /// focused pane's first.
+    fn find_tab(&self, cx: &App, which: impl Fn(&Editor) -> bool) -> Option<(usize, usize)> {
+        let order = std::iter::once(self.focused)
+            .chain((0..self.panes.len()).filter(|index| *index != self.focused));
+        order.into_iter().find_map(|pane| {
+            let tabs = &self.panes[pane].tabs;
+            let tab = tabs.iter().position(|tab| which(tab.read(cx)))?;
+            Some((pane, tab))
+        })
+    }
+
+    fn pane_index(&self, id: PaneId) -> Option<usize> {
+        self.panes.iter().position(|pane| pane.id == id)
     }
 
     fn any_dirty(&self, cx: &App) -> bool {
-        self.tabs.iter().any(|tab| tab.read(cx).is_dirty())
+        self.all_tabs().any(|tab| tab.read(cx).is_dirty())
     }
 
     /// False (with an explanation in the status bar) while there is unsaved
@@ -209,7 +278,7 @@ impl Workspace {
     }
 
     fn sync_with_disk(&mut self, window: &Window, cx: &mut Context<Self>) {
-        for tab in self.tabs.clone() {
+        for tab in self.all_tabs().cloned().collect::<Vec<_>>() {
             tab.update(cx, |editor, cx| editor.reload_if_changed(cx));
         }
         self.files_changed(window, cx);
@@ -312,7 +381,7 @@ impl Workspace {
         } else {
             self.env.set(ProjectEnv::inherited());
         }
-        for editor in &self.tabs {
+        for editor in self.all_tabs().cloned().collect::<Vec<_>>() {
             editor.update(cx, |editor, cx| editor.reopen_in_lsp(cx));
         }
         self.set_message(
@@ -413,16 +482,18 @@ impl Workspace {
 
     // ---- tabs ----------------------------------------------------------
 
+    /// Show the tab `index` of the focused pane, and give it the keys.
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.is_empty() {
-            self.active = 0;
+        let pane = self.pane_mut();
+        if pane.tabs.is_empty() {
+            pane.active = 0;
             window.set_window_title("med");
             self.focus_handle.focus(window, cx);
             cx.notify();
             return;
         }
-        self.active = index.min(self.tabs.len() - 1);
-        let editor = self.tabs[self.active].clone();
+        pane.active = index.min(pane.tabs.len() - 1);
+        let editor = pane.tabs[pane.active].clone();
         editor.read(cx).focus_handle(cx).focus(window, cx);
         window.set_window_title(&self.title(cx));
         self.editor_changed(window, cx);
@@ -529,13 +600,12 @@ impl Workspace {
             self.root.join(path)
         };
         let path = path.canonicalize().unwrap_or(path);
-        if let Some(index) = self
-            .tabs
-            .iter()
-            .position(|tab| tab.read(cx).path.as_deref() == Some(path.as_path()))
+        if let Some((pane, tab)) =
+            self.find_tab(cx, |editor| editor.path.as_deref() == Some(path.as_path()))
         {
+            let index = self.bring_tab(pane, tab, window, cx);
             self.activate(index, window, cx);
-            return self.tabs.get(index).cloned();
+            return self.tabs().get(index).cloned();
         }
         let text = match std::fs::read(&path) {
             Ok(bytes) => match String::from_utf8(bytes) {
@@ -572,12 +642,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let found = self.tabs.iter().position(|tab| {
-            let scratch = tab.read(cx).scratch.as_ref();
+        let found = self.find_tab(cx, |editor| {
+            let scratch = editor.scratch.as_ref();
             scratch.is_some_and(|scratch| scratch.name == name)
         });
         let index = match found {
-            Some(index) => index,
+            Some((pane, tab)) => self.bring_tab(pane, tab, window, cx),
             None => {
                 let editor = cx.new(|cx| {
                     let mut editor = Editor::new(None, "", None, cx);
@@ -588,10 +658,10 @@ impl Workspace {
                     editor
                 });
                 self.add_tab(editor, window, cx);
-                self.active
+                self.pane().active
             }
         };
-        let editor = self.tabs[index].clone();
+        let editor = self.tabs()[index].clone();
         editor.update(cx, |editor, cx| {
             if let Some(on_save) = on_save
                 && let Some(scratch) = &mut editor.scratch
@@ -608,7 +678,7 @@ impl Workspace {
     /// A file or directory was moved from `from` to `to`: the tabs that
     /// had it, or something in it, have the new path.
     pub(crate) fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
-        for tab in self.tabs.clone() {
+        for tab in self.all_tabs().cloned().collect::<Vec<_>>() {
             let moved = tab.read(cx).path.as_deref().and_then(|path| {
                 let rest = path.strip_prefix(from).ok()?;
                 Some(match rest.as_os_str().is_empty() {
@@ -634,29 +704,241 @@ impl Workspace {
     /// An unnamed, empty buffer, so that with no file open the keys still
     /// have an editor to go to (`:e`, the leader keys…).
     fn open_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let lsp = self.lsp.clone();
-        let editor = cx.new(|cx| Editor::new(None, "", Some(lsp), cx));
+        let editor = self.empty_editor(window, cx);
         self.add_tab(editor, window, cx);
     }
 
-    fn add_tab(&mut self, editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
+    /// An unnamed, empty buffer, not yet in a pane.
+    fn empty_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Editor> {
+        let lsp = self.lsp.clone();
+        let editor = cx.new(|cx| Editor::new(None, "", Some(lsp), cx));
+        self.watch(&editor, window, cx);
+        editor
+    }
+
+    /// Hear what a new editor has to say.
+    fn watch(&mut self, editor: &Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
         let root = self.root.clone();
         editor.update(cx, |editor, _| editor.root = Some(root));
         self._subscriptions
-            .push(cx.subscribe_in(&editor, window, Self::on_editor_event));
+            .push(cx.subscribe_in(editor, window, Self::on_editor_event));
+    }
+
+    fn add_tab(&mut self, editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
+        self.watch(&editor, window, cx);
+        let index = self.place_tab(editor, cx);
+        self.activate(index, window, cx);
+    }
+
+    /// Put a tab in the focused pane, after the one shown, and say where.
+    fn place_tab(&mut self, editor: Entity<Editor>, cx: &App) -> usize {
         // The empty buffer there for want of a file gives way to the first
         // thing opened, as in vim.
-        if self
+        let pristine = self
             .active_editor()
-            .is_some_and(|tab| tab.read(cx).is_pristine())
-        {
-            self.tabs[self.active] = editor;
-            self.activate(self.active, window, cx);
+            .is_some_and(|tab| tab.read(cx).is_pristine());
+        let pane = self.pane_mut();
+        if pristine {
+            pane.tabs[pane.active] = editor;
+            return pane.active;
+        }
+        let index = (pane.active + 1).min(pane.tabs.len());
+        pane.tabs.insert(index, editor);
+        index
+    }
+
+    /// The tab `tab` of the pane `pane`, in the focused pane: where it is
+    /// if it is there, or else brought over from the other, which shows
+    /// the tab before it, or an empty buffer if that was its only one.
+    /// Not shown yet.
+    fn bring_tab(
+        &mut self,
+        pane: usize,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        if pane == self.focused {
+            return tab;
+        }
+        let other = &mut self.panes[pane];
+        let editor = other.tabs.remove(tab);
+        if tab < other.active || other.active >= other.tabs.len() {
+            other.active = other.active.saturating_sub(1);
+        }
+        if other.tabs.is_empty() {
+            let empty = self.empty_editor(window, cx);
+            self.panes[pane].tabs.push(empty);
+        }
+        self.place_tab(editor, cx)
+    }
+
+    // ---- panes ---------------------------------------------------------
+
+    /// Give the keys to the pane `pane`, and show its tab.
+    fn focus_pane(&mut self, pane: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.focused = pane;
+        let active = self.pane().active;
+        self.activate(active, window, cx);
+    }
+
+    /// Split the focused pane: a new one with an empty buffer goes right
+    /// of it, or below it, and has the keys.
+    fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.next_pane;
+        self.next_pane += 1;
+        self.layout.split(self.pane().id, axis, id);
+        let editor = self.empty_editor(window, cx);
+        self.panes.push(Pane {
+            id,
+            tabs: vec![editor],
+            active: 0,
+        });
+        self.focus_pane(self.panes.len() - 1, window, cx);
+    }
+
+    /// The pane `direction` of the focused one gets the keys, if there is
+    /// one there.
+    fn focus_toward(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        let next = self.layout.neighbor(self.pane().id, direction);
+        if let Some(pane) = next.and_then(|id| self.pane_index(id)) {
+            self.focus_pane(pane, window, cx);
+        }
+    }
+
+    /// The next pane, from the top left round, gets the keys; or the one
+    /// before.
+    fn cycle_pane(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let order = self.layout.panes();
+        let at = order
+            .iter()
+            .position(|id| *id == self.pane().id)
+            .unwrap_or(0);
+        let next = (at as isize + delta).rem_euclid(order.len() as isize) as usize;
+        if let Some(pane) = self.pane_index(order[next]) {
+            self.focus_pane(pane, window, cx);
+        }
+    }
+
+    /// Take the focused pane away. Its tabs go with the keys to the pane
+    /// before it, or after it if it was the first: nothing is closed.
+    fn close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes.len() == 1 {
+            self.set_message("The last pane stays: :q closes its tab", cx);
             return;
         }
-        let index = (self.active + 1).min(self.tabs.len());
-        self.tabs.insert(index, editor);
-        self.activate(index, window, cx);
+        let id = self.pane().id;
+        let order = self.layout.panes();
+        let at = order.iter().position(|pane| *pane == id).unwrap_or(0);
+        let next = if at > 0 { order[at - 1] } else { order[1] };
+        self.layout.remove(id);
+        let gone = self.panes.remove(self.focused);
+        self.focused = self.pane_index(next).unwrap_or(0);
+        self.adopt(gone.tabs, cx);
+        let active = self.pane().active;
+        self.activate(active, window, cx);
+    }
+
+    /// Only the focused pane: the others' tabs come into it.
+    fn only_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.pane().id;
+        let order = self.layout.panes();
+        let mut others: Vec<Pane> = Vec::new();
+        for pane in std::mem::take(&mut self.panes) {
+            if pane.id == id {
+                self.panes.push(pane);
+            } else {
+                others.push(pane);
+            }
+        }
+        others.sort_by_key(|pane| order.iter().position(|id| *id == pane.id));
+        self.focused = 0;
+        self.layout = Layout::Pane(id);
+        for pane in others {
+            self.adopt(pane.tabs, cx);
+        }
+        let active = self.pane().active;
+        self.activate(active, window, cx);
+    }
+
+    /// Tabs of a pane that is gone, at the end of the focused pane's; its
+    /// empty buffers are dropped.
+    fn adopt(&mut self, tabs: Vec<Entity<Editor>>, cx: &App) {
+        let kept = tabs.into_iter().filter(|tab| !tab.read(cx).is_pristine());
+        self.pane_mut().tabs.extend(kept);
+    }
+
+    /// An editor of another pane had a key: that pane has the keys now.
+    fn follow(&mut self, editor: &Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
+        let found = self.panes.iter().enumerate().find_map(|(pane, at)| {
+            let tab = at.tabs.iter().position(|tab| tab == editor)?;
+            Some((pane, tab))
+        });
+        if let Some((pane, tab)) = found {
+            self.focused = pane;
+            self.activate(tab, window, cx);
+        }
+    }
+
+    /// The tab, in any pane, that has `path`.
+    #[cfg(test)]
+    pub(crate) fn find_editor(&self, path: &Path, cx: &App) -> Option<Entity<Editor>> {
+        let (pane, tab) = self.find_tab(cx, |editor| editor.path.as_deref() == Some(path))?;
+        Some(self.panes[pane].tabs[tab].clone())
+    }
+
+    /// The panes, from the top left, each as what it shows, for `(panes)`.
+    pub(crate) fn pane_infos(&self, cx: &App) -> Vec<PaneInfo> {
+        let order = self.layout.panes();
+        order
+            .iter()
+            .filter_map(|id| self.pane_index(*id))
+            .map(|index| {
+                let pane = &self.panes[index];
+                let editor = pane.tabs.get(pane.active).map(|tab| tab.read(cx));
+                PaneInfo {
+                    focused: index == self.focused,
+                    scratch: editor.and_then(|e| e.scratch.as_ref().map(|s| s.name.clone())),
+                    path: editor.and_then(|e| e.path.clone()),
+                }
+            })
+            .collect()
+    }
+
+    /// Make the `nth` pane from the top left the focused one, for a
+    /// program to work in, without giving it the keys: `(with-pane)`.
+    /// What to give to [`Workspace::leave_pane`] after, or `None` if
+    /// there is no such pane.
+    pub(crate) fn enter_pane(&mut self, nth: usize, window: &Window, cx: &App) -> Option<LeftPane> {
+        let id = *self.layout.panes().get(nth)?;
+        let pane = self.pane_index(id)?;
+        let left = LeftPane {
+            id: self.pane().id,
+            focus: window.focused(cx),
+        };
+        self.focused = pane;
+        Some(left)
+    }
+
+    /// Back to the pane that was focused before [`Workspace::enter_pane`],
+    /// the keyboard going back to what had it, which the function may
+    /// have moved.
+    pub(crate) fn leave_pane(
+        &mut self,
+        left: LeftPane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pane) = self.pane_index(left.id) {
+            self.focused = pane;
+        }
+        match left.focus {
+            Some(handle) => handle.focus(window, cx),
+            None => self.focus_handle.focus(window, cx),
+        }
+        window.set_window_title(&self.title(cx));
+        self.editor_changed(window, cx);
+        cx.notify();
     }
 
     fn close_tab(
@@ -666,7 +948,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(editor) = self.tabs.get(index).cloned() else {
+        let Some(editor) = self.tabs().get(index).cloned() else {
             return true;
         };
         if !force && editor.read(cx).is_dirty() {
@@ -674,27 +956,40 @@ impl Workspace {
             return false;
         }
         editor.update(cx, |editor, cx| editor.close(cx));
-        self.tabs.remove(index);
-        if self.tabs.is_empty() {
-            self.active = 0;
-            self.open_empty(window, cx);
+        let pane = self.pane_mut();
+        pane.tabs.remove(index);
+        if pane.tabs.is_empty() {
+            pane.active = 0;
+            // A pane goes with its last tab, unless it is the only one.
+            if self.panes.len() > 1 {
+                self.close_pane(window, cx);
+            } else {
+                self.open_empty(window, cx);
+            }
             return true;
         }
-        let next = if index < self.active || self.active >= self.tabs.len() {
-            self.active.saturating_sub(1)
+        let next = if index < pane.active || pane.active >= pane.tabs.len() {
+            pane.active.saturating_sub(1)
         } else {
-            self.active
+            pane.active
         };
         self.activate(next, window, cx);
         true
     }
 
     fn cycle_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.tabs.len() as isize;
+        let pane = self.pane();
+        let count = pane.tabs.len() as isize;
         if count > 0 {
-            let index = (self.active as isize + delta).rem_euclid(count) as usize;
+            let index = (pane.active as isize + delta).rem_euclid(count) as usize;
             self.activate(index, window, cx);
         }
+    }
+
+    /// Whether closing the focused tab leaves nothing: the last tab of the
+    /// last pane.
+    fn last_tab(&self) -> bool {
+        self.panes.len() == 1 && self.tabs().len() <= 1
     }
 
     fn save_active(&mut self, args: &Args, window: &Window, cx: &mut Context<Self>) -> bool {
@@ -790,7 +1085,14 @@ impl Workspace {
             // Cleared before the key runs, not after: the events a key
             // causes arrive ahead of its `Changed`, and one of them may be
             // the message to show.
-            EditorEvent::KeyPress => self.message = None,
+            EditorEvent::KeyPress => {
+                self.message = None;
+                // Clicked into, an editor of another pane has the keys:
+                // what programs act on is that pane's.
+                if self.active_editor() != Some(editor) {
+                    self.follow(editor, window, cx);
+                }
+            }
             EditorEvent::Pending(pending) => {
                 let pending = pending.as_ref().map(script::editor_pending);
                 script::keys_pending(pending.unwrap_or(med_lisp::Value::Nil), window, cx);
@@ -852,8 +1154,7 @@ impl Workspace {
         let mut failed = None;
         for (path, edits) in crate::lsp::edits_by_file(edit) {
             let open = self
-                .tabs
-                .iter()
+                .all_tabs()
                 .find(|tab| tab.read(cx).path.as_deref() == Some(path.as_path()))
                 .cloned();
             let applied = match open {
@@ -1020,7 +1321,85 @@ impl Workspace {
 
     // ---- rendering -----------------------------------------------------
 
-    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The panes as the layout places them, split by lines.
+    fn render_layout(&self, layout: &Layout, cx: &mut Context<Self>) -> AnyElement {
+        match layout {
+            Layout::Pane(id) => self.render_pane(*id, cx),
+            Layout::Split(axis, parts) => {
+                let line = cx.theme().border;
+                let row = *axis == Axis::Row;
+                let parts: Vec<AnyElement> = parts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, part)| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .border_color(line)
+                            .when(index > 0 && row, |el| el.border_l_1())
+                            .when(index > 0 && !row, |el| el.border_t_1())
+                            .child(self.render_layout(part, cx))
+                            .into_any_element()
+                    })
+                    .collect();
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .when(row, |el| el.flex_row())
+                    .when(!row, |el| el.flex_col())
+                    .children(parts)
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// A pane: its tabs, and the one shown.
+    fn render_pane(&self, id: PaneId, cx: &mut Context<Self>) -> AnyElement {
+        let Some(index) = self.pane_index(id) else {
+            return div().into_any_element();
+        };
+        let pane = &self.panes[index];
+        let muted = cx.theme().muted_foreground;
+        let center = match pane.tabs.get(pane.active) {
+            Some(editor) => div().flex_1().min_h_0().child(editor.clone()),
+            None => div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child("No file open  ·  :e name opens one"),
+        };
+        div()
+            .id(("pane", id))
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            // A click in another pane gives it the keys.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    if let Some(pane) = this.pane_index(id)
+                        && pane != this.focused
+                    {
+                        this.focus_pane(pane, window, cx);
+                    }
+                }),
+            )
+            .when(!pane.tabs.is_empty(), |el| {
+                el.child(self.render_tabs(index, cx))
+            })
+            .child(center)
+            .into_any_element()
+    }
+
+    fn render_tabs(&self, pane: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (border, tab_bar, active_bg, muted, fg) = (
             theme.border,
@@ -1029,6 +1408,15 @@ impl Workspace {
             theme.muted_foreground,
             theme.foreground,
         );
+        let focused = pane == self.focused;
+        let id = self.panes[pane].id;
+        let shown = self.panes[pane].active;
+        // Before a tab's own: the pane has the keys first.
+        let go = move |this: &mut Self| {
+            if let Some(pane) = this.pane_index(id) {
+                this.focused = pane;
+            }
+        };
         div()
             .id("tabs")
             .flex()
@@ -1038,39 +1426,49 @@ impl Workspace {
             .border_b_1()
             .border_color(border)
             .overflow_x_scroll()
-            .children(self.tabs.iter().enumerate().map(|(index, tab)| {
-                let editor = tab.read(cx);
-                let active = index == self.active;
-                div()
-                    .id(("tab", index))
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .h_full()
-                    .border_r_1()
-                    .border_color(border)
-                    .text_color(if active { fg } else { muted })
-                    .when(active, |el| el.bg(active_bg))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate(index, window, cx);
-                    }))
-                    .child(editor.title())
-                    .child(
+            .children(
+                self.panes[pane]
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, tab)| {
+                        let editor = tab.read(cx);
+                        let active = index == shown;
                         div()
-                            .id(("tab-close", index))
-                            .w(px(14.))
-                            .text_color(muted)
-                            .hover(|el| el.text_color(fg))
+                            .id(("tab", index))
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .h_full()
+                            .border_r_1()
+                            .border_color(border)
+                            // The shown tab of a pane without the keys is lit, but
+                            // its name is not.
+                            .text_color(if active && focused { fg } else { muted })
+                            .when(active, |el| el.bg(active_bg))
+                            .cursor_pointer()
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close_tab(index, false, window, cx);
+                                go(this);
+                                this.activate(index, window, cx);
                             }))
-                            .child(if editor.is_dirty() { "●" } else { "×" }),
-                    )
-            }))
+                            .child(editor.title())
+                            .child(
+                                div()
+                                    .id(("tab-close", index))
+                                    .w(px(14.))
+                                    .text_color(muted)
+                                    .hover(|el| el.text_color(fg))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        go(this);
+                                        this.close_tab(index, false, window, cx);
+                                    }))
+                                    .child(if editor.is_dirty() { "●" } else { "×" }),
+                            )
+                    }),
+            )
     }
 
     /// The panel a program draws in place of a bar of the window, if any.
@@ -1262,6 +1660,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let user_panels = self.shown_user_panels(cx);
+        let panes = self.render_layout(&self.layout, cx);
         let theme = cx.theme();
         let (popover, popover_foreground) = (theme.popover, theme.popover_foreground);
         let line = theme.border;
@@ -1285,7 +1684,7 @@ impl Render for Workspace {
                         .child(view.clone())
                 })
         };
-        let (border, muted, overlay) = (theme.border, theme.muted_foreground, theme.overlay);
+        let (border, overlay) = (theme.border, theme.overlay);
         let (background, foreground) = (theme.background, theme.foreground);
 
         // A panel that takes the editor's place: the last one put up.
@@ -1296,31 +1695,12 @@ impl Render for Workspace {
         let body = if let Some((_, view)) = full {
             div().flex_1().min_h_0().child(view.clone())
         } else {
-            let center = match self.active_editor() {
-                Some(editor) => div().flex_1().min_h_0().child(editor.clone()),
-                None => div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(muted)
-                    .child("No file open  ·  :e name opens one"),
-            };
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .children(sidebars(At::Left))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .when(!self.tabs.is_empty(), |el| el.child(self.render_tabs(cx)))
-                        .child(center),
-                )
+                .child(div().flex_1().min_w_0().h_full().flex().child(panes))
                 .children(sidebars(At::Right))
         };
 
@@ -1434,7 +1814,7 @@ pub(crate) fn register(commands: &mut Commands) {
         "Write every changed file",
         W(|ws, _, _, cx| {
             let mut saved = 0;
-            for tab in ws.tabs.clone() {
+            for tab in ws.all_tabs().cloned().collect::<Vec<_>>() {
                 let file = tab.read(cx).scratch.is_none();
                 if file && tab.read(cx).is_dirty() && tab.update(cx, |e, cx| e.save(cx)).is_ok() {
                     saved += 1;
@@ -1458,7 +1838,8 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.close_tab",
         "Close the tab; with ! even if it has unsaved changes",
         W(|ws, args, window, cx| {
-            ws.close_tab(ws.active, args.bang, window, cx);
+            let active = ws.pane().active;
+            ws.close_tab(active, args.bang, window, cx);
         }),
     );
     commands.register(
@@ -1466,8 +1847,9 @@ pub(crate) fn register(commands: &mut Commands) {
         "Close the tab, and the application with the last one",
         W(|ws, args, window, cx| {
             // Closing the last tab leaves an empty one; quitting it quits.
-            let last = ws.tabs.len() <= 1;
-            if ws.close_tab(ws.active, args.bang, window, cx) && last {
+            let last = ws.last_tab();
+            let active = ws.pane().active;
+            if ws.close_tab(active, args.bang, window, cx) && last {
                 cx.quit();
             }
         }),
@@ -1477,8 +1859,9 @@ pub(crate) fn register(commands: &mut Commands) {
         "Write the file, then close its tab",
         W(|ws, args, window, cx| {
             if ws.save_active(args, window, cx) {
-                let last = ws.tabs.len() <= 1;
-                ws.close_tab(ws.active, true, window, cx);
+                let last = ws.last_tab();
+                let active = ws.pane().active;
+                ws.close_tab(active, true, window, cx);
                 if last {
                     cx.quit();
                 }
@@ -1503,6 +1886,56 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.prev_tab",
         "Go to the previous tab",
         W(|ws, _, window, cx| ws.cycle_tab(-1, window, cx)),
+    );
+    commands.register(
+        "workspace.split_right",
+        "Split the pane: a new one with an empty buffer, to the right",
+        W(|ws, _, window, cx| ws.split(Axis::Row, window, cx)),
+    );
+    commands.register(
+        "workspace.split_down",
+        "Split the pane: a new one with an empty buffer, below",
+        W(|ws, _, window, cx| ws.split(Axis::Column, window, cx)),
+    );
+    commands.register(
+        "workspace.pane_left",
+        "Go to the pane to the left",
+        W(|ws, _, window, cx| ws.focus_toward(Direction::Left, window, cx)),
+    );
+    commands.register(
+        "workspace.pane_right",
+        "Go to the pane to the right",
+        W(|ws, _, window, cx| ws.focus_toward(Direction::Right, window, cx)),
+    );
+    commands.register(
+        "workspace.pane_up",
+        "Go to the pane above",
+        W(|ws, _, window, cx| ws.focus_toward(Direction::Up, window, cx)),
+    );
+    commands.register(
+        "workspace.pane_down",
+        "Go to the pane below",
+        W(|ws, _, window, cx| ws.focus_toward(Direction::Down, window, cx)),
+    );
+    commands.register(
+        "workspace.next_pane",
+        "Go to the next pane, from the top left round",
+        W(|ws, _, window, cx| ws.cycle_pane(1, window, cx)),
+    );
+    commands.register(
+        "workspace.prev_pane",
+        "Go to the pane before",
+        W(|ws, _, window, cx| ws.cycle_pane(-1, window, cx)),
+    );
+    commands.register(
+        "workspace.close_pane",
+        "Close the pane; its tabs go to the pane that gets the keys",
+        W(|ws, _, window, cx| ws.close_pane(window, cx)),
+    );
+    commands.register(
+        "workspace.only_pane",
+        "Close every other pane; their tabs come into this one",
+        W(|ws, _, window, cx| ws.only_pane(window, cx)),
     );
     commands.register(
         "workspace.jump_back",

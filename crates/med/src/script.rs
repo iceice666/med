@@ -28,6 +28,7 @@
 //! (open-file "src/main.rs" 12 1)       ; in a tab, at a line and column
 //! (open-scratch "notes" "text" save)   ; a tab of text that is no file
 //! (scratch-name)                       ; which, if it is the one up
+//! (panes) (with-pane 1 thunk)         ; the panes, and working in another
 //! (modified?)                          ; has the tab up unsaved changes
 //! (focus-editor)
 //! (load "tree.lisp")                   ; another file, from beside this one
@@ -1190,6 +1191,56 @@ fn define_functions(interp: &mut Interp) {
             origin.workspace.read_with(cx, read).ok().flatten()
         });
         Ok(name.map_or(Value::Nil, |name| Value::from(name.as_ref())))
+    });
+
+    // (panes): the panes, from the top left, each as what it shows:
+    // (:focused :scratch :path), the focused one's :focused true, the
+    // others' false; :scratch the name of its tab if `open-scratch` made
+    // it, :path its file, or nil.
+    interp.define_native("panes", 0, |call, _| {
+        let cx = app(call)?;
+        let infos = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| workspace.pane_infos(cx);
+            origin.workspace.read_with(cx, read).ok()
+        });
+        let text = |text: Option<String>| text.map_or(Value::Nil, Value::from);
+        Ok(Value::list(infos.unwrap_or_default().into_iter().map(
+            |info| {
+                crate::host::record([
+                    ("focused", Value::Bool(info.focused)),
+                    ("scratch", text(info.scratch.map(|name| name.to_string()))),
+                    (
+                        "path",
+                        text(info.path.map(|path| path.display().to_string())),
+                    ),
+                ])
+            },
+        )))
+    });
+
+    // (with-pane n function): call the function with the nth pane of
+    // `panes`, from 0, as the one being edited, then go back to the one
+    // that was, which keeps the keyboard. What the function does to the
+    // tab being edited is done in that pane.
+    interp.define_native("with-pane", 2, |call, args| {
+        let nth = args[0].as_int()?;
+        let function = args[1].clone();
+        let entered = usize::try_from(nth).ok().and_then(|nth| {
+            let cx = app(call).ok()?;
+            in_workspace(cx, |workspace, window, cx| {
+                workspace.enter_pane(nth, window, cx)
+            })
+            .flatten()
+        });
+        let Some(left) = entered else {
+            return Err(failed(format!("with-pane: there is no pane {nth}")));
+        };
+        let result = call.apply(&function, &[]);
+        let cx = app(call)?;
+        in_workspace(cx, |workspace, window, cx| {
+            workspace.leave_pane(left, window, cx)
+        });
+        result
     });
 
     // (modified?): whether the tab up has changes that are not written.

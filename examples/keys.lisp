@@ -1,6 +1,6 @@
 ; The editor's keys beyond vim's: the ones that reach outside the buffer
-; (the language server, tabs, the jump list), flash, the `space` leader
-; keys and the `cmd` shortcuts. Every right-hand side is a command name,
+; (the language server, tabs and panes, the jump list), flash, the `space`
+; leader keys and the `cmd` shortcuts. Every right-hand side is a command name,
 ; and `:` and the name runs it as well, as in `:editor.hover`.
 ;
 ; Load it after `vim.lisp`: some of these keys are vim's own there, and
@@ -28,6 +28,21 @@
 (bind '(normal visual) "<C-o>" "workspace.jump_back")
 (bind '(normal visual) "<C-i>" "workspace.jump_forward")
 (bind '(normal visual) "<Tab>" "workspace.jump_forward")
+
+; Panes, as vim's windows: ctrl-w, then a letter. A new pane has an empty
+; buffer; a tab is in one pane, and opening it in another brings it over.
+(bind 'normal "<C-w>v" "workspace.split_right")
+(bind 'normal "<C-w>s" "workspace.split_down")
+(bind 'normal "<C-w>h" "workspace.pane_left")
+(bind 'normal "<C-w>j" "workspace.pane_down")
+(bind 'normal "<C-w>k" "workspace.pane_up")
+(bind 'normal "<C-w>l" "workspace.pane_right")
+(bind 'normal "<C-w>w" "workspace.next_pane")
+(bind 'normal "<C-w><C-w>" "workspace.next_pane")
+(bind 'normal "<C-w>W" "workspace.prev_pane")
+(bind 'normal "<C-w>c" "workspace.close_pane")
+(bind 'normal "<C-w>o" "workspace.only_pane")
+(bind 'normal "<C-w>q" "workspace.quit")
 
 ; To text on screen, by typing some of it and then its label. In place of
 ; vim's `s`, which `cl` and `c` also are; after an operator `s` is
