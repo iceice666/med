@@ -339,10 +339,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
-            EditorEvent::Changed => {
-                self.message = None;
-                cx.notify();
-            }
+            // Cleared before the key runs, not after: the events a key
+            // causes arrive ahead of its `Changed`, and one of them may be
+            // the message to show.
+            EditorEvent::KeyPress => self.message = None,
+            EditorEvent::Changed => cx.notify(),
             EditorEvent::Message(message) => self.set_message(message.clone(), cx),
             EditorEvent::Ex(command) => self.run_ex(command, window, cx),
             EditorEvent::OpenLocation { path, position } => {

@@ -33,6 +33,9 @@ pub struct Diag {
 pub enum EditorEvent {
     /// An ex command for the workspace (`w`, `q`, `e foo`…).
     Ex(String),
+    /// A key is about to be handled: what the status bar says about the
+    /// last one is stale.
+    KeyPress,
     /// Title, dirty state, cursor or mode changed.
     Changed,
     OpenLocation {
@@ -474,6 +477,7 @@ impl Editor {
     /// Run one key through the vim engine and apply what comes out.
     pub fn handle_key(&mut self, key: Key, cx: &mut Context<Self>) {
         self.hover = None;
+        cx.emit(EditorEvent::KeyPress);
         let effects = self.with_vim(cx, |vim, ctx| vim.handle_key(key, ctx));
         self.apply_effects(effects, cx);
         self.after_change(cx);
@@ -489,6 +493,7 @@ impl Editor {
     /// Text typed by the user, including input-method commits.
     pub fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.hover = None;
+        cx.emit(EditorEvent::KeyPress);
         let effects = self.with_vim(cx, |vim, ctx| vim.type_text(text, ctx));
         self.apply_effects(effects, cx);
         self.after_change(cx);
