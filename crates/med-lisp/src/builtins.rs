@@ -2,7 +2,8 @@
 //!
 //! Numbers: `+ - * / mod`, `= < > <= >=`, `not`.
 //! Lists: `list cons first rest nth length append reverse`, with `car` and
-//! `cdr` as the old names of `first` and `rest`; `map filter reduce apply`.
+//! `cdr` as the old names of `first` and `rest`; `map filter reduce apply`;
+//! `get`, for a list of names and their values.
 //! Kinds: `nil? list? number? string? symbol? fn?`.
 //! Text: `str`. Giving up: `error`.
 
@@ -237,6 +238,22 @@ pub(crate) fn install(interp: &mut Interp) {
     // (apply function list): call it with the list's values as arguments.
     interp.define_native("apply", 2, |call, args| {
         call.apply(&args[0], &args[1].to_vec()?)
+    });
+
+    // (get list name [default]): the value after `name` in a list that
+    // goes name, value, name, value: (get '(:a 1 :b 2) :b) is 2.
+    interp.define_native("get", Arity::between(2, 3), |_, args| {
+        if !matches!(args[0], Value::Nil | Value::Pair(_)) {
+            return Err(Error::wrong_type("a list", &args[0]));
+        }
+        let mut items = args[0].iter();
+        while let Some(name) = items.next() {
+            let value = items.next();
+            if *name == args[1] {
+                return Ok(value.cloned().unwrap_or(Value::Nil));
+            }
+        }
+        Ok(args.get(2).cloned().unwrap_or(Value::Nil))
     });
 
     // ---- kinds

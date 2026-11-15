@@ -229,6 +229,14 @@ fn works_on_lists_and_text() {
     );
     check("(str)", "\"\"");
 
+    check(
+        "(def entry '(:name \"a.rs\" :depth 2 :dir false))
+         (list (get entry :name) (get entry :depth) (get entry :dir)
+               (get entry :nope) (get entry :nope 'none) (get nil :name))",
+        "(\"a.rs\" 2 false nil none nil)",
+    );
+    assert_eq!(fail("(get 5 :name)").kind, ErrorKind::Type);
+
     assert_eq!(fail("(length 3)").message, "expected a list, got 3");
     assert_eq!(fail("(length (cons 1 2))").kind, ErrorKind::Type);
     assert_eq!(fail("(car 1)").kind, ErrorKind::Type);
@@ -392,6 +400,22 @@ fn the_host_defines_functions_and_calls_back() {
             bound("<Space>g", "workspace.toggle_git"),
             bound("click", "tree.open a.txt"),
         ]
+    );
+
+    // A value of the host's goes through a program untouched.
+    struct Handle(u32);
+    lisp.define("handle", Value::foreign(Handle(7)));
+    let value = lisp
+        .eval_str("(first (list handle 1))", &mut editor)
+        .unwrap();
+    assert_eq!(value.as_foreign::<Handle>().map(|handle| handle.0), Some(7));
+    assert!(value.as_foreign::<Editor>().is_none());
+    assert_eq!(value.to_string(), "#<object>");
+    assert_eq!(
+        lisp.eval_str("(list (= handle handle) (= handle 1))", &mut editor)
+            .unwrap()
+            .to_string(),
+        "(true false)"
     );
 
     // An error of the host's function is the program's, at the call.

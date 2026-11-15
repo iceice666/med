@@ -1,6 +1,7 @@
 //! What a program computes with: values, symbols and errors.
 
 use crate::eval::{Call, Lambda};
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -220,6 +221,8 @@ pub enum Value {
     Fn(Rc<Lambda>),
     /// A function of the host.
     Native(Rc<Native>),
+    /// A value of the host's, which a program can only pass around.
+    Foreign(Rc<dyn Any>),
 }
 
 pub struct Pair {
@@ -329,6 +332,19 @@ impl Value {
             .into_iter()
             .rev()
             .fold(Value::Nil, |rest, item| Value::cons(item, rest))
+    }
+
+    /// Wrap a value of the host's.
+    pub fn foreign<T: Any>(value: T) -> Self {
+        Value::Foreign(Rc::new(value))
+    }
+
+    /// The host's value in this one, if it is of type `T`.
+    pub fn as_foreign<T: Any>(&self) -> Option<Rc<T>> {
+        match self {
+            Value::Foreign(value) => value.clone().downcast::<T>().ok(),
+            _ => None,
+        }
     }
 
     /// Everything counts as true but `nil` and `false`.
@@ -469,6 +485,7 @@ impl PartialEq for Value {
                 (Value::Keyword(a), Value::Keyword(b)) => a == b,
                 (Value::Fn(a), Value::Fn(b)) => Rc::ptr_eq(a, b),
                 (Value::Native(a), Value::Native(b)) => Rc::ptr_eq(a, b),
+                (Value::Foreign(a), Value::Foreign(b)) => Rc::ptr_eq(a, b),
                 (Value::Pair(x), Value::Pair(y)) => {
                     if Rc::ptr_eq(x, y) {
                         true
@@ -532,6 +549,7 @@ impl fmt::Display for Value {
                 None => f.write_str("#<fn>"),
             },
             Value::Native(native) => write!(f, "#<native {}>", native.name),
+            Value::Foreign(_) => f.write_str("#<object>"),
         }
     }
 }
