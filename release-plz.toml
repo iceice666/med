@@ -1,0 +1,29 @@
+# release-plz: on every push to main it keeps a release PR open that bumps
+# the version and CHANGELOG.md from the conventional commits since the last
+# `v*` tag; merging that PR tags `v{version}` and makes the GitHub release.
+# .github/workflows/release.yml then builds and attaches the packages.
+#
+# Every crate takes part, so a change to a library alone still bumps the
+# one workspace version, but only `med` gets the tag, release and changelog.
+
+[workspace]
+# Nothing is on crates.io: the last release is the last `v*` tag.
+git_only = true
+# Release only when the release PR is merged, never on a plain push.
+release_always = false
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[[package]]
+name = "med"
+git_tag_enable = true
+git_release_enable = true
+git_release_name = "v{{ version }}"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_include = ["med-core", "med-vim", "med-lsp", "med-git", "med-lisp"]
+
+[changelog]
+tag_pattern = "v[0-9].*"
