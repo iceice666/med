@@ -21,6 +21,24 @@ framework behind Zed.
 - Programs in that Lisp read the file being edited, edit it, mark it up
   and are told when it changes
 
+## Install
+
+Each [release](https://github.com/iceice666/med/releases) has a `.dmg` and a
+zipped `med.app` for macOS on Apple silicon, and a `.deb` and an `.AppImage`
+for Linux on x86_64 and arm64.
+
+The macOS app is signed by no Apple developer, so macOS stops a downloaded
+copy with "med is damaged" or "cannot be opened". Clear the quarantine flag
+once, after moving it to Applications:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/med.app
+```
+
+An app started from Finder or the Dock gets the system `PATH`, not your
+shell's, so language servers may not be found; start it from a shell with
+`/Applications/med.app/Contents/MacOS/med` to keep yours.
+
 ## Build and run
 
 GPUI needs a newer rustc than some distributions ship; the flake provides one
@@ -631,6 +649,27 @@ there are no macros yet.
 
 `examples/` has the keys and the panels, which are written in Lisp rather
 than built in.
+
+## Releasing
+
+[release-plz](https://release-plz.dev) keeps a release PR open on `main`
+that bumps the workspace version and `CHANGELOG.md` from the conventional
+commits since the last `v*` tag (`release-plz.toml`). Merging it tags
+`v{version}` and makes the GitHub release, and
+`.github/workflows/release.yml` then builds the packages with
+[cargo-packager](https://github.com/crabnebula-dev/cargo-packager) and
+attaches them. To package locally:
+
+```sh
+cargo install cargo-packager --locked
+cargo build -p med --release
+cargo packager -p med --release --formats app,dmg --out-dir "$PWD/dist"   # macOS
+cargo packager -p med --release --formats deb,appimage --out-dir "$PWD/dist"   # Linux
+```
+
+(A relative `--out-dir` is taken from `crates/med`.)
+
+To rebuild a release's packages, run the workflow by hand with its tag.
 
 ## License
 
