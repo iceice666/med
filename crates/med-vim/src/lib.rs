@@ -15,7 +15,7 @@ pub use command::command_names;
 pub use ex::build_regex;
 pub use flash::{FlashMatch, FlashView};
 pub use keymap::{
-    Bound, KeyTrie, Keymap, Lookup, MapMode, NextKey, VIM_LAYOUT, format_keys, parse_keys,
+    Bound, KeyTrie, Keymap, KeysFor, Lookup, MapMode, NextKey, VIM_LAYOUT, format_keys, parse_keys,
 };
 pub use vim::{
     Awaiting, Clipboard, Ctx, Effect, Key, Lang, MemClipboard, Mode, PAIRS, PendingKeys, Register,

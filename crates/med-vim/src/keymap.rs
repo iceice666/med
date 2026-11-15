@@ -234,6 +234,33 @@ impl<T: Clone> KeyTrie<T> {
         next.sort_by_cached_key(|next| format_keys(std::slice::from_ref(&next.key)));
         next
     }
+
+    /// Every binding: its keys and what they are bound to, in no order.
+    pub fn bindings(&self) -> Vec<(Vec<Key>, &T)> {
+        fn walk<'a, T>(node: &'a Node<T>, keys: &mut Vec<Key>, out: &mut Vec<(Vec<Key>, &'a T)>) {
+            if let Some(value) = &node.value {
+                out.push((keys.clone(), value));
+            }
+            for (key, child) in &node.children {
+                keys.push(key.clone());
+                walk(child, keys, out);
+                keys.pop();
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut Vec::new(), &mut out);
+        out
+    }
+}
+
+/// Where a command is bound in a [`Keymap`]: see [`Keymap::keys_for`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KeysFor {
+    /// The buffers' table, or `None` for the mode's own.
+    pub table: Option<String>,
+    pub mode: MapMode,
+    /// In [`format_keys`] notation.
+    pub keys: String,
 }
 
 /// A key that can follow the ones typed so far: see [`KeyTrie::next_keys`].
@@ -256,7 +283,7 @@ pub enum Bound {
 }
 
 /// Which table a binding lives in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MapMode {
     Normal,
     /// Both visual modes.
@@ -427,6 +454,35 @@ impl Keymap {
                 prefix: next.prefix,
             })
             .collect()
+    }
+
+    /// Every binding of `command`, in the modes' tables and the buffers',
+    /// the modes' first, then by table name, mode and keys. Keys bound to
+    /// other keys are not followed.
+    pub fn keys_for(&self, command: &str) -> Vec<KeysFor> {
+        let is_it = |action: &Action| match action {
+            Action::Builtin(builtin) => command::name(*builtin) == Some(command),
+            Action::Host(name) => name.as_ref() == command,
+            Action::Keys(_) => false,
+        };
+        let tables = std::iter::once((None, &self.maps))
+            .chain(self.tables.iter().map(|(name, maps)| (Some(name), maps)));
+        let mut found = Vec::new();
+        for (table, maps) in tables {
+            for mode in MapMode::ALL {
+                for (keys, action) in maps[mode as usize].bindings() {
+                    if is_it(action) {
+                        found.push(KeysFor {
+                            table: table.cloned(),
+                            mode,
+                            keys: format_keys(&keys),
+                        });
+                    }
+                }
+            }
+        }
+        found.sort();
+        found
     }
 
     /// Nothing is bound in `mode`.
@@ -787,5 +843,34 @@ mod tests {
         let g = first.iter().find(|next| next.key == Key::Char('g'));
         assert_eq!(g.map(|g| (g.value.clone(), g.prefix)), Some((None, true)));
         assert_eq!(keymap.next_keys(MapMode::Insert, "g"), []);
+    }
+
+    #[test]
+    fn finds_the_keys_of_a_command() {
+        let mut keymap = Keymap::empty();
+        keymap.bind(MapMode::Visual, "<Space>w", "host.save");
+        keymap.bind(MapMode::Normal, "<Space>w", "host.save");
+        keymap.bind(MapMode::Normal, "w", "motion.word_forward");
+        keymap.bind_in(Some("listing"), MapMode::Insert, "<C-s>", "host.save");
+        // Keys that stand for other keys are not the command's own.
+        keymap.bind_keys(MapMode::Normal, "W", "<Space>w");
+        let found = |table: Option<&str>, mode, keys: &str| KeysFor {
+            table: table.map(str::to_string),
+            mode,
+            keys: keys.to_string(),
+        };
+        assert_eq!(
+            keymap.keys_for("host.save"),
+            [
+                found(None, MapMode::Normal, "<Space>w"),
+                found(None, MapMode::Visual, "<Space>w"),
+                found(Some("listing"), MapMode::Insert, "<C-s>"),
+            ]
+        );
+        assert_eq!(
+            keymap.keys_for("motion.word_forward"),
+            [found(None, MapMode::Normal, "w")]
+        );
+        assert_eq!(keymap.keys_for("host.nothing"), []);
     }
 }
