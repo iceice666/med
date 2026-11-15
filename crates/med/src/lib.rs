@@ -1,0 +1,161 @@
+//! med — a modal editor built on GPUI.
+
+pub mod editor;
+pub mod file_tree;
+pub mod git_view;
+pub mod lsp;
+pub mod picker;
+pub mod syntax;
+#[cfg(test)]
+mod tests;
+pub mod workspace;
+
+use gpui::*;
+use std::path::PathBuf;
+use workspace::Workspace;
+
+actions!(
+    med,
+    [
+        Quit,
+        Save,
+        CloseTab,
+        NextTab,
+        PrevTab,
+        ToggleFileTree,
+        FocusFileTree,
+        FileFinder,
+        ProjectSearch,
+        ToggleGit,
+        Paste,
+        Copy,
+    ]
+);
+
+#[derive(Clone)]
+pub struct Settings {
+    /// Editor font; the theme's monospace font when unset.
+    pub font_family: Option<SharedString>,
+    pub font_size: f32,
+    /// Start language servers for opened files.
+    pub lsp: bool,
+}
+
+impl Global for Settings {}
+
+/// Vim state shared by every editor: registers, last search, last change.
+pub struct VimGlobal(pub med_vim::Shared);
+
+impl Global for VimGlobal {}
+
+/// Work out the project root and the files to open from the command line:
+/// `med` (current directory), `med dir`, or `med file...`.
+fn parse_args() -> (PathBuf, Vec<PathBuf>) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let absolute = |path: PathBuf| {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        };
+        path.canonicalize().unwrap_or(path)
+    };
+    let mut root = None;
+    let mut files = Vec::new();
+    for arg in std::env::args_os().skip(1).map(PathBuf::from).map(absolute) {
+        if arg.is_dir() {
+            root.get_or_insert(arg);
+        } else {
+            files.push(arg);
+        }
+    }
+    let root = root.unwrap_or_else(|| {
+        // For a lone file, the repository it lives in makes a better root
+        // than wherever the shell happened to be.
+        files
+            .first()
+            .and_then(|file| med_git::Repo::discover(file))
+            .map(|repo| repo.root)
+            .or_else(|| files.first().and_then(|f| f.parent().map(PathBuf::from)))
+            .unwrap_or(cwd.clone())
+    });
+    (root, files)
+}
+
+/// Globals and key bindings; everything a window needs before it opens.
+pub fn init(cx: &mut App) {
+    gpui::init(cx);
+    // gpui-component starts out light; follow the system instead.
+    gpui::component::Theme::sync_system_appearance(None, cx);
+    picker::init(cx);
+    cx.set_global(Settings {
+        font_family: std::env::var("MED_FONT").ok().map(SharedString::from),
+        font_size: std::env::var("MED_FONT_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(14.),
+        lsp: std::env::var_os("MED_NO_LSP").is_none(),
+    });
+    cx.set_global(VimGlobal(med_vim::Shared::default()));
+
+    let normal = Some("Editor && vim_mode == normal");
+    // Not in the git view: there space stages, and a leader prefix would
+    // make it wait for a second key.
+    let panel = Some("FileTree");
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-s", Save, Some("Workspace")),
+        KeyBinding::new("cmd-w", CloseTab, Some("Workspace")),
+        KeyBinding::new("cmd-shift-]", NextTab, Some("Workspace")),
+        KeyBinding::new("cmd-shift-[", PrevTab, Some("Workspace")),
+        KeyBinding::new("ctrl-tab", NextTab, Some("Workspace")),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Workspace")),
+        KeyBinding::new("cmd-b", ToggleFileTree, Some("Workspace")),
+        KeyBinding::new("cmd-shift-e", FocusFileTree, Some("Workspace")),
+        KeyBinding::new("cmd-p", FileFinder, Some("Workspace")),
+        KeyBinding::new("cmd-shift-f", ProjectSearch, Some("Workspace")),
+        KeyBinding::new("cmd-shift-g", ToggleGit, Some("Workspace")),
+        KeyBinding::new("cmd-v", Paste, Some("Editor")),
+        KeyBinding::new("cmd-c", Copy, Some("Editor")),
+        // Leader keys, vim normal mode only.
+        KeyBinding::new("space f", FileFinder, normal),
+        KeyBinding::new("space space", FileFinder, normal),
+        KeyBinding::new("space /", ProjectSearch, normal),
+        KeyBinding::new("space e", FocusFileTree, normal),
+        KeyBinding::new("space g", ToggleGit, normal),
+        KeyBinding::new("space w", Save, normal),
+        KeyBinding::new("space q", CloseTab, normal),
+        // The same leader keys work from the side panels.
+        KeyBinding::new("space f", FileFinder, panel),
+        KeyBinding::new("space /", ProjectSearch, panel),
+        KeyBinding::new("space e", FocusFileTree, panel),
+        KeyBinding::new("space g", ToggleGit, panel),
+    ]);
+    cx.on_action(|_: &Quit, cx| cx.quit());
+}
+
+/// Run the editor: parse the command line, open the window, block until quit.
+pub fn run() {
+    let (root, files) = parse_args();
+    gpui::application()
+        .with_assets(gpui::assets::Assets)
+        .run(move |cx| {
+            init(cx);
+            cx.activate(true);
+
+            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+            gpui::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("med".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| cx.new(|cx| Workspace::new(root, files, window, cx)),
+            )
+            .expect("failed to open window");
+        });
+}

@@ -1,0 +1,36 @@
+[package]
+name = "med"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+med-core = { path = "../med-core" }
+med-vim = { path = "../med-vim" }
+med-lsp = { path = "../med-lsp" }
+med-git = { path = "../med-git" }
+gpui.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+lsp-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ropey = "1.6"
+regex = "1"
+# Must stay on the tree-sitter that gpui-component's grammars are built for.
+tree-sitter = "0.26"
+tree-sitter-nix = "0.3"
+ignore = "0.4"
+nucleo-matcher = "0.3"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+
+[[test]]
+name = "lsp"
+harness = false
+
+[dev-dependencies]
+# gpui-kit's own `test-support` feature drags in an unpublished gpui-fast;
+# enabling it on the underlying GPUI crate is enough for `#[gpui::test]`.
+gpui-test-support = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
