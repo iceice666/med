@@ -10,9 +10,22 @@
 //!
 //! (file-exists? path)             ; is there anything there
 //! (dir? path)                     ; a directory, or a link to one
+//! (file-info path)                ; (:name :path :kind :dir :size :modified
+//!                                 ;  :mode :links :uid :gid :target), or nil
 //! (rename-file from to)           ; nil, or what went wrong
+//! (copy-file from to)             ; and all in it: nil, or what went wrong
+//! (copy-file from to (fn (problem) ...))  ; the same, in the background
 //! (delete-file path)              ; to the trash: nil, or what went wrong
+//! (delete-file path true)         ; gone for good
 //! (make-dir path)                 ; and the ones above it
+//! (make-link target path)         ; a symbolic link at path, to target
+//! (make-link target path true)    ; a hard one
+//! (set-file-mode path "755")      ; or 493: the permissions, as chmod
+//!
+//! (spawn "ls" '("-l") dir (fn (done problem) ...))  ; (:status :out :err)
+//!
+//! (regex-match "(\\w+)\\.rs$" "a/main.rs")    ; ("main.rs" "main"), or nil
+//! (regex-replace "(\\w+)\\.txt" text "$1.md") ; every match replaced
 //!
 //! (walk-files (fn (files) ...))   ; every file, as a path from the root
 //! (fuzzy "mnrs" files 100)        ; the ones a few letters mean, best first
@@ -22,13 +35,30 @@
 //! (git 'commit "message" (fn (output problem) ...))
 //! ```
 //!
-//! A path that does not start at the top is the project's. `rename-file`
-//! never puts one file in the place of another, and the tabs that had the
-//! file, or one in the directory, go with it.
+//! A path that does not start at the top is the project's. `rename-file`,
+//! `copy-file` and `make-link` never put one file in the place of another,
+//! and the tabs that had a renamed file, or one in the directory, go with
+//! it.
+//!
+//! `file-info` is of what is at the path, a link itself and not what it
+//! points to: `:kind` is `'file`, `'dir`, `'link` or `'other`, and `:dir`
+//! whether it is a directory or a link to one. `:size` is in bytes,
+//! `:modified` in seconds since 1970, `:mode` the permission bits as a
+//! number (493 for 755), `:links` how many names the file has, `:uid`
+//! and `:gid` its owner and group as numbers, and `:target` where a link
+//! points, as it was written. What the system does not tell is nil.
+//!
+//! `copy-file` copies a directory with all in it, links as links, and
+//! keeps when each file was last changed.
 //!
 //! What takes time is given a function to call when it is done: walking
-//! the project, searching it, and everything git does. A git function is
-//! called with the answer and nil, or with nil and what went wrong.
+//! the project, searching it, everything git does, and a program
+//! `spawn`ed. A git function is called with the answer and nil, or with
+//! nil and what went wrong. `spawn` runs a program with no shell between
+//! (`(spawn "sh" (list "-c" line) ...)` for one), in `dir`, nil for the
+//! project's, with nothing to read; its function is called with
+//! `(:status :out :err)`, the exit code (nil when a signal stopped it) and
+//! what it printed, and nil, or with nil and why it could not be run.
 //!
 //! What `git` can be asked, each followed by the function to call:
 //! - `'status`: the changed files, each `(:path :file :index :worktree
@@ -207,9 +237,39 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         }
     });
 
-    // (delete-file path): put a file or a directory in the trash. Nil, or
-    // what went wrong.
-    interp.define_native("delete-file", 1, |call, args| {
+    // (file-info path): what is there, a link and not what it points to;
+    // nil for nothing. See the top of this file.
+    interp.define_native("file-info", 1, |call, args| {
+        let path = on_disk("file-info", &args[0], script::app(call)?)?;
+        Ok(match path.symlink_metadata() {
+            Ok(meta) => info_value(&path, &meta),
+            Err(_) => Value::Nil,
+        })
+    });
+
+    // (copy-file from to [function]): a copy of a file, or of a directory
+    // and all in it. Nil, or what went wrong; given a function, it is done
+    // in the background and the function is called with that.
+    interp.define_native("copy-file", Arity::between(2, 3), |call, args| {
+        let cx = script::app(call)?;
+        let from = on_disk("copy-file", &args[0], cx)?;
+        let to = on_disk("copy-file", &args[1], cx)?;
+        let Some(function) = args.get(2) else {
+            return Ok(said(copy(&from, &to)));
+        };
+        let callback = callback("copy-file", function)?;
+        script::in_background(
+            cx,
+            callback,
+            move || copy(&from, &to),
+            |done| vec![said(done)],
+        );
+        Ok(Value::Nil)
+    });
+
+    // (delete-file path [forever]): put a file or a directory in the
+    // trash, or do away with it. Nil, or what went wrong.
+    interp.define_native("delete-file", Arity::between(1, 2), |call, args| {
         let path = on_disk("delete-file", &args[0], script::app(call)?)?;
         if path.symlink_metadata().is_err() {
             return Ok(Value::from(format!(
@@ -217,20 +277,97 @@ pub(crate) fn define_functions(interp: &mut Interp) {
                 path.display()
             )));
         }
-        match to_trash(&path) {
-            Ok(()) => Ok(Value::Nil),
-            Err(error) => Ok(Value::from(format!("{}: {error}", path.display()))),
-        }
+        let done = match args.get(1).is_some_and(Value::is_truthy) {
+            true => remove(&path).map_err(|error| error.to_string()),
+            false => to_trash(&path).map_err(|error| error.to_string()),
+        };
+        Ok(said(
+            done.map_err(|error| format!("{}: {error}", path.display())),
+        ))
     });
 
     // (make-dir path): a directory, and the ones it is in. Nil, or what
     // went wrong.
     interp.define_native("make-dir", 1, |call, args| {
         let path = on_disk("make-dir", &args[0], script::app(call)?)?;
-        match std::fs::create_dir_all(&path) {
-            Ok(()) => Ok(Value::Nil),
-            Err(error) => Ok(Value::from(format!("{}: {error}", path.display()))),
-        }
+        Ok(said(
+            std::fs::create_dir_all(&path).map_err(wrong_at(&path)),
+        ))
+    });
+
+    // (make-link target path [hard]): a symbolic link at `path` that
+    // points to `target`, as written, or a hard link to it. Nil, or what
+    // went wrong.
+    interp.define_native("make-link", Arity::between(2, 3), |call, args| {
+        let cx = script::app(call)?;
+        let path = on_disk("make-link", &args[1], cx)?;
+        let made = match args.get(2).is_some_and(Value::is_truthy) {
+            true => std::fs::hard_link(on_disk("make-link", &args[0], cx)?, &path),
+            false => symlink(Path::new(args[0].as_str()?), &path),
+        };
+        Ok(said(made.map_err(wrong_at(&path))))
+    });
+
+    // (set-file-mode path mode): the permissions of a file, or of what a
+    // link points to, as chmod: a number, or its octal digits as text.
+    // Nil, or what went wrong.
+    interp.define_native("set-file-mode", 2, |call, args| {
+        let path = on_disk("set-file-mode", &args[0], script::app(call)?)?;
+        let mode = file_mode(&args[1])?;
+        Ok(said(set_mode(&path, mode).map_err(wrong_at(&path))))
+    });
+
+    // (spawn program arguments dir function): run a program. See the top
+    // of this file.
+    interp.define_native("spawn", 4, |call, args| {
+        let program = args[0].as_str()?.to_string();
+        let arguments = args[1]
+            .to_vec()?
+            .iter()
+            .map(|argument| argument.as_str().map(str::to_string))
+            .collect::<Result<Vec<_>, _>>()?;
+        let callback = callback("spawn", &args[3])?;
+        let cx = script::app(call)?;
+        let dir = match &args[2] {
+            Value::Nil => project("spawn", cx)?,
+            dir => on_disk("spawn", dir, cx)?,
+        };
+        script::in_background(
+            cx,
+            callback,
+            move || run_program(&program, &arguments, &dir),
+            |result| match result {
+                Ok(done) => vec![done.into_value(), Value::Nil],
+                Err(problem) => vec![Value::Nil, Value::from(problem)],
+            },
+        );
+        Ok(Value::Nil)
+    });
+
+    // ---- text
+
+    // (regex-match pattern text): the first match of a regular expression,
+    // as the text it matched and then each group's, nil for a group that
+    // took no part; nil when nothing matches.
+    interp.define_native("regex-match", 2, |_, args| {
+        let regex = compiled("regex-match", &args[0])?;
+        let found = regex.captures(args[1].as_str()?);
+        Ok(found.map_or(Value::Nil, |groups| {
+            Value::list(
+                groups
+                    .iter()
+                    .map(|group| group.map_or(Value::Nil, |group| Value::from(group.as_str()))),
+            )
+        }))
+    });
+
+    // (regex-replace pattern text replacement): every match made the
+    // replacement, in which `$1` and `${name}` are what a group matched.
+    interp.define_native("regex-replace", 3, |_, args| {
+        let regex = compiled("regex-replace", &args[0])?;
+        let text = args[1].as_str()?;
+        let replaced = regex.replace_all(text, args[2].as_str()?);
+        Ok(Value::from(replaced.as_ref()))
     });
 
     // (walk-files function): every file of the project that git would not
@@ -321,6 +458,11 @@ pub(crate) fn define_functions(interp: &mut Interp) {
     });
 }
 
+/// A regular expression a program gave; one that is none is its mistake.
+fn compiled(name: &str, value: &Value) -> Result<regex::Regex, Error> {
+    regex::Regex::new(value.as_str()?).map_err(|error| failed(format!("{name}: {error}")))
+}
+
 // ---- files -------------------------------------------------------------
 
 /// A path a program gave: from the top, or else the project's.
@@ -381,10 +523,229 @@ fn to_trash(path: &Path) -> Result<(), trash::Error> {
 /// Tests would fill the trash of whoever runs them: theirs are gone.
 #[cfg(test)]
 fn to_trash(path: &Path) -> Result<(), std::io::Error> {
+    remove(path)
+}
+
+/// Do away with `path`, and all in it if it is a directory; a link goes,
+/// and not what it points to.
+fn remove(path: &Path) -> std::io::Result<()> {
     match path.symlink_metadata()?.is_dir() {
         true => std::fs::remove_dir_all(path),
         false => std::fs::remove_file(path),
     }
+}
+
+/// What the functions that change the disk give back: nil, or what went
+/// wrong.
+fn said(done: Result<(), String>) -> Value {
+    match done {
+        Ok(()) => Value::Nil,
+        Err(problem) => Value::from(problem),
+    }
+}
+
+fn info_value(path: &Path, meta: &std::fs::Metadata) -> Value {
+    let kind = meta.file_type();
+    let kind = match () {
+        _ if kind.is_symlink() => "link",
+        _ if kind.is_dir() => "dir",
+        _ if kind.is_file() => "file",
+        _ => "other",
+    };
+    let modified =
+        meta.modified()
+            .ok()
+            .map(|time| match time.duration_since(std::time::UNIX_EPOCH) {
+                Ok(since) => since.as_secs() as i64,
+                Err(before) => -(before.duration().as_secs() as i64),
+            });
+    let target = std::fs::read_link(path).ok();
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let unix = unix_info(meta);
+    let int = |value: Option<u64>| value.map_or(Value::Nil, |value| Value::Int(value as i64));
+    record([
+        ("name", Value::from(name.as_ref())),
+        ("path", path_value(path)),
+        ("kind", Value::symbol(kind)),
+        ("dir", Value::Bool(path.is_dir())),
+        ("size", Value::Int(meta.len() as i64)),
+        ("modified", modified.map_or(Value::Nil, Value::Int)),
+        ("mode", int(unix.map(|unix| unix.mode))),
+        ("links", int(unix.map(|unix| unix.links))),
+        ("uid", int(unix.map(|unix| unix.uid))),
+        ("gid", int(unix.map(|unix| unix.gid))),
+        ("target", target.as_deref().map_or(Value::Nil, path_value)),
+    ])
+}
+
+/// What only a unix system tells of a file.
+#[derive(Clone, Copy)]
+struct UnixInfo {
+    mode: u64,
+    links: u64,
+    uid: u64,
+    gid: u64,
+}
+
+#[cfg(unix)]
+fn unix_info(meta: &std::fs::Metadata) -> Option<UnixInfo> {
+    use std::os::unix::fs::MetadataExt;
+    Some(UnixInfo {
+        mode: u64::from(meta.mode() & 0o7777),
+        links: meta.nlink(),
+        uid: u64::from(meta.uid()),
+        gid: u64::from(meta.gid()),
+    })
+}
+
+#[cfg(not(unix))]
+fn unix_info(_: &std::fs::Metadata) -> Option<UnixInfo> {
+    None
+}
+
+/// Copy `from` to `to`, unless something is there already: a directory
+/// with all in it, links as links, each file with the time it was last
+/// changed.
+fn copy(from: &Path, to: &Path) -> Result<(), String> {
+    let meta = from
+        .symlink_metadata()
+        .map_err(|error| format!("{}: {error}", from.display()))?;
+    if to.symlink_metadata().is_ok() {
+        return Err(format!(
+            "{}: there is something there already",
+            to.display()
+        ));
+    }
+    if meta.is_dir()
+        && let Ok(source) = from.canonicalize()
+        && canonical(to).starts_with(&source)
+    {
+        return Err(format!(
+            "{} → {}: a directory cannot be copied into itself",
+            from.display(),
+            to.display()
+        ));
+    }
+    copy_entry(from, to, &meta)
+}
+
+/// What went wrong with a path, as the functions that change the disk say it.
+fn wrong_at(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
+    move |error| format!("{}: {error}", path.display())
+}
+
+fn copy_entry(from: &Path, to: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
+    let wrong = wrong_at;
+    let kind = meta.file_type();
+    if kind.is_symlink() {
+        let target = std::fs::read_link(from).map_err(wrong(from))?;
+        return symlink(&target, to).map_err(wrong(to));
+    }
+    if kind.is_dir() {
+        std::fs::create_dir(to).map_err(wrong(to))?;
+        let entries = std::fs::read_dir(from).map_err(wrong(from))?;
+        for entry in entries {
+            let entry = entry.map_err(wrong(from))?;
+            let meta = entry
+                .path()
+                .symlink_metadata()
+                .map_err(wrong(&entry.path()))?;
+            copy_entry(&entry.path(), &to.join(entry.file_name()), &meta)?;
+        }
+        // After what is in it, which a directory without the permission
+        // to write in it would keep out.
+        std::fs::set_permissions(to, meta.permissions()).map_err(wrong(to))?;
+        keep_time(to, meta);
+        return Ok(());
+    }
+    if kind.is_file() {
+        std::fs::copy(from, to).map_err(wrong(from))?;
+        keep_time(to, meta);
+        return Ok(());
+    }
+    Err(format!(
+        "{}: only files, directories and links are copied",
+        from.display()
+    ))
+}
+
+/// Give the copy the time its original was last changed, if the system
+/// lets it: the copy is no less a copy without.
+fn keep_time(path: &Path, meta: &std::fs::Metadata) {
+    if let Ok(modified) = meta.modified()
+        && let Ok(file) = std::fs::File::open(path)
+    {
+        let _ = file.set_modified(modified);
+    }
+}
+
+#[cfg(unix)]
+fn symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(not(unix))]
+fn symlink(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("links are made only on unix"))
+}
+
+/// The permissions `set-file-mode` was given: a number, or octal digits.
+fn file_mode(value: &Value) -> Result<u32, Error> {
+    let mode = match value {
+        Value::Int(mode) => u32::try_from(*mode).ok(),
+        Value::Str(digits) => u32::from_str_radix(digits, 8).ok(),
+        _ => None,
+    };
+    mode.filter(|mode| *mode <= 0o7777)
+        .ok_or_else(|| wrong("set-file-mode", "permissions, as 493 or \"755\"", value))
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_: &Path, _: u32) -> std::io::Result<()> {
+    Err(std::io::Error::other("permissions are set only on unix"))
+}
+
+// ---- programs ----------------------------------------------------------
+
+/// How a program `spawn`ed ended, still as it left the thread that ran it.
+struct Ran {
+    status: Option<i32>,
+    out: String,
+    err: String,
+}
+
+impl Ran {
+    fn into_value(self) -> Value {
+        record([
+            (
+                "status",
+                self.status
+                    .map_or(Value::Nil, |code| Value::Int(code.into())),
+            ),
+            ("out", Value::from(self.out)),
+            ("err", Value::from(self.err)),
+        ])
+    }
+}
+
+fn run_program(program: &str, arguments: &[String], dir: &Path) -> Result<Ran, String> {
+    let output = std::process::Command::new(program)
+        .args(arguments)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("{program}: {error}"))?;
+    Ok(Ran {
+        status: output.status.code(),
+        out: String::from_utf8_lossy(&output.stdout).into_owned(),
+        err: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 #[cfg(unix)]

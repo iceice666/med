@@ -2707,6 +2707,152 @@ fn programs_change_what_is_on_disk(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn programs_copy_link_and_look_at_files(cx: &mut TestAppContext) {
+    let project = Project::new(&[("d/a.txt", "a\n"), ("d/e/b.txt", "b\n"), ("c.txt", "c\n")]);
+    let (_, cx) = open(&project, &[], cx);
+    let at = |name: &str| format!("\"{}\"", project.path(name).display());
+    let info = |name: &str, field: &str, cx: &mut VisualTestContext| {
+        lisp(&format!("(get (file-info {}) :{field})", at(name)), cx)
+    };
+
+    assert_eq!(lisp(&format!("(file-info {})", at("none")), cx), "nil");
+    assert_eq!(info("d/a.txt", "kind", cx), "file");
+    assert_eq!(info("d/a.txt", "size", cx), "2");
+    assert_eq!(info("d", "kind", cx), "dir");
+    assert_eq!(info("d", "dir", cx), "true");
+
+    // Permissions, as a number or as chmod's digits.
+    assert_eq!(
+        lisp(&format!("(set-file-mode {} \"640\")", at("d/a.txt")), cx),
+        "nil"
+    );
+    assert_eq!(info("d/a.txt", "mode", cx), (0o640).to_string());
+    assert_eq!(
+        lisp(&format!("(set-file-mode {} 420)", at("d/a.txt")), cx),
+        "nil"
+    );
+    assert_eq!(info("d/a.txt", "mode", cx), (0o644).to_string());
+
+    // A link is itself, and points where it was told to.
+    assert_eq!(
+        lisp(&format!("(make-link \"a.txt\" {})", at("d/to-a")), cx),
+        "nil"
+    );
+    assert_eq!(info("d/to-a", "kind", cx), "link");
+    assert_eq!(info("d/to-a", "target", cx), "\"a.txt\"");
+    assert_eq!(info("d/to-a", "dir", cx), "false");
+    let said = lisp(&format!("(make-link \"a.txt\" {})", at("d/to-a")), cx);
+    assert!(said.contains("exists"), "{said}");
+    assert_eq!(
+        lisp(
+            &format!("(make-link {} {} true)", at("c.txt"), at("hard.txt")),
+            cx
+        ),
+        "nil"
+    );
+    assert_eq!(info("c.txt", "links", cx), "2");
+
+    // A directory is copied with all in it, links as links, and the times.
+    assert_eq!(
+        lisp(&format!("(copy-file {} {})", at("d"), at("copy")), cx),
+        "nil"
+    );
+    assert_eq!(project.read("copy/a.txt"), "a\n");
+    assert_eq!(project.read("copy/e/b.txt"), "b\n");
+    assert_eq!(info("copy/to-a", "target", cx), "\"a.txt\"");
+    assert_eq!(
+        info("copy/a.txt", "modified", cx),
+        info("d/a.txt", "modified", cx)
+    );
+    let said = lisp(
+        &format!("(copy-file {} {})", at("c.txt"), at("d/a.txt")),
+        cx,
+    );
+    assert!(said.contains("there is something there already"), "{said}");
+    assert_eq!(project.read("d/a.txt"), "a\n");
+    let said = lisp(&format!("(copy-file {} {})", at("d"), at("d/e/d")), cx);
+    assert!(said.contains("cannot be copied into itself"), "{said}");
+    assert!(!project.path("d/e/d").exists());
+
+    // In the background, and the function is told how it went.
+    lisp("(def copied 'waiting)", cx);
+    lisp(
+        &format!(
+            "(copy-file {} {} (fn (problem) (set! copied problem)))",
+            at("c.txt"),
+            at("later.txt")
+        ),
+        cx,
+    );
+    assert!(wait_for(cx, |cx| lisp("copied", cx) != "waiting"));
+    assert_eq!(lisp("copied", cx), "nil");
+    assert_eq!(project.read("later.txt"), "c\n");
+
+    // Gone for good, a link without what it points to.
+    assert_eq!(
+        lisp(&format!("(delete-file {} true)", at("copy/to-a")), cx),
+        "nil"
+    );
+    assert!(project.path("copy/a.txt").exists());
+    assert_eq!(
+        lisp(&format!("(delete-file {} true)", at("copy")), cx),
+        "nil"
+    );
+    assert!(!project.path("copy").exists());
+}
+
+#[gpui::test]
+fn programs_run_programs_and_match_text(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let (_, cx) = open(&project, &[], cx);
+
+    let dir = format!("\"{}\"", project.0.display());
+    lisp("(def ran 'waiting)", cx);
+    lisp(
+        &format!(
+            r#"(spawn "sh" (list "-c" "ls a.txt; echo wrong >&2; exit 3") {dir}
+                 (fn (done problem) (set! ran (list done problem))))"#
+        ),
+        cx,
+    );
+    assert!(wait_for(cx, |cx| lisp("ran", cx) != "waiting"));
+    assert_eq!(
+        lisp("ran", cx),
+        r#"((:status 3 :out "a.txt\n" :err "wrong\n") nil)"#
+    );
+
+    lisp("(set! ran 'waiting)", cx);
+    lisp(
+        &format!(
+            r#"(spawn "no-such-program-at-all" nil {dir}
+                 (fn (done problem) (set! ran (list done problem))))"#
+        ),
+        cx,
+    );
+    assert!(wait_for(cx, |cx| lisp("ran", cx) != "waiting"));
+    assert!(
+        lisp("ran", cx).starts_with("(nil \"no-such-program-at-all: "),
+        "{}",
+        lisp("ran", cx)
+    );
+
+    assert_eq!(
+        lisp(r#"(regex-match "(\\w+)\\.(rs)?(txt)?$" "dir/main.rs")"#, cx),
+        r#"("main.rs" "main" "rs" nil)"#
+    );
+    assert_eq!(lisp(r#"(regex-match "^x" "main.rs")"#, cx), "nil");
+    assert_eq!(
+        lisp(
+            r#"(regex-replace "(\\w+)\\.txt" "a.txt b.txt" "${1}.md")"#,
+            cx
+        ),
+        r#""a.md b.md""#
+    );
+    let wrong = cx.update(|_, cx| crate::script::eval(r#"(regex-match "(" "x")"#, cx));
+    assert!(wrong.is_err());
+}
+
+#[gpui::test]
 fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("a.txt", "a\n"),
