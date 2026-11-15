@@ -24,13 +24,16 @@ pub struct Args {
 }
 
 /// The view a command acts on, and how.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Handler {
     Workspace(fn(&mut Workspace, &Args, &mut Window, &mut Context<Workspace>)),
     /// Runs on the active editor.
     Editor(fn(&mut Editor, &Args, &mut Context<Editor>)),
     FileTree(fn(&mut FileTree, &Args, &mut Context<FileTree>)),
     Git(fn(&mut GitView, &Args, &mut Window, &mut Context<GitView>)),
+    /// A function of the user's, defined with `defcommand`. The workspace
+    /// hands it to the interpreter.
+    Script(med_lisp::Value),
 }
 
 pub struct Command {
@@ -79,7 +82,7 @@ impl Commands {
     }
 
     pub fn handler(&self, name: &str) -> Option<Handler> {
-        self.get(name).map(|command| command.handler)
+        self.get(name).map(|command| command.handler.clone())
     }
 
     /// The command an ex command line's first word stands for: one of the

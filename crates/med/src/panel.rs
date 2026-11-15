@@ -16,7 +16,7 @@ use gpui::*;
 use serde::{Deserialize, Deserializer, de};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 /// The layouts that ship with the editor: name, JSON.
@@ -672,19 +672,6 @@ impl Layouts {
     }
 }
 
-/// Where the user's layouts are: `panels/` in the configuration directory.
-fn user_dir() -> Option<PathBuf> {
-    let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    let config = if let Some(dir) = var("MED_CONFIG_DIR") {
-        PathBuf::from(dir)
-    } else if let Some(dir) = var("XDG_CONFIG_HOME") {
-        PathBuf::from(dir).join("med")
-    } else {
-        PathBuf::from(var("HOME")?).join(".config").join("med")
-    };
-    Some(config.join("panels"))
-}
-
 /// Start out with the built-in layouts.
 pub fn init(cx: &mut App) {
     cx.set_global(Layouts::built_in());
@@ -693,8 +680,8 @@ pub fn init(cx: &mut App) {
 /// Read the user's layouts again, on top of the built-in ones.
 pub fn load_user_layouts(cx: &mut App) {
     let mut layouts = Layouts::built_in();
-    if let Some(dir) = user_dir() {
-        layouts.load_dir(&dir);
+    if let Some(dir) = crate::config_dir() {
+        layouts.load_dir(&dir.join("panels"));
     }
     cx.set_global(layouts);
     cx.refresh_windows();

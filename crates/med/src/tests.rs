@@ -331,6 +331,293 @@ fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one two\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
+    let message = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+    // Type `:eval <source>` as a user would.
+    let eval = |source: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(&format!("eval {source}"));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+
+    // The command line shows what a form came to.
+    assert_eq!(eval("(+ 1 2)", cx), "3");
+    assert_eq!(eval("(defn twice (n) (* 2 n))", cx), "twice");
+    // The interpreter is one for the session: twice is still there.
+    assert_eq!(eval("(twice 21)", cx), "42");
+
+    // An editor key, in two modes at once.
+    assert_eq!(
+        eval(
+            r#"(bind '(normal visual) "<Space>n" "workspace.next_tab")"#,
+            cx
+        ),
+        "nil"
+    );
+    cx.simulate_keystrokes("space n");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    cx.simulate_keystrokes("space n");
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+
+    // An engine command, keys for keys, and a key taken away.
+    eval(r#"(bind :normal "Q" "operator.delete")"#, cx);
+    cx.simulate_keystrokes("shift-q w");
+    assert_eq!(text(&ws, cx), "two\n");
+    eval(r#"(bind-keys "normal" "Z" "dw")"#, cx);
+    cx.simulate_keystrokes("shift-z");
+    assert_eq!(text(&ws, cx), "\n");
+    assert_eq!(eval(r#"(unbind 'normal "gt")"#, cx), "true");
+    assert_eq!(eval(r#"(unbind 'normal "gt")"#, cx), "false");
+    cx.simulate_keystrokes("g t");
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+
+    // A panel's key.
+    eval(r#"(bind 'tree "x" "tree.close")"#, cx);
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("x");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("i h i escape");
+    assert_eq!(text(&ws, cx), "hi\n");
+
+    // Options, and something to say.
+    eval("(set-option 'font-size 18.5)", cx);
+    eval(r#"(set-option 'font-family "Menlo")"#, cx);
+    cx.update(|_, cx| {
+        let settings = cx.global::<crate::Settings>();
+        assert_eq!(settings.font_size, 18.5);
+        assert_eq!(settings.font_family.as_deref(), Some("Menlo"));
+    });
+    assert_eq!(
+        eval(r#"(do (message "size " 18.5) 'ignored)"#, cx),
+        "size 18.5"
+    );
+
+    // Mistakes are explained, and change nothing.
+    assert_eq!(
+        eval(r#"(bind 'normal "X" "no.such_command")"#, cx),
+        "1:1: there is no command no.such_command"
+    );
+    assert_eq!(
+        eval(r#"(bind 'nomal "X" "tree.close")"#, cx),
+        "1:1: nomal is neither a mode (normal visual operator insert) nor a panel \
+         (git git.branches git.files git.stash tree)"
+    );
+    assert_eq!(
+        eval(r#"(bind-keys 'tree "X" "j")"#, cx),
+        "1:1: keys stand for other keys only in an editor mode, not in tree"
+    );
+    assert_eq!(
+        eval("(set-option 'font-sise 12)", cx),
+        "1:1: font-sise is not an option (font-size font-family lsp)"
+    );
+    assert_eq!(
+        eval("(set-option 'font-size 0)", cx),
+        "1:1: 0 is no size for a font"
+    );
+    assert_eq!(eval("(car", cx), "1:1: this ( is never closed");
+    // A program that never ends is stopped; the editor carries on.
+    assert_eq!(
+        eval("(while true)", cx),
+        "1:1: stopped after 10000000 steps"
+    );
+    assert_eq!(eval("(twice 2)", cx), "4");
+    assert_eq!(message(cx), "4");
+}
+
+#[gpui::test]
+fn scripts_define_commands(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+    let (ws, cx) = open(&project, &["a.txt", "b.txt", "c.txt"], cx);
+    let message = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+    // Type a command line as a user would, and read the status bar. The
+    // line is one line: what is broken up below for reading is joined.
+    let ex = |line: &str, cx: &mut VisualTestContext| {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(&line);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+    let path = |name: &str| project.path(name).display().to_string();
+
+    // A command made of other commands...
+    assert_eq!(
+        ex(
+            r#"eval (defcommand "user.skip" "Go two tabs on"
+                 (fn () (run "workspace.next_tab") (run "bn")))"#,
+            cx
+        ),
+        "\"user.skip\""
+    );
+    // ...runs from the command line by its name...
+    ex("user.skip", cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
+    // ...and from a key, like any other.
+    ex(r#"eval (bind 'normal "<Space>j" "user.skip")"#, cx);
+    cx.simulate_keystrokes("space j");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+
+    // `run` has happened when it returns: the file is the new tab's.
+    ex(
+        r#"eval (defcommand 'user.where "Go on a tab and say where that is"
+             (fn () (run "workspace.next_tab") (message (current-file))))"#,
+        cx,
+    );
+    assert_eq!(ex("user.where", cx), path("c.txt"));
+    assert_eq!(
+        ex("eval (project-root)", cx),
+        format!("{:?}", project.0.display().to_string())
+    );
+
+    // How it was invoked: the rest of the line, the !, the count.
+    ex(
+        r#"eval (defcommand "user.echo" "Say how this was invoked"
+             (fn () (message command-arg "|" command-bang "|" command-count)))"#,
+        cx,
+    );
+    assert_eq!(ex("user.echo! two words", cx), "two words|true|nil");
+    assert_eq!(ex("user.echo", cx), "|false|nil");
+    ex(r#"eval (bind 'normal "<Space>k" "user.echo")"#, cx);
+    cx.simulate_keystrokes("3 space k");
+    cx.run_until_parked();
+    assert_eq!(message(cx), "|false|3");
+
+    // One of the user's commands runs another on the spot, and has its own
+    // invocation back afterwards.
+    ex("eval (def log nil)", cx);
+    ex(
+        r#"eval (defcommand "user.inner" "Note the argument"
+             (fn () (set! log (cons command-arg log))))"#,
+        cx,
+    );
+    ex(
+        r#"eval (defcommand "user.outer" "Note the argument, around user.inner"
+             (fn ()
+               (run "user.inner" "inner")
+               (set! log (cons command-arg log))))"#,
+        cx,
+    );
+    ex("user.outer outer", cx);
+    assert_eq!(ex("eval log", cx), r#"("outer" "inner")"#);
+
+    // Defining it again replaces it.
+    ex(
+        r#"eval (defcommand "user.skip" "Go back a tab" (fn () (run "bp")))"#,
+        cx,
+    );
+    ex("user.skip", cx);
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+
+    // What goes wrong in a command is said, and the editor carries on.
+    ex(r#"eval (defcommand "user.bad" "Fail" (fn () (car 5)))"#, cx);
+    assert!(ex("user.bad", cx).ends_with("expected a list, got 5"));
+    ex(
+        r#"eval (defcommand "user.loop" "Never end" (fn () (run "user.loop")))"#,
+        cx,
+    );
+    assert!(ex("user.loop", cx).ends_with("calls nested too deeply"));
+    assert_eq!(ex("eval (+ 1 2)", cx), "3");
+
+    // Names that are taken, and names of nothing.
+    assert_eq!(
+        ex(r#"eval (defcommand "workspace.save" "Mine" (fn () 1))"#, cx),
+        "1:1: workspace.save is one of the editor's own commands"
+    );
+    assert_eq!(
+        ex(
+            r#"eval (defcommand "motion.word_forward" "Mine" (fn () 1))"#,
+            cx
+        ),
+        "1:1: motion.word_forward is one of the editor's own commands"
+    );
+    assert_eq!(
+        ex(r#"eval (defcommand "w" "Mine" (fn () 1))"#, cx),
+        "1:1: w is what the command line calls workspace.save"
+    );
+    assert_eq!(
+        ex(r#"eval (defcommand "user.x" "Mine" 5)"#, cx),
+        "1:1: expected a function, got 5"
+    );
+    assert_eq!(
+        ex(r#"eval (run "no.such")"#, cx),
+        "1:1: there is no command no.such"
+    );
+
+    // With no workspace behind a program, as for the init file, a command
+    // can be defined but an editor's own cannot be run.
+    let (defined, ran) = cx.update(|_, cx| {
+        let source = r#"(defcommand "user.later" "For later" (fn () 1))"#;
+        let defined = crate::script::eval(source, cx);
+        let ran = crate::script::eval(r#"(run "workspace.save")"#, cx);
+        (defined, ran.unwrap_err().to_string())
+    });
+    assert_eq!(defined, Ok(med_lisp::Value::from("user.later")));
+    assert_eq!(ran, "1:1: there is no window to run workspace.save in");
+}
+
+#[gpui::test]
+fn runs_an_init_file(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        (
+            "config/init.lisp",
+            "; My keys.\n\
+             (defn leader (key command)\n\
+             \x20 (bind 'normal (str \"<Space>\" key) command))\n\
+             (leader \"n\" \"workspace.next_tab\")\n\
+             (set-option 'font-size 20)\n\
+             (leader \"p\" \"workspace.previous_tab\")\n\
+             (set-option 'font-size 30)\n",
+        ),
+    ]);
+    let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
+
+    let init = project.path("config/init.lisp");
+    let said = cx.update(|_, cx| {
+        crate::script::load_file(&init, cx);
+        crate::script::take_message(cx)
+    });
+    // The sixth line names a command that does not exist, which the
+    // function it calls finds out...
+    assert_eq!(
+        said,
+        Some(format!(
+            "{}:3:3: there is no command workspace.previous_tab (from 6:1)",
+            init.display()
+        ))
+    );
+    // ...and what came before it took effect, what came after did not.
+    cx.simulate_keystrokes("space n");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    cx.update(|_, cx| assert_eq!(cx.global::<crate::Settings>().font_size, 20.));
+
+    // A file that is not there is said to be so.
+    let missing = project.path("config/nope.lisp");
+    let said = cx.update(|_, cx| {
+        crate::script::load_file(&missing, cx);
+        crate::script::take_message(cx)
+    });
+    assert!(
+        said.unwrap()
+            .starts_with(&format!("{}: ", missing.display()))
+    );
+    assert_eq!(cx.update(|_, cx| crate::script::take_message(cx)), None);
+}
+
+#[gpui::test]
 fn stages_and_commits_from_the_git_view(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\n")]);
     project.git_init();

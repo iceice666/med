@@ -3934,6 +3934,7 @@ dependencies = [
  "lsp-types",
  "med-core",
  "med-git",
+ "med-lisp",
  "med-lsp",
  "med-vim",
  "nucleo-matcher",

@@ -41,6 +41,13 @@ impl PanelKeymaps {
         Some(command.as_ref())
     }
 
+    /// The contexts that have bindings, sorted.
+    pub fn contexts(&self) -> Vec<&str> {
+        let mut contexts: Vec<&str> = self.contexts.keys().map(String::as_str).collect();
+        contexts.sort_unstable();
+        contexts
+    }
+
     /// The first of `contexts` that has anything to say about `keys`
     /// decides.
     fn lookup(&self, contexts: &[&str], keys: &[Key]) -> Lookup<SharedString> {

@@ -148,6 +148,7 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["wa", "wall"], "workspace.save_all"),
     (&["qa", "qall"], "workspace.quit_all"),
     (&["e", "edit"], "workspace.edit"),
+    (&["eval"], "workspace.eval"),
     (&["bn", "bnext", "tabn", "tabnext"], "workspace.next_tab"),
     (
         &["bp", "bprev", "bprevious", "tabp", "tabprevious"],

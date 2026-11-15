@@ -103,11 +103,11 @@ impl Workspace {
         } else {
             this.activate(0, window, cx);
         }
-        // A layout file that was not used should not go unnoticed.
-        this.message = cx
-            .global::<Layouts>()
-            .problems
-            .first()
+        // A layout file that was not used should not go unnoticed, nor
+        // what the init file had to say.
+        let problem = cx.global::<Layouts>().problems.first().cloned();
+        this.message = problem
+            .or_else(|| crate::script::take_message(cx))
             .map(SharedString::from);
         this
     }
@@ -148,7 +148,11 @@ impl Workspace {
         cx.notify();
     }
 
-    fn set_message(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn set_message(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.message = Some(message.into());
         cx.notify();
     }
@@ -548,6 +552,9 @@ impl Workspace {
             Some(Handler::Git(run)) => {
                 let git = self.git.clone();
                 git.update(cx, |git, cx| run(git, args, window, cx));
+            }
+            Some(Handler::Script(function)) => {
+                crate::script::run_command(function, args.clone(), window, cx);
             }
             None => self.set_message(format!("Unknown command: {name}"), cx),
         }
@@ -955,6 +962,23 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.focus_file_tree",
         "Move to the file tree, or back from it",
         W(|ws, _, window, cx| ws.focus_file_tree(window, cx)),
+    );
+    commands.register(
+        "workspace.eval",
+        "Evaluate Lisp, as in :eval (bind 'normal \"Q\" \"workspace.quit\")",
+        W(|_, args, window, cx| crate::script::eval_from(args.arg.clone(), window, cx)),
+    );
+    commands.register(
+        "workspace.reload_init",
+        "Run the init file again",
+        W(|ws, _, _, cx| {
+            let ran = crate::script::load_init(cx);
+            let message = crate::script::take_message(cx).unwrap_or_else(|| match ran {
+                Some(path) => format!("Ran {}", path.display()),
+                None => "There is no init.lisp".to_string(),
+            });
+            ws.set_message(message, cx);
+        }),
     );
     commands.register(
         "workspace.reload_panels",

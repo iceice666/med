@@ -9,6 +9,7 @@ pub mod keymap;
 pub mod lsp;
 pub mod panel;
 pub mod picker;
+pub mod script;
 pub mod syntax;
 #[cfg(test)]
 mod tests;
@@ -69,13 +70,28 @@ fn parse_args() -> (PathBuf, Vec<PathBuf>) {
     (root, files)
 }
 
-/// The globals views read: vim state, commands, key tables, panel layouts.
-/// Needs no window system, so headless code can stop here.
+/// Where the user's files are: `$MED_CONFIG_DIR`, `$XDG_CONFIG_HOME/med` or
+/// `~/.config/med`.
+pub fn config_dir() -> Option<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if let Some(dir) = var("MED_CONFIG_DIR") {
+        Some(PathBuf::from(dir))
+    } else if let Some(dir) = var("XDG_CONFIG_HOME") {
+        Some(PathBuf::from(dir).join("med"))
+    } else {
+        Some(PathBuf::from(var("HOME")?).join(".config").join("med"))
+    }
+}
+
+/// The globals views read: vim state, commands, key tables, panel layouts,
+/// the script interpreter. Needs no window system, so headless code can
+/// stop here.
 pub fn init_globals(cx: &mut App) {
     cx.set_global(VimGlobal(med_vim::Shared::default()));
     commands::init(cx);
     defaults::init(cx);
     panel::init(cx);
+    script::init(cx);
 }
 
 /// Globals and key bindings; everything a window needs before it opens.
@@ -111,6 +127,7 @@ pub fn run() {
             init(cx);
             // Not in `init`: tests must not depend on what is in $HOME.
             panel::load_user_layouts(cx);
+            script::load_init(cx);
             cx.activate(true);
 
             let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
