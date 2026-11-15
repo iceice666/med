@@ -1,7 +1,9 @@
 //! Headless end-to-end tests: a real `Workspace` in a test window, driven by
-//! simulated keystrokes.
+//! simulated keystrokes. The panels are the ones in `examples/`, loaded as
+//! an init file would load them.
 
 use crate::keymap::PanelKeymaps;
+use crate::user_panel::UserPanels;
 use crate::workspace::Workspace;
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
 use med_vim::{MapMode, Mode};
@@ -69,7 +71,21 @@ impl Drop for Project {
     }
 }
 
+const TREE: &str = include_str!("../../../examples/tree.lisp");
+const PICKER: &str = include_str!("../../../examples/picker.lisp");
+const GIT: &str = include_str!("../../../examples/git.lisp");
+
 fn open<'a>(
+    project: &Project,
+    files: &[&str],
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    open_with(&[], project, files, cx)
+}
+
+/// Open a window after running `programs`, as an init file would have.
+fn open_with<'a>(
+    programs: &[&str],
     project: &Project,
     files: &[&str],
     cx: &'a mut TestAppContext,
@@ -79,6 +95,11 @@ fn open<'a>(
         // Language servers wake tasks from their own threads, which the
         // deterministic test executor rejects; tests/lsp.rs covers them.
         cx.global_mut::<crate::Settings>().lsp = false;
+        for program in programs {
+            if let Err(error) = crate::script::eval(program, cx) {
+                panic!("{error}");
+            }
+        }
     });
     let root = project.0.clone();
     let files: Vec<PathBuf> = files.iter().map(|f| project.path(f)).collect();
@@ -106,6 +127,18 @@ fn active_file(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Opt
     workspace.read_with(cx, |ws, cx| {
         ws.active_editor().and_then(|e| e.read(cx).path.clone())
     })
+}
+
+/// What a form comes to, as text: for looking at what a program keeps.
+fn lisp(source: &str, cx: &mut VisualTestContext) -> String {
+    match cx.update(|_, cx| crate::script::eval(source, cx)) {
+        Ok(value) => value.to_string(),
+        Err(error) => panic!("{source}: {error}"),
+    }
+}
+
+fn shown(panel: &str, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| cx.global::<UserPanels>().is_shown(panel))
 }
 
 /// Wait on real time for something that happens off the test executor
@@ -209,29 +242,51 @@ fn finds_files_and_searches_the_project(cx: &mut TestAppContext) {
         ),
         ("README.md", "# demo\n"),
     ]);
-    let (ws, cx) = open(&project, &["README.md"], cx);
+    let (ws, cx) = open_with(&[PICKER], &project, &["README.md"], cx);
 
     // Leader key opens the fuzzy finder; typing filters; enter opens.
+    assert!(!shown("picker", cx));
     cx.simulate_keystrokes("space f");
     cx.run_until_parked();
-    assert!(ws.read_with(cx, |ws, _| ws.picker.is_some()));
+    assert!(shown("picker", cx));
+    assert_eq!(lisp("(length picker-items)", cx), "3");
     cx.simulate_input("uhelp");
     cx.run_until_parked();
+    assert_eq!(lisp("picker-query", cx), "\"uhelp\"");
+    assert_eq!(
+        lisp("(map (fn (item) (get item :label)) picker-items)", cx),
+        "(\"helper.rs\")"
+    );
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    assert!(ws.read_with(cx, |ws, _| ws.picker.is_none()));
+    assert!(!shown("picker", cx));
     assert_eq!(
         active_file(&ws, cx),
         Some(project.path("src/util/helper.rs"))
     );
-
-    // Escape closes the finder and hands focus back to the editor.
-    cx.simulate_keystrokes("space f");
-    cx.run_until_parked();
-    cx.simulate_keystrokes("escape");
-    assert!(ws.read_with(cx, |ws, _| ws.picker.is_none()));
+    // The keyboard is the editor's again.
     cx.simulate_keystrokes("g g");
     assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // ctrl-n and ctrl-p move through the list, round its ends, and what
+    // was typed last time is gone.
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list picker-query picker-selected)", cx), "(\"\" 0)");
+    cx.simulate_keystrokes("ctrl-n ctrl-n");
+    cx.run_until_parked();
+    assert_eq!(lisp("picker-selected", cx), "2");
+    cx.simulate_keystrokes("ctrl-n ctrl-p down");
+    cx.run_until_parked();
+    assert_eq!(lisp("picker-selected", cx), "0");
+
+    // Escape closes the finder and hands focus back to the editor.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("picker", cx));
+    cx.simulate_keystrokes("shift-g");
+    assert_eq!(cursor(&ws, cx), (3, 1));
+    cx.simulate_keystrokes("g g");
 
     // Project search jumps to the matching line and column.
     cx.simulate_keystrokes("space /");
@@ -239,6 +294,10 @@ fn finds_files_and_searches_the_project(cx: &mut TestAppContext) {
     cx.simulate_input("needle");
     cx.executor().advance_clock(Duration::from_millis(500));
     cx.run_until_parked();
+    assert_eq!(
+        lisp("(get (first picker-items) :detail)", cx),
+        "\"src/util/helper.rs:2\""
+    );
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!(
@@ -250,6 +309,36 @@ fn finds_files_and_searches_the_project(cx: &mut TestAppContext) {
     // ctrl-o returns to where the search started.
     cx.simulate_keystrokes("ctrl-o");
     assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // A list of places, as the references to a name are, is chosen from
+    // in the same popup.
+    let places = format!(
+        "(list (list :path {a:?} :file \"src/main.rs\" :line 2 :col 5 :text \"helper();\")
+               (list :path {b:?} :file \"README.md\" :line 1 :col 3 :text \"demo\"))",
+        a = project.path("src/main.rs").display().to_string(),
+        b = project.path("README.md").display().to_string(),
+    );
+    let places = cx.update(|_, cx| crate::script::eval(&places, cx).unwrap());
+    cx.update(|window, cx| {
+        ws.update(cx, |_, cx| {
+            assert!(crate::script::run_hook(
+                "locations",
+                vec![places],
+                window,
+                cx
+            ));
+        })
+    });
+    cx.run_until_parked();
+    assert!(shown("picker", cx));
+    assert_eq!(lisp("(length picker-items)", cx), "2");
+    cx.simulate_input("demo");
+    cx.run_until_parked();
+    assert_eq!(lisp("(length picker-items)", cx), "1");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("README.md")));
+    assert_eq!(cursor(&ws, cx), (1, 3));
 }
 
 #[gpui::test]
@@ -259,24 +348,86 @@ fn navigates_the_file_tree(cx: &mut TestAppContext) {
         ("dir/inner.txt", "inner\n"),
         ("z.txt", "z\n"),
     ]);
-    let (ws, cx) = open(&project, &["z.txt"], cx);
+    let (ws, cx) = open_with(&[TREE], &project, &["z.txt"], cx);
+    let names =
+        |cx: &mut VisualTestContext| lisp("(map (fn (entry) (get entry :name)) tree-entries)", cx);
 
     // Directories sort first: dir/, a.txt, z.txt. The open file is revealed.
+    assert_eq!(names(cx), r#"("dir" "a.txt" "z.txt")"#);
     cx.simulate_keystrokes("space e");
     cx.run_until_parked();
-    cx.simulate_keystrokes("g g l j enter");
+    assert_eq!(lisp("(get (tree-entry) :name)", cx), "\"z.txt\"");
+    cx.simulate_keystrokes("g g l");
+    cx.run_until_parked();
+    assert_eq!(names(cx), r#"("dir" "inner.txt" "a.txt" "z.txt")"#);
+    cx.simulate_keystrokes("j enter");
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("dir/inner.txt")));
 
     // Opening a file moved focus to the editor, so vim keys edit again.
     cx.simulate_keystrokes("x");
     assert_eq!(text(&ws, cx), "nner\n");
+
+    // h on a file goes to its directory, and on that folds it; G is the
+    // last row, and space e from the tree is the way back out of it.
+    cx.simulate_keystrokes("space e h");
+    cx.run_until_parked();
+    assert_eq!(lisp("(get (tree-entry) :name)", cx), "\"dir\"");
+    cx.simulate_keystrokes("h shift-g");
+    cx.run_until_parked();
+    assert_eq!(names(cx), r#"("dir" "a.txt" "z.txt")"#);
+    assert_eq!(lisp("(get (tree-entry) :name)", cx), "\"z.txt\"");
+    cx.simulate_keystrokes("space e x");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "ner\n");
+
+    // A file that appears on disk is in the tree once the editor has
+    // reason to look: here, a file being written.
+    fs::write(project.path("b.txt"), "b\n").unwrap();
+    cx.simulate_keystrokes(": w enter");
+    cx.run_until_parked();
+    assert_eq!(names(cx), r#"("dir" "a.txt" "b.txt" "z.txt")"#);
+
+    // ⌘B puts the tree away and back; put away while it has the keyboard,
+    // it hands the keyboard to the editor.
+    cx.simulate_keystrokes("cmd-shift-e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("cmd-b");
+    cx.run_until_parked();
+    assert!(!shown("tree", cx));
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "er\n");
+    cx.simulate_keystrokes("cmd-b");
+    cx.run_until_parked();
+    assert!(shown("tree", cx));
 }
 
 #[gpui::test]
-fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
+fn the_file_tree_shows_what_git_says(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("dir/inner.txt", "inner\n")]);
+    project.git_init();
+    project.git(&["add", "-A"]);
+    project.git(&["commit", "-q", "-m", "first"]);
+    fs::write(project.path("dir/inner.txt"), "changed\n").unwrap();
+    fs::write(project.path("new.txt"), "new\n").unwrap();
+
+    let (_ws, cx) = open_with(&[TREE], &project, &[], cx);
+    let mark = |name: &str, cx: &mut VisualTestContext| {
+        let path = project.path(name).display().to_string();
+        lisp(&format!("(get tree-marks {path:?})"), cx)
+    };
+    assert!(wait_for(cx, |cx| lisp("tree-marks", cx) != "nil"));
+    // A changed file has git's letter, and the directory it is in an M.
+    assert_eq!(mark("dir/inner.txt", cx), "\"M\"");
+    assert_eq!(mark("dir", cx), "\"M\"");
+    assert_eq!(mark("new.txt", cx), "\"?\"");
+    assert_eq!(mark("a.txt", cx), "nil");
+}
+
+#[gpui::test]
+fn the_file_tree_is_a_panel_like_any_other(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
-    let (ws, cx) = open(&project, &[], cx);
+    let (ws, cx) = open_with(&[TREE], &project, &[], cx);
     let click = |y: f32, cx: &mut VisualTestContext| {
         cx.simulate_click(point(px(40.), px(y)), Modifiers::none());
         cx.run_until_parked();
@@ -293,24 +444,26 @@ fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
             .map_err(|error| error.to_string())
     };
 
-    // The built-in layout: a 32px header, then 24px rows that open on a
-    // click. The second row is b.txt.
+    // Its own layout: a 32px header, then 24px rows that open on a click.
+    // The second row is b.txt.
     click(32. + 24. + 12., cx);
     assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    assert_eq!(lisp("tree-selected", cx), "1");
 
-    // A layout of the user's: a button where the header was, taller rows,
-    // and directories left out of the picture.
+    // Another layout for it: a button where the header was, taller rows,
+    // drawn from the same values the program keeps.
     let layout = r#"
         (set-layout 'tree
           (fn (panel)
             (col :width 'full :height 'full
-              (text (str "Find in " (get panel :root-name))
-                    :height 40 :on-click "workspace.find_file")
-              (rows 'entries :grow true
-                (fn (entry)
+              (text (str "Close " (path-name (get panel :root)))
+                    :height 40 :on-click "workspace.close_tab")
+              (rows tree-entries :grow true
+                (fn (entry index)
                   (row :height 30 :width 'full
-                       :bg (when (get entry :selected) 'list-active)
+                       :bg (when (= index tree-selected) 'list-active)
                        :on-click (fn ()
+                                   (tree-select index)
                                    (run "tree.open")
                                    (message "opened " (get entry :name)))
                     (when (get entry :dir) (text "/"))
@@ -326,19 +479,17 @@ fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
     click(40. + 60. + 15., cx);
     assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
     assert_eq!(message(cx), "opened c.txt");
-    // The button runs a command that is not the tree's own.
-    assert!(ws.read_with(cx, |ws, _| ws.picker.is_none()));
+    // The button runs a command by its name.
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 3);
     click(20., cx);
-    assert!(ws.read_with(cx, |ws, _| ws.picker.is_some()));
-    cx.simulate_keystrokes("escape");
-    cx.run_until_parked();
+    assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 2);
 
     // A layout that fails is drawn as its error, row by row or whole; one
     // that tries to do more than describe is refused; one that never ends
     // is cut short. None of it takes the editor down, and the next layout
     // works.
     for broken in [
-        "(set-layout 'tree (fn (panel) (col (rows 'entries (fn (entry) (car 5))))))",
+        "(set-layout 'tree (fn (panel) (col (rows tree-entries (fn (entry) (car 5))))))",
         "(set-layout 'tree (fn (panel) (nope)))",
         "(set-layout 'tree (fn (panel) 5))",
         "(set-layout 'tree (fn (panel) (message \"drawn\") (col)))",
@@ -355,27 +506,28 @@ fn draws_the_file_tree_from_its_layout(cx: &mut TestAppContext) {
     // What is not a panel, or not a function, is not a layout.
     assert_eq!(
         set_layout("(set-layout 'git (fn (panel) (col)))", cx),
-        Err("1:1: git is not a panel with a layout (tree)".to_string())
+        Err("1:1: git is not a panel (tree)".to_string())
     );
     assert_eq!(
         set_layout("(set-layout 'tree 5)", cx),
         Err("1:1: set-layout: expected a function, got 5".to_string())
     );
 
-    // Running the init file starts from the built-in layouts again.
+    // Running the init file again forgets the panels: an editor with no
+    // init file has none. A click where the tree was lands in the editor.
     let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
     assert!(!ran);
     cx.run_until_parked();
-    // 95px down is the third of the 24px rows under the 32px header; it
-    // was the second of the 30px ones.
-    click(95., cx);
-    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
+    assert_eq!(
+        set_layout("(set-layout 'tree (fn (panel) (col)))", cx),
+        Err("1:1: tree is not a panel ()".to_string())
+    );
 }
 
 #[gpui::test]
 fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one two\n"), ("b.txt", "b\n")]);
-    let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
+    let (ws, cx) = open_with(&[TREE], &project, &["a.txt", "b.txt"], cx);
     let message = |cx: &mut VisualTestContext| {
         ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
     };
@@ -429,6 +581,24 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("i h i escape");
     assert_eq!(text(&ws, cx), "hi\n");
 
+    // A shortcut of the window's, which works wherever the keyboard is,
+    // and stops working when it is taken away.
+    assert_eq!(
+        eval(r#"(bind 'app "cmd-shift-j" "workspace.next_tab")"#, cx),
+        "nil"
+    );
+    cx.simulate_keystrokes("cmd-shift-j");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("cmd-shift-j q");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    assert_eq!(eval(r#"(unbind 'app "cmd-shift-j")"#, cx), "true");
+    assert_eq!(eval(r#"(unbind 'app "cmd-shift-j")"#, cx), "false");
+    cx.simulate_keystrokes("cmd-shift-j");
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+
     // Options, and something to say.
     eval("(set-option 'font-size 18.5)", cx);
     eval(r#"(set-option 'font-family "Menlo")"#, cx);
@@ -449,8 +619,11 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval(r#"(bind 'nomal "X" "tree.close")"#, cx),
-        "1:1: nomal is neither a mode (normal visual operator insert) nor a panel \
-         (git git.branches git.files git.stash tree)"
+        "1:1: nomal is neither a mode (normal visual operator insert), app, nor a panel (tree)"
+    );
+    assert_eq!(
+        eval(r#"(bind 'app "cmd-nope-j" "tree.close")"#, cx),
+        "1:1: \"cmd-nope-j\" is no shortcut: in app they are written like cmd-shift-p"
     );
     assert_eq!(
         eval(r#"(bind-keys 'tree "X" "j")"#, cx),
@@ -660,8 +833,8 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
         format!("{:?}", project.path("a.txt").display().to_string())
     );
 
-    // On the left a panel goes between the file tree and the editor, and
-    // `:shown` has it up from the start.
+    // On the left a panel goes before the editor, and `:shown` has it up
+    // from the start.
     eval(
         r#"(defpanel 'beside :at 'left :width 100 :shown true
              (fn (panel)
@@ -669,7 +842,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
                  (text "x" :height 30 :on-click (fn () (set! clicks 100))))))"#,
         cx,
     );
-    click(260. + 50., 15., cx);
+    click(50., 15., cx);
     assert_eq!(eval("clicks", cx), "100");
 
     // A list of the program's, a row to a value. It is to the right of
@@ -730,19 +903,15 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     // Mistakes are explained.
     assert_eq!(
         eval("(show-panel 'nope)", cx),
-        "1:1: nope is not a panel of yours (counter beside letters ask)"
-    );
-    assert_eq!(
-        eval("(defpanel 'tree (fn (panel) (col)))", cx),
-        "1:1: tree is one of the editor's own panels: set-layout changes how it looks"
+        "1:1: nope is not a panel (counter beside letters ask)"
     );
     assert_eq!(
         eval("(defpanel 'x :at 'top (fn (panel) (col)))", cx),
-        "1:1: at: expected 'left, 'right, 'popup, got top"
+        "1:1: at: expected 'left, 'right, 'popup, 'full, got top"
     );
     assert_eq!(
         eval("(defpanel 'x :colour 1 (fn (panel) (col)))", cx),
-        "1:1: colour is not an option of defpanel (at width shown)"
+        "1:1: colour is not an option of defpanel (at width shown contexts)"
     );
     assert_eq!(
         eval("(defpanel 'x 5)", cx),
@@ -750,7 +919,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-layout 'x (fn (panel) (col)))", cx),
-        "1:1: x is not a panel with a layout (tree counter beside letters ask)"
+        "1:1: x is not a panel (counter beside letters ask)"
     );
 
     // Running the init file again forgets the panels it did not define
@@ -760,7 +929,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         eval("(panel-shown? 'counter)", cx),
-        "1:1: counter is not a panel of yours ()"
+        "1:1: counter is not a panel ()"
     );
     eval("(defpanel 'counter (fn (panel) (col)))", cx);
     assert_eq!(eval("(panel-shown? 'counter)", cx), "true");
@@ -819,7 +988,273 @@ fn runs_an_init_file(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn stages_and_commits_from_the_git_view(cx: &mut TestAppContext) {
+fn panels_take_the_keyboard(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "abcdef\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    // Type `:eval <source>` on one line, and read the status bar.
+    let eval = |source: &str, cx: &mut VisualTestContext| {
+        let source = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(&format!("eval {source}"));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+
+    // A screen in place of the editor, with keys of its own: which table
+    // they are looked up in is the program's to say, key by key.
+    lisp("(def log nil) (def deep false)", cx);
+    eval(
+        r#"(defpanel 'screen :at 'full
+             :contexts (fn () (if deep '(screen.deep screen) '(screen)))
+             (fn (panel)
+               (col :width 'full :height 'full
+                 (text (if (get panel :focused) "here" "away")))))"#,
+        cx,
+    );
+    eval(
+        r#"(do (defn note (name)
+                 (defcommand (str "user." name) (str "Note " name)
+                   (fn () (set! log (cons name log)))))
+               (map note '("a" "b" "gg" "dive"))
+               (defcommand "user.leave" "Put the screen away"
+                 (fn () (hide-panel 'screen)))
+               (defcommand "user.enter" "Put the screen up"
+                 (fn () (focus-panel 'screen)))
+               (bind 'screen "a" "user.a")
+               (bind 'screen "gg" "user.gg")
+               (bind 'screen "d" "user.dive")
+               (bind 'screen "q" "user.leave")
+               (bind 'screen.deep "a" "user.b")
+               (bind 'normal "<Space>s" "user.enter"))"#,
+        cx,
+    );
+    assert_eq!(lisp("(panel-shown? 'screen)", cx), "false");
+    cx.simulate_keystrokes("space s");
+    cx.run_until_parked();
+    assert!(shown("screen", cx));
+    // The keys are the panel's now, not the editor's.
+    cx.simulate_keystrokes("a x g g");
+    cx.run_until_parked();
+    assert_eq!(lisp("log", cx), r#"("gg" "a")"#);
+    assert_eq!(text(&ws, cx), "abcdef\n");
+    // A table named first is asked first; what it does not know, the
+    // next one may.
+    lisp("(set! deep true)", cx);
+    cx.simulate_keystrokes("a g g");
+    cx.run_until_parked();
+    assert_eq!(lisp("log", cx), r#"("gg" "b" "gg" "a")"#);
+    // Put away, it gives the keyboard back to the editor.
+    cx.simulate_keystrokes("q");
+    cx.run_until_parked();
+    assert!(!shown("screen", cx));
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "bcdef\n");
+
+    // A popup with an input: the keyboard goes to the input, what is
+    // typed is the program's to hear of, and enter hands it over.
+    lisp("(def typed nil) (def sent nil)", cx);
+    eval(
+        r#"(defpanel 'ask :at 'popup :width 300
+             (fn (panel)
+               (col :width 'full
+                 (input 'answer :placeholder "Say"
+                        :on-change (fn (text) (set! typed text))
+                        :on-submit (fn (text)
+                                     (set! sent text)
+                                     (hide-panel 'ask))))))"#,
+        cx,
+    );
+    eval(
+        r#"(do (defcommand "user.ask" "Ask" (fn () (focus-panel 'ask)))
+               (defcommand "user.up" "Note up" (fn () (set! log 'up)))
+               (bind 'ask "<Up>" "user.up")
+               (bind 'normal "<Space>a" "user.ask"))"#,
+        cx,
+    );
+    cx.simulate_keystrokes("space a");
+    cx.run_until_parked();
+    cx.simulate_input("hello");
+    cx.run_until_parked();
+    assert_eq!(lisp("typed", cx), "\"hello\"");
+    assert_eq!(text(&ws, cx), "bcdef\n");
+    // A key of the panel's table is the panel's even while typing.
+    cx.simulate_keystrokes("up");
+    cx.run_until_parked();
+    assert_eq!(lisp("log", cx), "up");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(lisp("sent", cx), "\"hello\"");
+    assert!(!shown("ask", cx));
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "cdef\n");
+
+    // A program reads what is in an input, and puts text there.
+    lisp(
+        r#"(do (defcommand "user.read" "Note what is typed"
+                 (fn () (set! log (input-text 'ask 'answer))))
+               (defcommand "user.fill" "Type for the user"
+                 (fn () (set-input 'ask 'answer "bye")))
+               (bind 'ask "<C-r>" "user.read")
+               (bind 'ask "<C-f>" "user.fill"))"#,
+        cx,
+    );
+    cx.simulate_keystrokes("space a");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-r");
+    cx.run_until_parked();
+    assert_eq!(lisp("log", cx), "\"hello\"");
+    // What a program puts there is not typing: it is not told of it.
+    cx.simulate_keystrokes("ctrl-f");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-r");
+    cx.run_until_parked();
+    assert_eq!(lisp("(list log typed)", cx), r#"("bye" "hello")"#);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(lisp("sent", cx), "\"bye\"");
+}
+
+#[gpui::test]
+fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        (
+            "config/init.lisp",
+            "(def seen nil)\n\
+             (load \"lib/hooks.lisp\")\n\
+             (load \"lib/broken.lisp\")\n",
+        ),
+        (
+            "config/lib/hooks.lisp",
+            "(add-hook 'opened (fn () (set! seen (cons 'opened seen))))\n\
+             (add-hook 'files-changed (fn () (set! seen (cons 'changed seen))))\n\
+             (load \"more.lisp\")\n",
+        ),
+        ("config/lib/more.lisp", "(def more 'loaded)\n"),
+        ("config/lib/broken.lisp", "\n(car 5)\n"),
+    ]);
+    let init = project.path("config/init.lisp");
+    let said = cx.update(|cx| {
+        crate::init(cx);
+        cx.global_mut::<crate::Settings>().lsp = false;
+        assert!(crate::script::run_init(&init, cx));
+        crate::script::take_message(cx)
+    });
+    // A file is looked for beside the one that loads it, and what goes
+    // wrong in it is said with its own name and line.
+    assert_eq!(
+        said,
+        Some(format!(
+            "{}:3:1: {}:2:1: expected a list, got 5",
+            init.display(),
+            project.path("config/lib/broken.lisp").display()
+        ))
+    );
+    let root = project.0.clone();
+    let files = vec![project.path("a.txt")];
+    let (ws, cx) = cx.add_window_view(|window, cx| Workspace::new(root, files, window, cx));
+    cx.run_until_parked();
+    assert_eq!(lisp("more", cx), "loaded");
+
+    // The window coming up is heard of, and so is a file being written.
+    assert_eq!(lisp("seen", cx), "(opened)");
+    cx.simulate_keystrokes("x : w enter");
+    cx.run_until_parked();
+    assert_eq!(lisp("seen", cx), "(changed opened)");
+    assert_eq!(text(&ws, cx), "\n");
+
+    // What is not a hook, or not a file, is said to be so.
+    let error = |source: &str, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| crate::script::eval(source, cx).unwrap_err().to_string())
+    };
+    assert_eq!(
+        error("(add-hook 'closed (fn () 1))", cx),
+        "1:1: closed is not a hook (opened files-changed locations)"
+    );
+    assert!(
+        error("(load \"/nowhere/at/all.lisp\")", cx).starts_with("1:1: /nowhere/at/all.lisp: ")
+    );
+
+    // Running the init file again forgets the hooks it set before.
+    cx.update(|_, cx| crate::script::run_init(&project.path("config/nope.lisp"), cx));
+    cx.simulate_keystrokes("i z escape : w enter");
+    cx.run_until_parked();
+    assert_eq!(lisp("seen", cx), "(changed opened)");
+}
+
+#[gpui::test]
+fn the_examples_load_together(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let init = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/init.lisp");
+    let said = cx.update(|cx| {
+        crate::init(cx);
+        cx.global_mut::<crate::Settings>().lsp = false;
+        assert!(crate::script::run_init(&init, cx));
+        crate::script::take_message(cx)
+    });
+    assert_eq!(said, None);
+    let root = project.0.clone();
+    let files = vec![project.path("a.txt")];
+    let (ws, cx) = cx.add_window_view(|window, cx| Workspace::new(root, files, window, cx));
+    cx.run_until_parked();
+    assert_eq!(ws.read_with(cx, |ws, _| ws.message.clone()), None);
+    let panels = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let panels = cx.global::<UserPanels>();
+            panels.names().map(String::from).collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(panels(cx), ["tree", "picker", "git", "git-prompt"]);
+
+    // The leader keys work from the tree as they do from an editor.
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("space f");
+    cx.run_until_parked();
+    assert!(shown("picker", cx));
+    cx.simulate_input("b.t");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    // Put away without choosing, the picker gives the keyboard back to
+    // the tree it was called from.
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("space f");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("picker", cx));
+    cx.simulate_keystrokes("g g enter");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+
+    // Run again, the init file leaves one of each panel, and they still
+    // have a project to show.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("workspace.reload_init");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default()),
+        format!("Ran {}", init.display())
+    );
+    assert_eq!(panels(cx), ["tree", "picker", "git", "git-prompt"]);
+    assert_eq!(lisp("(length tree-entries)", cx), "2");
+    cx.simulate_keystrokes("space g");
+    cx.run_until_parked();
+    assert!(shown("git", cx));
+    // This is no repository, and the screen says so rather than fail.
+    assert!(wait_for(cx, |cx| lisp("git-repo", cx) == "false"));
+    cx.simulate_keystrokes("q");
+    cx.run_until_parked();
+    assert!(!shown("git", cx));
+}
+
+#[gpui::test]
+fn stages_and_commits_from_the_git_screen(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\n")]);
     project.git_init();
     project.git(&["add", "-A"]);
@@ -827,49 +1262,93 @@ fn stages_and_commits_from_the_git_view(cx: &mut TestAppContext) {
     fs::write(project.path("a.txt"), "one\ntwo\n").unwrap();
     let repo = med_git::Repo::discover(&project.0).unwrap();
 
-    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let (ws, cx) = open_with(&[GIT], &project, &["a.txt"], cx);
+    // The letters git has for the file the keys act on.
+    let code = |cx: &mut VisualTestContext| {
+        lisp(
+            "(let ((file (git-current))) (str (get file :index) (get file :worktree)))",
+            cx,
+        )
+    };
+    // Nothing is going on, and nothing is waiting to be drawn.
+    let settled = |cx: &mut VisualTestContext| lisp("git-busy", cx) == "nil";
+
     cx.simulate_keystrokes("space g");
-    assert!(ws.read_with(cx, |ws, _| ws.show_git));
-    let git = ws.read_with(cx, |ws, _| ws.git.clone());
-    assert!(wait_for(cx, |cx| git
-        .read_with(cx, |git, _| git.selected_file().is_some())));
-    assert_eq!(
-        git.read_with(cx, |git, _| git.selected_file().unwrap().code()),
-        " M"
-    );
+    cx.run_until_parked();
+    assert!(shown("git", cx));
+    assert!(wait_for(cx, |cx| code(cx) == "\" M\""));
+    // The preview is the file's diff.
+    assert!(wait_for(cx, |cx| {
+        lisp("(member? \"+two\" git-preview)", cx) == "true"
+    }));
+    assert_eq!(lisp("git-preview-title", cx), "\"a.txt\"");
 
     // space stages the selected file.
     cx.simulate_keystrokes("space");
-    assert!(wait_for(cx, |cx| {
-        git.read_with(cx, |git, _| {
-            git.selected_file().is_some_and(|f| f.code() == "M ")
-        })
-    }));
+    assert!(wait_for(cx, |cx| code(cx) == "\"M \""));
     assert_eq!(repo.status().unwrap()[0].code(), "M ");
+    assert!(wait_for(cx, settled));
+    assert_eq!(lisp("git-message", cx), "(\"stage: done\" false)");
 
     // c opens the message prompt; enter commits.
     cx.simulate_keystrokes("c");
     cx.run_until_parked();
+    assert!(shown("git-prompt", cx));
     cx.simulate_input("second commit");
     cx.simulate_keystrokes("enter");
-    assert!(wait_for(cx, |cx| git
-        .read_with(cx, |git, _| git.selected_file().is_none())));
+    assert!(wait_for(cx, |cx| lisp("git-files", cx) == "nil"));
+    assert!(!shown("git-prompt", cx));
     let log = repo.log(None, 10).unwrap();
     assert_eq!(log.len(), 2);
     assert_eq!(log[0].subject, "second commit");
+    assert!(wait_for(cx, |cx| lisp("(length git-commits)", cx) == "2"));
+    assert!(wait_for(cx, settled));
 
-    // n in the branches panel creates and checks out a branch.
+    // n in the branches panel creates and checks out a branch. The keys
+    // are the screen's again once the prompt is gone.
     cx.simulate_keystrokes("3 n");
     cx.run_until_parked();
+    assert_eq!(lisp("git-section", cx), "branches");
     cx.simulate_input("feature");
     cx.simulate_keystrokes("enter");
-    assert!(wait_for(cx, |cx| git
-        .read_with(cx, |git, _| git.branch_name() == Some("feature"))));
+    assert!(wait_for(cx, |cx| {
+        lisp("(get git-head :name)", cx) == "\"feature\""
+    }));
     assert_eq!(repo.head().unwrap().name, "feature");
+    assert!(wait_for(cx, settled));
 
-    // q closes the view and returns to the editor.
+    // d asks before it deletes a branch, and an n leaves it be.
+    assert!(wait_for(cx, |cx| lisp("(length git-branches)", cx) == "2"));
+    let on_other = "(not (get (git-current) :current))";
+    if lisp(on_other, cx) == "false" {
+        let down = lisp("(= (git-index 'branches) 0)", cx) == "true";
+        cx.simulate_keystrokes(if down { "j" } else { "k" });
+        cx.run_until_parked();
+    }
+    assert_eq!(lisp(on_other, cx), "true");
+    cx.simulate_keystrokes("d");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(get git-question :text)", cx),
+        "\"Delete branch main?\""
+    );
+    // While it waits, the other keys do nothing.
+    cx.simulate_keystrokes("2 n");
+    cx.run_until_parked();
+    assert_eq!(
+        lisp("(list git-section git-question)", cx),
+        "(branches nil)"
+    );
+    assert_eq!(repo.branches().unwrap().len(), 2);
+    cx.simulate_keystrokes("d y");
+    assert!(wait_for(cx, |cx| lisp("(length git-branches)", cx) == "1"));
+    assert_eq!(repo.branches().unwrap().len(), 1);
+    assert!(wait_for(cx, settled));
+
+    // q closes the screen and returns to the editor.
     cx.simulate_keystrokes("q");
-    assert!(!ws.read_with(cx, |ws, _| ws.show_git));
+    cx.run_until_parked();
+    assert!(!shown("git", cx));
     cx.simulate_keystrokes("shift-g");
     assert_eq!(cursor(&ws, cx), (2, 1));
 }
@@ -920,7 +1399,7 @@ fn mouse_and_app_shortcuts(cx: &mut TestAppContext) {
 #[gpui::test]
 fn keys_and_commands_are_data(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one two\n"), ("b.txt", "b\n")]);
-    let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
+    let (ws, cx) = open_with(&[TREE], &project, &["a.txt", "b.txt"], cx);
     let message = |cx: &mut VisualTestContext| {
         ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
     };

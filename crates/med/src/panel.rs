@@ -1,50 +1,42 @@
 //! Panels drawn from a layout written in Lisp.
 //!
 //! A layout is a function. Each time the panel is drawn it is called with
-//! what the panel has to show, and gives back a tree of rows, columns,
-//! text and lists of rows, made with the functions defined here:
+//! what the editor knows about the panel, and gives back a tree of rows,
+//! columns, text, lists of rows and inputs, made with the functions
+//! defined here:
 //!
 //! ```lisp
-//! (set-layout 'tree
+//! (defpanel 'notes :at 'right
 //!   (fn (panel)
 //!     (col :width 'full :height 'full :bg 'sidebar
-//!       (text (get panel :root-name) :bold true)
-//!       (rows 'entries :grow true
-//!         (fn (entry)
-//!           (row :height 24 :on-click "tree.open"
-//!                :padding-left (* 14 (get entry :depth))
-//!             (text (get entry :name))))))))
+//!       (text "Notes" :bold true)
+//!       (input 'new :placeholder "Add a note…" :on-submit add-note)
+//!       (rows notes :grow true :reveal selected
+//!         (fn (note index)
+//!           (row :height 24 :on-click (fn () (set! selected index))
+//!                :bg (when (= index selected) 'list-active)
+//!             (text note)))))))
 //! ```
 //!
-//! What a panel shows and does stays with its view, the layout's [`Host`].
-//! The view hands out named values (`panel` and `entry` above) and is told
-//! of clicks. Because a layout is a program, what depends on those values
-//! is an ordinary expression: there is no notation for conditions or
-//! sizes beyond the language's own.
+//! What a panel shows is the program's own: values it keeps with `def` and
+//! changes with `set!`. Because a layout is a program, what depends on
+//! those values is an ordinary expression: there is no notation for
+//! conditions or sizes beyond the language's own.
 //!
-//! The built-in layouts are in `panels/`; `set-layout` in the init file
-//! replaces one.
+//! The panels themselves, where they go and what keys they take, are in
+//! `user_panel.rs`.
 
 use crate::script;
-use crate::user_panel::UserPanels;
+use crate::user_panel::{PanelView, UserPanels};
+use gpui::component::input::Input;
 use gpui::component::{ActiveTheme as _, Theme};
 use gpui::prelude::*;
 use gpui::*;
 use med_lisp::{Arity, Error, ErrorKind, Interp, Value};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-
-/// The panels that have a layout.
-const PANELS: &[&str] = &["tree"];
-
-/// Whether `panel` is one of the editor's own, rather than the user's.
-pub(crate) fn is_built_in(panel: &str) -> bool {
-    PANELS.contains(&panel)
-}
-
-/// The layouts the editor starts out with, as a program that sets them.
-pub(crate) const BUILT_IN: &str = include_str!("panels/tree.lisp");
 
 // ---- the tree a layout gives back --------------------------------------
 
@@ -62,20 +54,28 @@ enum Content {
     Col(Vec<Rc<Node>>),
     Text(SharedString),
     /// A list of which only the rows in view are drawn: `item` is called
-    /// for each to say how it looks.
+    /// for each value, and where in the list it is, to say how it looks.
     Rows {
-        source: RowSource,
+        values: Rc<[Value]>,
         item: Value,
+        /// The row to keep in view: scrolled to when it changes.
+        reveal: Option<usize>,
+        /// The row to have at the top: scrolled to when it changes.
+        top: Option<usize>,
     },
+    /// A line of text to type in.
+    Input(InputSpec),
 }
 
-/// Where the rows of a list come from.
+/// An input as a layout described it. The text in it is the panel's.
 #[derive(Clone)]
-enum RowSource {
-    /// One of the host's lists, by name. A row is the host's values for it.
-    Host(SharedString),
-    /// A list of the program's own. A row is one of its values.
-    Values(Rc<[Value]>),
+pub(crate) struct InputSpec {
+    pub name: SharedString,
+    pub placeholder: SharedString,
+    /// Called with the text whenever it changes.
+    pub on_change: Option<Value>,
+    /// Called with the text on enter.
+    pub on_submit: Option<Value>,
 }
 
 /// What a click on a node does.
@@ -93,8 +93,8 @@ pub enum Click {
 struct Style {
     width: Option<Size>,
     height: Option<Size>,
-    /// Take the room that is left over.
-    grow: bool,
+    /// Take the room that is left over: a share of it, next to others.
+    grow: Option<f32>,
     /// `false` keeps the box at its size when room runs out.
     shrink: Option<bool>,
     padding_x: Option<f32>,
@@ -113,14 +113,23 @@ struct Style {
     border_right: Option<f32>,
     border_bottom: Option<f32>,
     border_left: Option<f32>,
+    /// All four sides.
+    border: Option<f32>,
     border_color: Option<Color>,
+    rounded: Option<f32>,
+    /// The size of text.
+    size: Option<f32>,
     bold: bool,
+    /// In the fixed-width font.
+    mono: bool,
     nowrap: bool,
+    /// Cut off what does not fit.
+    clip: bool,
 }
 
 const STYLES: &str = "width height grow shrink padding-x padding-y padding-left padding-right \
-     gap align justify bg color border-top border-right border-bottom border-left border-color \
-     bold nowrap";
+     gap align justify bg color border border-top border-right border-bottom border-left \
+     border-color rounded size bold mono nowrap clip";
 
 /// Pixels, or `'full` for all of the parent.
 enum Size {
@@ -263,7 +272,15 @@ impl Style {
         match key {
             "width" => self.width = Some(size(key, value)?),
             "height" => self.height = Some(size(key, value)?),
-            "grow" => self.grow = value.is_truthy(),
+            "grow" => {
+                self.grow = match value {
+                    Value::Bool(grow) => grow.then_some(1.),
+                    share => match number(key, share)? {
+                        share if share > 0. => Some(share),
+                        _ => return Err(wrong(key, "true or a share", value)),
+                    },
+                }
+            }
             "shrink" => self.shrink = Some(value.is_truthy()),
             "padding-x" => self.padding_x = Some(number(key, value)?),
             "padding-y" => self.padding_y = Some(number(key, value)?),
@@ -289,13 +306,21 @@ impl Style {
             }
             "bg" => self.bg = Some(color(key, value)?),
             "color" => self.color = Some(color(key, value)?),
+            "border" => self.border = Some(number(key, value)?),
             "border-top" => self.border_top = Some(number(key, value)?),
             "border-right" => self.border_right = Some(number(key, value)?),
             "border-bottom" => self.border_bottom = Some(number(key, value)?),
             "border-left" => self.border_left = Some(number(key, value)?),
             "border-color" => self.border_color = Some(color(key, value)?),
+            "rounded" => self.rounded = Some(number(key, value)?),
+            "size" => match number(key, value)? {
+                size if size > 0. => self.size = Some(size),
+                _ => return Err(wrong(key, "a size", value)),
+            },
             "bold" => self.bold = value.is_truthy(),
+            "mono" => self.mono = value.is_truthy(),
             "nowrap" => self.nowrap = value.is_truthy(),
+            "clip" => self.clip = value.is_truthy(),
             _ => {
                 return Err(Error::new(
                     ErrorKind::Raised,
@@ -333,8 +358,13 @@ impl Node {
     }
 
     /// Take the `:name value` pairs `args` starts with for this node's
-    /// styles, and give back what follows them.
-    fn take_styles<'a>(&mut self, mut args: &'a [Value]) -> Result<&'a [Value], Error> {
+    /// styles, and give back what follows them. `option` is asked first
+    /// about each: it says whether the name was one of the node's own.
+    fn take_styles<'a>(
+        &mut self,
+        mut args: &'a [Value],
+        mut option: impl FnMut(&str, &Value) -> Result<bool, Error>,
+    ) -> Result<&'a [Value], Error> {
         while let [Value::Keyword(key), rest @ ..] = args {
             let key = key.name();
             let [value, rest @ ..] = rest else {
@@ -349,17 +379,50 @@ impl Node {
                 ("on-click", Value::Str(command)) => {
                     self.on_click = Some(Click::Command(SharedString::from(command.to_string())));
                 }
-                ("on-click", function @ (Value::Fn(_) | Value::Native(_))) => {
+                ("on-click", function) if is_function(function) => {
                     self.on_click = Some(Click::Function(function.clone()));
                 }
                 ("on-click", other) => {
                     return Err(wrong("on-click", "a command's name or a function", other));
                 }
-                (key, value) => self.style.set(key, value)?,
+                (key, value) => {
+                    if !option(key, value)? {
+                        self.style.set(key, value)?;
+                    }
+                }
             }
             args = rest;
         }
         Ok(args)
+    }
+
+    /// The inputs in this node and below, but not those in the rows of a
+    /// list: a row comes and goes as the list is scrolled.
+    pub(crate) fn inputs<'a>(&'a self, into: &mut Vec<&'a InputSpec>) {
+        match &self.content {
+            Content::Row(children) | Content::Col(children) => {
+                children.iter().for_each(|child| child.inputs(into));
+            }
+            Content::Input(spec) => into.push(spec),
+            Content::Text(_) | Content::Rows { .. } => {}
+        }
+    }
+}
+
+pub(crate) fn is_function(value: &Value) -> bool {
+    matches!(value, Value::Fn(_) | Value::Native(_))
+}
+
+/// No name is the node's own: all are styles.
+fn no_options(_: &str, _: &Value) -> Result<bool, Error> {
+    Ok(false)
+}
+
+/// Which row a `:reveal` or `:top` asks for.
+fn row_index(key: &str, value: &Value) -> Result<usize, Error> {
+    match value {
+        Value::Int(index) if *index >= 0 => Ok(*index as usize),
+        other => Err(wrong(key, "which row, from 0", other)),
     }
 }
 
@@ -397,7 +460,7 @@ fn children(args: &[Value], into: &mut Vec<Rc<Node>>) -> Result<(), Error> {
 
 fn container(args: &[Value], content: fn(Vec<Rc<Node>>) -> Content) -> Result<Value, Error> {
     let mut node = Node::new(Content::Text(SharedString::default()));
-    let rest = node.take_styles(args)?;
+    let rest = node.take_styles(args, no_options)?;
     let mut inside = Vec::new();
     children(rest, &mut inside)?;
     node.content = content(inside);
@@ -415,7 +478,7 @@ pub(crate) fn define_functions(interp: &mut Interp) {
     interp.define_native("text", Arity::at_least(1), |_, args| {
         let text = SharedString::from(args[0].display());
         let mut node = Node::new(Content::Text(text));
-        match node.take_styles(&args[1..])? {
+        match node.take_styles(&args[1..], no_options)? {
             [] => Ok(Value::foreign(node)),
             [extra, ..] => Err(Error::new(
                 ErrorKind::Raised,
@@ -424,55 +487,97 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         }
     });
 
+    // (input name styles...): a line to type in, named so that the panel
+    // can tell its inputs apart. Besides styles it takes `:placeholder`,
+    // and `:on-change` and `:on-submit`, functions of the text.
+    interp.define_native("input", Arity::at_least(1), |_, args| {
+        let Some(name) = word(&args[0]).filter(|name| !name.is_empty()) else {
+            return Err(wrong("input", "a name", &args[0]));
+        };
+        let mut spec = InputSpec {
+            name: name.into(),
+            placeholder: SharedString::default(),
+            on_change: None,
+            on_submit: None,
+        };
+        let mut node = Node::new(Content::Text(SharedString::default()));
+        let rest = node.take_styles(&args[1..], |key, value| {
+            match key {
+                "placeholder" => spec.placeholder = value.display().into(),
+                "on-change" | "on-submit" if !is_function(value) => {
+                    return Err(wrong(key, "a function of the text", value));
+                }
+                "on-change" => spec.on_change = Some(value.clone()),
+                "on-submit" => spec.on_submit = Some(value.clone()),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })?;
+        if let [extra, ..] = rest {
+            return Err(Error::new(
+                ErrorKind::Raised,
+                format!("input: expected a style, got {extra}"),
+            ));
+        }
+        node.content = Content::Input(spec);
+        Ok(Value::foreign(node))
+    });
+
     // (rows list styles... function): the function is called with one
-    // row and gives back how it looks. The list is one of the program's
-    // own, or the name of one of the host's. All rows must come out the
-    // same height, and the list needs a height of its own or `:grow`.
+    // of the list's values, and where it is in the list if it takes two
+    // arguments, and gives back how the row looks. All rows must come out
+    // the same height, and the list needs a height of its own or `:grow`.
+    // `:reveal` is the row to keep in view and `:top` the row to have at
+    // the top: the list scrolls there when either changes.
     interp.define_native("rows", Arity::at_least(2), |_, args| {
-        let source = match &args[0] {
-            list @ (Value::Nil | Value::Pair(_)) => RowSource::Values(list.to_vec()?.into()),
-            name => match word(name) {
-                Some(name) => RowSource::Host(SharedString::from(name)),
-                None => return Err(wrong("rows", "a list or the name of one", name)),
-            },
+        let values: Rc<[Value]> = match &args[0] {
+            list @ (Value::Nil | Value::Pair(_)) => list.to_vec()?.into(),
+            other => return Err(wrong("rows", "a list", other)),
         };
         let [middle @ .., item] = &args[1..] else {
             unreachable!("rows takes at least two arguments");
         };
-        if !matches!(item, Value::Fn(_) | Value::Native(_)) {
+        if !is_function(item) {
             return Err(wrong("rows", "a function for a row, last", item));
         }
-        let mut node = Node::new(Content::Rows {
-            source,
-            item: item.clone(),
-        });
-        match node.take_styles(middle)? {
-            [] => Ok(Value::foreign(node)),
-            [extra, ..] => Err(Error::new(
+        let (mut reveal, mut top) = (None, None);
+        let mut node = Node::new(Content::Text(SharedString::default()));
+        let rest = node.take_styles(middle, |key, value| {
+            match key {
+                "reveal" => reveal = Some(row_index(key, value)?),
+                "top" => top = Some(row_index(key, value)?),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })?;
+        if let [extra, ..] = rest {
+            return Err(Error::new(
                 ErrorKind::Raised,
                 format!("rows: expected a style, got {extra}"),
-            )),
+            ));
         }
+        node.content = Content::Rows {
+            values,
+            item: item.clone(),
+            reveal,
+            top,
+        };
+        Ok(Value::foreign(node))
     });
 
     // (set-layout panel function): from now on the panel is drawn by
     // calling the function with the panel's values.
     interp.define_native("set-layout", 2, |call, args| {
         let panel = word(&args[0]).unwrap_or_default();
-        if !matches!(args[1], Value::Fn(_) | Value::Native(_)) {
+        if !is_function(&args[1]) {
             return Err(wrong("set-layout", "a function", &args[1]));
         }
         let cx = script::app(call)?;
-        let mut panels: Vec<&str> = PANELS.to_vec();
-        panels.extend(cx.global::<UserPanels>().names());
+        let panels: Vec<&str> = cx.global::<UserPanels>().names().collect();
         if !panels.contains(&panel.as_str()) {
             return Err(Error::new(
                 ErrorKind::Raised,
-                format!(
-                    "{} is not a panel with a layout ({})",
-                    args[0],
-                    panels.join(" ")
-                ),
+                format!("{} is not a panel ({})", args[0], panels.join(" ")),
             ));
         }
         cx.global_mut::<Layouts>().set(&panel, args[1].clone());
@@ -481,7 +586,7 @@ pub(crate) fn define_functions(interp: &mut Interp) {
     });
 }
 
-// ---- what a host tells a layout ----------------------------------------
+// ---- what a layout is told -------------------------------------------
 
 /// Named values for a layout: what it gets with `(get panel :name)`.
 #[derive(Default)]
@@ -503,30 +608,6 @@ impl Vars {
     }
 }
 
-/// A view whose looks come from a layout.
-pub trait Host: 'static + Sized {
-    /// The values of the panel as a whole.
-    fn vars(&self, window: &Window, cx: &App) -> Vars;
-
-    /// How many rows the list `source` has.
-    fn row_count(&self, source: &str) -> usize;
-
-    /// The values of one row.
-    fn row_vars(&self, source: &str, index: usize, cx: &App) -> Vars;
-
-    /// Where the list `source` keeps its scroll position.
-    fn scroll_handle(&self, source: &str) -> Option<&UniformListScrollHandle>;
-
-    /// A node was clicked. `row` is the list and row the node is in.
-    fn click(
-        &mut self,
-        action: &Click,
-        row: Option<(&str, usize)>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    );
-}
-
 // ---- drawing -----------------------------------------------------------
 
 impl Style {
@@ -545,8 +626,8 @@ impl Style {
             Some(Size::Full) => el = el.h_full(),
             None => {}
         }
-        if self.grow {
-            el = el.flex_1().min_w_0().min_h_0();
+        if let Some(share) = self.grow {
+            el = el.flex_1().flex_grow(share).min_w_0().min_h_0();
         }
         if self.shrink == Some(false) {
             el = el.flex_shrink_0();
@@ -585,6 +666,9 @@ impl Style {
         if let Some(text) = self.color {
             el = el.text_color(color(text));
         }
+        if let Some(width) = self.border {
+            el = el.border(px(width));
+        }
         if let Some(width) = self.border_top {
             el = el.border_t(px(width));
         }
@@ -600,40 +684,56 @@ impl Style {
         if let Some(border) = self.border_color {
             el = el.border_color(color(border));
         }
+        if let Some(radius) = self.rounded {
+            el = el.rounded(px(radius));
+        }
+        if let Some(size) = self.size {
+            el = el.text_size(px(size));
+        }
         if self.bold {
             el = el.font_weight(FontWeight::SEMIBOLD);
         }
+        if self.mono {
+            el = el.font_family(theme.mono_font_family.clone());
+        }
         if self.nowrap {
             el = el.whitespace_nowrap();
+        }
+        if self.clip {
+            el = el.overflow_hidden();
         }
         el
     }
 }
 
-/// Where in a panel a node is being built.
-#[derive(Clone, Copy)]
-struct Place<'a> {
-    /// The list and row the node is in.
-    row: Option<(&'a SharedString, usize)>,
-    /// Tells the node from its siblings.
-    key: usize,
-    /// The node is a whole row of a list.
-    is_row: bool,
+/// Numbers that tell the nodes of one panel, or of one row, apart.
+#[derive(Default)]
+struct Draw {
+    /// The next id for a node that is clicked.
+    ids: Cell<usize>,
+    /// The next list of the panel: which scroll position is its.
+    lists: Cell<usize>,
+    /// The nodes are in a row of a list.
+    in_row: bool,
+}
+
+fn next(counter: &Cell<usize>) -> usize {
+    counter.replace(counter.get() + 1)
 }
 
 /// Call a layout's function and take what it gives back for a node.
-fn describe(function: &Value, values: Value, cx: &mut App) -> Result<Rc<Node>, Error> {
-    let value = script::call_to_draw(function, &[values], cx)?;
+fn describe(function: &Value, args: &[Value], cx: &mut App) -> Result<Rc<Node>, Error> {
+    let value = script::call_to_draw(function, args, cx)?;
     node_of(&value).ok_or_else(|| {
         Error::new(
             ErrorKind::Type,
-            format!("a layout gives back a row, col, text or rows, not {value}"),
+            format!("a layout gives back a row, col, text, rows or input, not {value}"),
         )
     })
 }
 
 /// What is drawn in place of a layout that failed: the reason.
-fn problem(error: &Error, cx: &App) -> AnyElement {
+pub(crate) fn problem(error: &Error, cx: &App) -> AnyElement {
     div()
         .p_2()
         .text_color(cx.theme().danger)
@@ -641,32 +741,40 @@ fn problem(error: &Error, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Draw the panel `panel` for `host`. Call it from the host's `render`.
-pub fn render<H: Host>(panel: &str, host: &H, window: &Window, cx: &mut Context<H>) -> AnyElement {
-    let layout = cx.global::<Layouts>().layouts.get(panel).cloned();
-    let node = match layout {
-        Some(function) => describe(&function, host.vars(window, cx).into_list(), cx),
+/// What the layout of `panel` makes of `vars`.
+pub(crate) fn layout(panel: &str, vars: Vars, cx: &mut App) -> Result<Rc<Node>, Error> {
+    match cx.global::<Layouts>().layouts.get(panel).cloned() {
+        Some(function) => describe(&function, &[vars.into_list()], cx),
         None => Err(Error::new(
             ErrorKind::Raised,
             format!("the panel {panel} has no layout"),
         )),
-    };
-    let place = Place {
-        row: None,
-        key: 0,
-        is_row: false,
-    };
-    match node {
-        Ok(node) => build(&node, host, place, cx),
-        Err(error) => problem(&error, cx),
     }
 }
 
-fn build<H: Host>(node: &Node, host: &H, place: Place, cx: &Context<H>) -> AnyElement {
+/// The elements of a panel, from what its layout gave back.
+pub(crate) fn draw(node: &Node, view: &PanelView, cx: &Context<PanelView>) -> AnyElement {
+    build(node, view, &Draw::default(), None, cx)
+}
+
+/// `row` is which row of a list the node is the whole of.
+fn build(
+    node: &Node,
+    view: &PanelView,
+    draw: &Draw,
+    row: Option<usize>,
+    cx: &Context<PanelView>,
+) -> AnyElement {
     let theme = cx.theme();
     let mut el = match &node.content {
-        Content::Rows { source, item } => {
-            return build_rows(node, source, item, host, place, cx);
+        Content::Rows { .. } => return build_rows(node, view, draw, cx),
+        Content::Input(spec) => {
+            let el = node.style.apply(div(), theme);
+            return match view.input(&spec.name) {
+                Some(state) => el.child(Input::new(state).appearance(false)),
+                None => el.child("an input cannot be in a row of a list"),
+            }
+            .into_any_element();
         }
         Content::Row(_) => div().flex(),
         Content::Col(_) => div().flex().flex_col(),
@@ -677,81 +785,70 @@ fn build<H: Host>(node: &Node, host: &H, place: Place, cx: &Context<H>) -> AnyEl
         el = el.hover(|style| hover.apply(style, theme));
     }
     if let Content::Row(children) | Content::Col(children) = &node.content {
-        el = el.children(children.iter().enumerate().map(|(key, child)| {
-            let place = Place {
-                row: place.row,
-                key,
-                is_row: false,
-            };
-            build(child, host, place, cx)
-        }));
+        el = el.children(
+            children
+                .iter()
+                .map(|child| build(child, view, draw, None, cx)),
+        );
     }
 
     // Only a node that is clicked needs an id, and a row: without one, the
     // ids inside two rows would be the same.
-    if node.on_click.is_none() && !place.is_row {
-        return el.into_any_element();
-    }
-    let mut el = el.id(place.key);
+    let id = match (row, &node.on_click) {
+        (Some(index), _) => index,
+        (None, Some(_)) => next(&draw.ids),
+        (None, None) => return el.into_any_element(),
+    };
+    let mut el = el.id(id);
     if let Some(action) = node.on_click.clone() {
-        let row = place.row.map(|(source, index)| (source.clone(), index));
-        el = el.on_click(cx.listener(move |host, _: &ClickEvent, window, cx| {
-            let row = row
-                .as_ref()
-                .map(|(source, index)| (source.as_ref(), *index));
-            host.click(&action, row, window, cx);
+        el = el.on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+            view.click(&action, window, cx);
         }));
     }
     el.into_any_element()
 }
 
-fn build_rows<H: Host>(
-    node: &Node,
-    source: &RowSource,
-    item: &Value,
-    host: &H,
-    place: Place,
-    cx: &Context<H>,
-) -> AnyElement {
-    let (id, count): (ElementId, usize) = match source {
-        RowSource::Host(name) => (name.clone().into(), host.row_count(name)),
-        RowSource::Values(values) => (("rows", place.key).into(), values.len()),
+fn build_rows(node: &Node, view: &PanelView, draw: &Draw, cx: &Context<PanelView>) -> AnyElement {
+    let Content::Rows {
+        values,
+        item,
+        reveal,
+        top,
+    } = &node.content
+    else {
+        unreachable!("build_rows is for lists");
     };
+    // With the place in the list, if the function has a name for it.
+    let with_index = item.arity().is_some_and(|arity| !arity.allows(1));
     let rows = cx.processor({
-        let (source, item) = (source.clone(), item.clone());
-        move |host: &mut H, range: Range<usize>, _, cx| {
+        let (values, item) = (values.clone(), item.clone());
+        move |view: &mut PanelView, range: Range<usize>, _, cx| {
             range
                 .map(|index| {
-                    // What the row's function is called with, and the
-                    // host's list the row is in, if it is in one.
-                    let (values, row) = match &source {
-                        RowSource::Host(name) => {
-                            let values = host.row_vars(name, index, cx).into_list();
-                            (values, Some((name, index)))
-                        }
-                        RowSource::Values(values) => {
-                            (values.get(index).cloned().unwrap_or(Value::Nil), None)
-                        }
+                    let value = values.get(index).cloned().unwrap_or(Value::Nil);
+                    let args = [value, Value::Int(index as i64)];
+                    let args = if with_index { &args[..] } else { &args[..1] };
+                    let draw = Draw {
+                        in_row: true,
+                        ..Draw::default()
                     };
-                    let place = Place {
-                        row,
-                        key: index,
-                        is_row: true,
-                    };
-                    match describe(&item, values, cx) {
-                        Ok(node) => build(&node, host, place, cx),
+                    match describe(&item, args, cx) {
+                        Ok(node) => build(&node, view, &draw, Some(index), cx),
                         Err(error) => problem(&error, cx),
                     }
                 })
                 .collect::<Vec<_>>()
         }
     });
-    let mut list = uniform_list(id, count, rows);
-    if let RowSource::Host(name) = source
-        && let Some(handle) = host.scroll_handle(name)
-    {
-        list = list.track_scroll(handle);
-    }
+    // A list in a row of another is told apart by the row's own numbers,
+    // and keeps no scroll position: its row may be gone the next time.
+    let list = if draw.in_row {
+        uniform_list(("rows-in-row", next(&draw.ids)), values.len(), rows)
+    } else {
+        let index = next(&draw.lists);
+        let handle = view.list_scroll(index, *reveal, *top);
+        uniform_list(("rows", index), values.len(), rows).track_scroll(&handle)
+    };
     node.style.apply(list, cx.theme()).into_any_element()
 }
 
@@ -771,13 +868,13 @@ impl Layouts {
         self.layouts.insert(panel.to_string(), function);
     }
 
-    /// Forget the layout of every panel that is not the editor's own.
-    pub(crate) fn forget_users(&mut self) {
-        self.layouts.retain(|panel, _| is_built_in(panel));
+    /// Forget every layout, as before the init file is run again.
+    pub(crate) fn clear(&mut self) {
+        self.layouts.clear();
     }
 }
 
-/// Start out with no layouts: the interpreter sets the built-in ones.
+/// Start out with no layouts: programs define the panels.
 pub fn init(cx: &mut App) {
     cx.set_global(Layouts::default());
 }
@@ -785,7 +882,7 @@ pub fn init(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that would bring in GPUI's `test` attribute.
-    use super::{Click, Color, Content, Node, RowSource, Size, define_functions};
+    use super::{Click, Color, Content, Node, Size, define_functions};
     use med_lisp::Interp;
     use std::rc::Rc;
 
@@ -822,11 +919,6 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_layouts_are_programs() {
-        assert!(med_lisp::read(super::BUILT_IN).is_ok());
-    }
-
-    #[test]
     fn functions_describe_a_tree() {
         let row = node(
             r##"(row :height 24 :width 'full :grow true :bg "#1e1e2e" :color 'muted
@@ -838,7 +930,7 @@ mod tests {
         assert!(matches!(row.content, Content::Row(_)));
         assert!(matches!(row.style.height, Some(Size::Pixels(24.))));
         assert!(matches!(row.style.width, Some(Size::Full)));
-        assert!(row.style.grow);
+        assert_eq!(row.style.grow, Some(1.));
         assert!(matches!(row.style.bg, Some(Color::Fixed(_))));
         assert!(matches!(row.style.color, Some(Color::Theme(_))));
         assert!(row.hover.as_ref().is_some_and(|hover| hover.bg.is_some()));
@@ -848,25 +940,35 @@ mod tests {
         assert_eq!(texts, ["a", "plain", "12"]);
         assert!(children[0].style.bold && !children[1].style.bold);
 
-        let col = node("(col (rows 'entries :grow true (fn (entry) (text entry))))");
+        let col = node("(col (rows '(1 2 3) :height 90 :reveal 2 :top 0 (fn (n index) (text n))))");
         let [list] = inside(&col) else {
             panic!("expected one child");
         };
         assert!(matches!(
             &list.content,
-            Content::Rows { source: RowSource::Host(name), .. } if name == "entries"
-        ));
-        assert!(list.style.grow);
-        // A list of the program's own does as well as the name of one.
-        let col = node("(col (rows '(1 2 3) :height 90 (fn (n) (text n))))");
-        let [list] = inside(&col) else {
-            panic!("expected one child");
-        };
-        assert!(matches!(
-            &list.content,
-            Content::Rows { source: RowSource::Values(values), .. } if values.len() == 3
+            Content::Rows { values, reveal: Some(2), top: Some(0), .. } if values.len() == 3
         ));
         assert!(matches!(list.style.height, Some(Size::Pixels(90.))));
+        let list = node("(rows nil :grow 3 (fn (n) (text n)))");
+        assert_eq!(list.style.grow, Some(3.));
+
+        let input = node(
+            "(input 'query :grow true :placeholder \"Find…\"
+                    :on-change (fn (text) text) :on-submit (fn (text) text))",
+        );
+        let Content::Input(spec) = &input.content else {
+            panic!("expected an input");
+        };
+        assert_eq!(spec.name.as_ref(), "query");
+        assert_eq!(spec.placeholder.as_ref(), "Find…");
+        assert!(spec.on_change.is_some() && spec.on_submit.is_some());
+        assert_eq!(input.style.grow, Some(1.));
+        // The inputs of a panel are found wherever they are in it.
+        let col = node("(col (row (input 'a)) (input 'b) (text \"c\"))");
+        let mut inputs = Vec::new();
+        col.inputs(&mut inputs);
+        let names: Vec<&str> = inputs.iter().map(|spec| spec.name.as_ref()).collect();
+        assert_eq!(names, ["a", "b"]);
 
         let click = node("(text \"x\" :on-click (fn () 1))");
         assert!(matches!(click.on_click, Some(Click::Function(_))));
@@ -927,12 +1029,25 @@ mod tests {
             "1:1: text: expected a style, got 5"
         );
         assert_eq!(
-            error("(rows 'entries 5)"),
+            error("(rows nil 5)"),
             "1:1: rows: expected a function for a row, last, got 5"
         );
         assert_eq!(
             error("(rows 5 (fn (row) (text row)))"),
-            "1:1: rows: expected a list or the name of one, got 5"
+            "1:1: rows: expected a list, got 5"
+        );
+        assert_eq!(
+            error("(rows nil :reveal -1 (fn (row) (text row)))"),
+            "1:1: reveal: expected which row, from 0, got -1"
+        );
+        assert_eq!(
+            error("(input 'query :on-change 5)"),
+            "1:1: on-change: expected a function of the text, got 5"
+        );
+        assert_eq!(error("(input 5)"), "1:1: input: expected a name, got 5");
+        assert_eq!(
+            error("(row :grow 0)"),
+            "1:1: grow: expected true or a share, got 0"
         );
     }
 }

@@ -1,9 +1,9 @@
 //! Key tables for the views that are not editors.
 //!
 //! An editor's keys go through the vim engine and its
-//! [`Keymap`](med_vim::Keymap). The file tree and the git screen have no
-//! modes or operators, just key sequences bound to commands, kept here by
-//! context name (`tree`, `git`, `git.files`…).
+//! [`Keymap`](med_vim::Keymap). A panel has no modes or operators, just
+//! key sequences bound to commands, kept here by context name: the
+//! panel's own, or one it says it is in (`git`, `git.files`…).
 
 use crate::editor::translate_key;
 use gpui::{App, Global, Keystroke, SharedString};
@@ -39,13 +39,6 @@ impl PanelKeymaps {
     pub fn command(&self, context: &str, keys: &str) -> Option<&str> {
         let command = self.contexts.get(context)?.get(&parse_keys(keys))?;
         Some(command.as_ref())
-    }
-
-    /// The contexts that have bindings, sorted.
-    pub fn contexts(&self) -> Vec<&str> {
-        let mut contexts: Vec<&str> = self.contexts.keys().map(String::as_str).collect();
-        contexts.sort_unstable();
-        contexts
     }
 
     /// The first of `contexts` that has anything to say about `keys`

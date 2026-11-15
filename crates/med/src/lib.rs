@@ -3,13 +3,12 @@
 pub mod commands;
 pub mod defaults;
 pub mod editor;
-pub mod file_tree;
-pub mod git_view;
+pub mod host;
 pub mod keymap;
 pub mod lsp;
 pub mod panel;
-pub mod picker;
 pub mod script;
+pub mod search;
 pub mod syntax;
 #[cfg(test)]
 mod tests;
@@ -84,8 +83,8 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
-/// The globals views read: vim state, commands, key tables, panel layouts,
-/// the script interpreter. Needs no window system, so headless code can
+/// The globals views read: vim state, commands, key tables, panels, the
+/// script interpreter. Needs no window system, so headless code can
 /// stop here.
 pub fn init_globals(cx: &mut App) {
     cx.set_global(VimGlobal(med_vim::Shared::default()));
@@ -101,7 +100,6 @@ pub fn init(cx: &mut App) {
     gpui::init(cx);
     // gpui-component starts out light; follow the system instead.
     gpui::component::Theme::sync_system_appearance(None, cx);
-    picker::init(cx);
     cx.set_global(Settings {
         font_family: std::env::var("MED_FONT").ok().map(SharedString::from),
         font_size: std::env::var("MED_FONT_SIZE")

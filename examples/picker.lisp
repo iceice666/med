@@ -1,0 +1,170 @@
+; The picker: a popup to find a file by a few letters of its name, to
+; search the project, or to choose among the references to a name.
+;
+;   (load "picker.lisp")
+;
+; space f, or ⌘P, finds a file; space /, or ⌘⇧F, searches the project
+; (a regular expression, if what is typed is one). In the picker: typing
+; narrows the list, ctrl-n and ctrl-p (or the arrows) move, enter opens,
+; escape puts it away. `gr` on a name lists its references here.
+
+(def picker-mode 'files)   ; what is picked from: 'files, 'grep or 'list
+(def picker-query "")      ; what has been typed
+(def picker-files nil)     ; 'files: every file, as a path from the root
+(def picker-places nil)    ; 'list: the places to choose among
+(def picker-items nil)     ; the rows, each (:label :detail :path :line :col)
+(def picker-selected 0)    ; which row
+(def picker-busy false)    ; still looking
+
+(def picker-limit 500)     ; no more rows than this
+(def picker-row 26)        ; how tall a row is
+(def picker-rows 16)       ; and how many are on show at once
+
+; ---- what is on show
+
+(defn picker-show (items)
+  (set! picker-items items)
+  (set! picker-selected 0)
+  (set! picker-busy false))
+
+; A file: its name, then where it is.
+(defn picker-file-item (file)
+  (list :label (path-name file)
+        :detail (or (path-parent file) "")
+        :path (path-join (project-root) file)))
+
+; A line of a file, as `grep` and the `locations` hook give them: where
+; it is, then what it says.
+(defn picker-place-item (place)
+  (list :label (get place :text)
+        :detail (str (get place :file) ":" (get place :line))
+        :path (get place :path)
+        :line (get place :line)
+        :col (get place :col)))
+
+(defn picker-matches? (item needle)
+  (or (contains? (lowercase (get item :label)) needle)
+      (contains? (lowercase (get item :detail)) needle)))
+
+; Make the rows what the query asks for.
+(defn picker-update ()
+  (let ((query picker-query))
+    (cond
+      ((= picker-mode 'files)
+       (picker-show (map picker-file-item
+                         (fuzzy query picker-files picker-limit))))
+      ((= picker-mode 'list)
+       (picker-show (filter (fn (item) (picker-matches? item (lowercase query)))
+                            (map picker-place-item picker-places))))
+      ((< (length query) 2)
+       (picker-show nil))
+      (true
+       (set! picker-busy true)
+       (grep query picker-limit
+         (fn (places)
+           ; Unless more was typed while this was being looked for.
+           (when (= query picker-query)
+             (picker-show (map picker-place-item places)))))))))
+
+(defn picker-open (mode)
+  (set! picker-mode mode)
+  (set! picker-query "")
+  (set-input 'picker 'query "")
+  (picker-update)
+  (focus-panel 'picker)
+  ; The files may not be the ones there were last time.
+  (when (= mode 'files)
+    (set! picker-busy true)
+    (walk-files
+      (fn (files)
+        (set! picker-files files)
+        (when (= picker-mode 'files) (picker-update))))))
+
+(defn picker-move (delta)
+  (let ((count (length picker-items)))
+    (when (> count 0)
+      (set! picker-selected (mod (+ picker-selected delta) count)))))
+
+; Go to what is selected.
+(defn picker-confirm ()
+  (let ((item (nth picker-selected picker-items)))
+    (when item
+      (hide-panel 'picker)
+      (open-file (get item :path) (get item :line) (get item :col)))))
+
+; ---- how it looks
+
+(defn picker-detail (item & styles)
+  (apply text (append (list (get item :detail) :size 11 :color 'muted-foreground
+                            :clip true)
+                      styles)))
+
+(defpanel 'picker :at 'popup :width 760
+  (fn (panel)
+    (col :width 'full
+      (row :align 'center :gap 8 :padding-x 8 :padding-y 4
+           :border-bottom 1 :border-color 'border
+        (input 'query :grow true
+               :placeholder (cond ((= picker-mode 'files) "Find file…")
+                                  ((= picker-mode 'grep) "Search in project…")
+                                  (true "Filter…"))
+               :on-change (fn (text)
+                            (set! picker-query text)
+                            (picker-update))
+               :on-submit (fn (text) (picker-confirm)))
+        (text (if picker-busy
+                  "searching…"
+                  (str (length picker-items) " results"))
+              :size 11 :color 'muted-foreground :shrink false))
+      (rows picker-items :reveal picker-selected
+            :height (* picker-row (min picker-rows (length picker-items)))
+        (fn (item index)
+          (row :height picker-row :width 'full :align 'center
+               :gap 12 :padding-x 12 :nowrap true
+               :bg (when (= index picker-selected) 'list-active)
+               :hover (list :bg 'list-hover)
+               :on-click (fn ()
+                           (set! picker-selected index)
+                           (picker-confirm))
+            (if (= picker-mode 'files)
+                ; The name first, then where it is.
+                (list (text (get item :label) :shrink false)
+                      (picker-detail item :grow true))
+                ; Where it is first, then the line.
+                (list (picker-detail item :width 260 :shrink false)
+                      (text (get item :label) :grow true :clip true)))))))))
+
+; ---- what it does
+
+(defcommand "picker.files" "Find a file by name"
+  (fn () (picker-open 'files)))
+(defcommand "picker.search" "Search the project"
+  (fn () (picker-open 'grep)))
+(defcommand "picker.down" "Select the next row" (fn () (picker-move 1)))
+(defcommand "picker.up" "Select the previous row" (fn () (picker-move -1)))
+(defcommand "picker.confirm" "Go to what is selected" picker-confirm)
+(defcommand "picker.close" "Put the picker away"
+  (fn () (hide-panel 'picker)))
+
+; The references to a name, when there are several to choose among.
+(add-hook 'locations
+  (fn (places)
+    (set! picker-places places)
+    (picker-open 'list)))
+
+; ---- its keys
+
+; Only keys that are not text: the rest is typed into the query.
+(bind 'picker "<C-n>" "picker.down")
+(bind 'picker "<C-j>" "picker.down")
+(bind 'picker "<Down>" "picker.down")
+(bind 'picker "<C-p>" "picker.up")
+(bind 'picker "<C-k>" "picker.up")
+(bind 'picker "<Up>" "picker.up")
+(bind 'picker "<C-c>" "picker.close")
+
+(bind 'normal "<Space>f" "picker.files")
+(bind 'normal "<Space><Space>" "picker.files")
+(bind 'normal "<Space>/" "picker.search")
+(bind 'app "cmd-p" "picker.files")
+(bind 'app "cmd-shift-f" "picker.search")

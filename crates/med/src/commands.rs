@@ -6,8 +6,6 @@
 //! bound to one of those never leaves the engine.
 
 use crate::editor::Editor;
-use crate::file_tree::FileTree;
-use crate::git_view::GitView;
 use crate::workspace::Workspace;
 use gpui::{Action, App, Context, Global, SharedString, Window};
 use std::collections::HashMap;
@@ -29,9 +27,7 @@ pub enum Handler {
     Workspace(fn(&mut Workspace, &Args, &mut Window, &mut Context<Workspace>)),
     /// Runs on the active editor.
     Editor(fn(&mut Editor, &Args, &mut Context<Editor>)),
-    FileTree(fn(&mut FileTree, &Args, &mut Context<FileTree>)),
-    Git(fn(&mut GitView, &Args, &mut Window, &mut Context<GitView>)),
-    /// A function of the user's, defined with `defcommand`. The workspace
+    /// A function of a program's, defined with `defcommand`. The workspace
     /// hands it to the interpreter.
     Script(med_lisp::Value),
 }
@@ -113,7 +109,5 @@ pub fn init(cx: &mut App) {
     let mut commands = Commands::default();
     crate::workspace::register(&mut commands);
     crate::editor::register(&mut commands);
-    crate::file_tree::register(&mut commands);
-    crate::git_view::register(&mut commands);
     cx.set_global(commands);
 }

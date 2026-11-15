@@ -1,12 +1,10 @@
-//! The window's root view: tabs of editors, the status bar, and the ex
-//! commands that act on them.
+//! The window's root view: tabs of editors, the status bar, the panels
+//! programs define, and the ex commands that act on them.
 
 use crate::commands::{Args, Commands, Handler, RunCommand};
 use crate::editor::{Editor, EditorEvent};
-use crate::file_tree::{FileTree, FileTreeEvent};
-use crate::git_view::{GitEvent, GitView};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
-use crate::picker::{Item, Picker, PickerEvent, PickerMode};
+use crate::script;
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::*;
@@ -22,14 +20,11 @@ pub struct Workspace {
     lsp: Entity<LspStore>,
     pub(crate) tabs: Vec<Entity<Editor>>,
     pub(crate) active: usize,
-    pub(crate) file_tree: Entity<FileTree>,
-    show_tree: bool,
-    pub(crate) git: Entity<GitView>,
-    pub(crate) show_git: bool,
-    pub(crate) picker: Option<Entity<Picker>>,
-    _picker_subscription: Option<Subscription>,
-    /// The views of the user's panels, made as each is first drawn.
+    /// The views of the panels, made as each is first drawn or asked for.
     user_panels: HashMap<SharedString, Entity<PanelView>>,
+    /// The branch the project is on, for the status bar.
+    branch: Option<SharedString>,
+    _branch_task: Option<Task<()>>,
     /// One-line feedback shown in the status bar until the next key.
     pub(crate) message: Option<SharedString>,
     /// Places `ctrl-o` / `ctrl-i` walk through.
@@ -53,8 +48,6 @@ impl Workspace {
     ) -> Self {
         let lsp_enabled = cx.global::<crate::Settings>().lsp;
         let lsp = cx.new(|_| LspStore::new(root.clone(), lsp_enabled));
-        let file_tree = cx.new(|cx| FileTree::new(root.clone(), cx));
-        let git = cx.new(|cx| GitView::new(root.clone(), cx));
 
         // Closing the window must not silently drop unsaved work.
         let weak = cx.weak_entity();
@@ -64,8 +57,6 @@ impl Workspace {
         });
 
         let subscriptions = vec![
-            cx.subscribe_in(&file_tree, window, Self::on_file_tree_event),
-            cx.subscribe_in(&git, window, Self::on_git_event),
             cx.subscribe(&lsp, |_, _, event: &LspEvent, cx| {
                 if matches!(event, LspEvent::Status) {
                     cx.notify();
@@ -77,7 +68,7 @@ impl Workspace {
             // Pick up files changed behind our back when coming to the front.
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
-                    this.sync_with_disk(cx);
+                    this.sync_with_disk(window, cx);
                 }
             }),
         ];
@@ -87,13 +78,9 @@ impl Workspace {
             lsp,
             tabs: Vec::new(),
             active: 0,
-            file_tree,
-            show_tree: true,
-            git,
-            show_git: false,
-            picker: None,
-            _picker_subscription: None,
             user_panels: HashMap::new(),
+            branch: None,
+            _branch_task: None,
             message: None,
             jumps: Vec::new(),
             jump_index: 0,
@@ -108,7 +95,10 @@ impl Workspace {
             this.activate(0, window, cx);
         }
         // What the init file had to say, or what was wrong with it.
-        this.message = crate::script::take_message(cx).map(SharedString::from);
+        this.message = script::take_message(cx).map(SharedString::from);
+        this.read_branch(cx);
+        // The panels have a project to show.
+        script::run_hook("opened", Vec::new(), window, cx);
         this
     }
 
@@ -132,15 +122,38 @@ impl Workspace {
     }
 
     /// Files may have changed underneath us (another program, a git
-    /// command): reload clean buffers and the tree.
-    fn sync_with_disk(&mut self, cx: &mut Context<Self>) {
+    /// command): reload clean buffers, and tell the panels.
+    fn sync_with_disk(&mut self, window: &Window, cx: &mut Context<Self>) {
         for tab in self.tabs.clone() {
             tab.update(cx, |editor, cx| editor.reload_if_changed(cx));
         }
-        self.file_tree.update(cx, |tree, cx| tree.refresh(cx));
+        self.files_changed(window, cx);
     }
 
-    fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// What is on disk is no longer what it was.
+    fn files_changed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.read_branch(cx);
+        script::run_hook("files-changed", Vec::new(), window, cx);
+    }
+
+    /// Ask git which branch the project is on.
+    fn read_branch(&mut self, cx: &mut Context<Self>) {
+        let root = self.root.clone();
+        let branch = cx.background_spawn(async move {
+            let head = med_git::Repo::discover(&root)?.head().ok()?;
+            Some(head.name).filter(|name| !name.is_empty())
+        });
+        self._branch_task = Some(cx.spawn(async move |this, cx| {
+            let branch = branch.await.map(SharedString::from);
+            this.update(cx, |this, cx| {
+                this.branch = branch;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_editor() {
             Some(editor) => editor.read(cx).focus_handle(cx).focus(window, cx),
             None => self.focus_handle.focus(window, cx),
@@ -271,7 +284,7 @@ impl Workspace {
         }
     }
 
-    fn save_active(&mut self, cx: &mut Context<Self>) -> bool {
+    fn save_active(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
         let Some(editor) = self.active_editor().cloned() else {
             return false;
         };
@@ -285,7 +298,7 @@ impl Workspace {
                     .unwrap_or_default();
                 let lines = editor.buf.line_count();
                 self.set_message(format!("\"{name}\" {lines}L written"), cx);
-                self.file_tree.update(cx, |tree, cx| tree.refresh(cx));
+                self.files_changed(window, cx);
                 true
             }
             Err(error) => {
@@ -359,27 +372,26 @@ impl Workspace {
                 self.open_location(path, *position, window, cx)
             }
             EditorEvent::References(locations) => {
-                let items = locations
+                let places: Vec<(PathBuf, lsp::Position)> = locations
                     .iter()
                     .filter_map(|location| {
-                        let path = uri_to_path(&location.uri)?;
-                        let start = location.range.start;
-                        // Show the referencing line when the file is at hand.
-                        let line = std::fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|text| {
-                                text.lines().nth(start.line as usize).map(str::to_string)
-                            })
-                            .unwrap_or_default();
-                        Some(Item {
-                            detail: format!("{}:{}", self.relative(&path), start.line + 1).into(),
-                            label: line.trim().to_string().into(),
-                            position: Some((start.line as usize, start.character as usize)),
-                            path,
-                        })
+                        Some((uri_to_path(&location.uri)?, location.range.start))
                     })
                     .collect();
-                self.open_picker(PickerMode::List(items), window, cx);
+                // The line of each is shown, when the file is at hand.
+                let list = med_lisp::Value::list(places.iter().map(|(path, start)| {
+                    let (line, column) = (start.line as usize, start.character as usize);
+                    crate::host::location(&self.root, path.clone(), line, column)
+                }));
+                // A program lists them to choose from. With none to, the
+                // first is as good as any.
+                if !script::run_hook("locations", vec![list], window, cx)
+                    && let Some((path, start)) = places.first()
+                {
+                    self.open_location(path, *start, window, cx);
+                    let count = places.len();
+                    self.set_message(format!("The first of {count} references"), cx);
+                }
             }
             EditorEvent::PushJump(offset) => {
                 if let Some(path) = editor.read(cx).path.clone() {
@@ -391,131 +403,71 @@ impl Workspace {
 
     // ---- panels --------------------------------------------------------
 
-    fn on_file_tree_event(
+    /// The view of the panel `name`, made if this is the first it is
+    /// asked for.
+    pub(crate) fn panel_view(
         &mut self,
-        _: &Entity<FileTree>,
-        event: &FileTreeEvent,
-        window: &mut Window,
+        name: &SharedString,
         cx: &mut Context<Self>,
-    ) {
-        match event {
-            FileTreeEvent::Open(path) => {
-                self.open_path(path, window, cx);
-            }
-            FileTreeEvent::Dismiss => self.focus_editor(window, cx),
-            FileTreeEvent::Command(name) => self.run_command(name, &Args::default(), window, cx),
-            FileTreeEvent::Call(function) => {
-                crate::script::run_command(function.clone(), Args::default(), window, cx);
-            }
-        }
+    ) -> Entity<PanelView> {
+        let workspace = cx.weak_entity();
+        self.user_panels
+            .entry(name.clone())
+            .or_insert_with(|| cx.new(|cx| PanelView::new(name.clone(), workspace, cx)))
+            .clone()
     }
 
-    fn on_git_event(
+    /// Panels were put up or away. One that went away with the keyboard
+    /// gives it back to where it was, if that is a panel still up, or else
+    /// to the editor.
+    pub(crate) fn panels_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panels = cx.global::<UserPanels>();
+        let shown: Vec<Entity<PanelView>> = self
+            .user_panels
+            .iter()
+            .filter(|(name, _)| panels.is_shown(name))
+            .map(|(_, view)| view.clone())
+            .collect();
+        let gone = self
+            .user_panels
+            .iter()
+            .find(|(name, view)| !panels.is_shown(name) && view.read(cx).has_focus(window, cx));
+        if let Some((_, view)) = gone {
+            let back = view.clone().update(cx, |view, _| view.take_return());
+            match back.filter(|back| shown.iter().any(|view| view.read(cx).owns(back, cx))) {
+                Some(back) => back.focus(window, cx),
+                None => self.focus_editor(window, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Open `path` and go to a line and column of it, counted from 0.
+    /// Where the editor was is remembered, so that ctrl-o gets back.
+    pub(crate) fn open_at(
         &mut self,
-        _: &Entity<GitView>,
-        event: &GitEvent,
+        path: &Path,
+        position: Option<(usize, usize)>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        match event {
-            GitEvent::Close => {
-                self.show_git = false;
+    ) -> bool {
+        let here = self.active_editor().and_then(|editor| {
+            let editor = editor.read(cx);
+            Some((editor.path.clone()?, editor.vim.cursor))
+        });
+        if let Some((path, offset)) = here {
+            self.push_jump(path, offset);
+        }
+        match self.open_path(path, window, cx) {
+            Some(editor) => {
+                if let Some((line, col)) = position {
+                    editor.update(cx, |editor, cx| editor.goto_line_col(line, col, cx));
+                }
+                true
+            }
+            None => {
                 self.focus_editor(window, cx);
-            }
-            GitEvent::OpenFile(path) => {
-                self.show_git = false;
-                if self.open_path(path, window, cx).is_none() {
-                    self.focus_editor(window, cx);
-                }
-            }
-            GitEvent::Changed => self.sync_with_disk(cx),
-            GitEvent::Command(name) => self.run_command(name, &Args::default(), window, cx),
-        }
-    }
-
-    fn toggle_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_git = !self.show_git;
-        if self.show_git {
-            self.close_picker(cx);
-            self.git.update(cx, |git, cx| git.refresh(cx));
-            self.git.read(cx).focus_handle(cx).focus(window, cx);
-            cx.notify();
-        } else {
-            self.focus_editor(window, cx);
-        }
-    }
-
-    fn toggle_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_tree = !self.show_tree;
-        if !self.show_tree && self.file_tree.read(cx).focus_handle(cx).is_focused(window) {
-            self.focus_editor(window, cx);
-        }
-        cx.notify();
-    }
-
-    /// Jump into the file tree — or back out of it if already there.
-    fn focus_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = self.file_tree.read(cx).focus_handle(cx);
-        if self.show_tree && handle.is_focused(window) {
-            self.focus_editor(window, cx);
-            return;
-        }
-        self.show_tree = true;
-        self.show_git = false;
-        if let Some(path) = self.active_editor().and_then(|e| e.read(cx).path.clone()) {
-            self.file_tree.update(cx, |tree, cx| tree.reveal(&path, cx));
-        }
-        handle.focus(window, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn open_picker(
-        &mut self,
-        mode: PickerMode,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let root = self.root.clone();
-        let picker = cx.new(|cx| Picker::new(mode, root, window, cx));
-        self._picker_subscription = Some(cx.subscribe_in(&picker, window, Self::on_picker_event));
-        self.picker = Some(picker);
-        self.show_git = false;
-        cx.notify();
-    }
-
-    fn close_picker(&mut self, cx: &mut Context<Self>) {
-        self.picker = None;
-        self._picker_subscription = None;
-        cx.notify();
-    }
-
-    fn on_picker_event(
-        &mut self,
-        _: &Entity<Picker>,
-        event: &PickerEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_picker(cx);
-        match event {
-            PickerEvent::Dismiss => self.focus_editor(window, cx),
-            PickerEvent::Confirm(item) => {
-                // Remember where we came from so ctrl-o gets back.
-                let here = self.active_editor().and_then(|editor| {
-                    let editor = editor.read(cx);
-                    Some((editor.path.clone()?, editor.vim.cursor))
-                });
-                if let Some((path, offset)) = here {
-                    self.push_jump(path, offset);
-                }
-                match self.open_path(&item.path, window, cx) {
-                    Some(editor) => {
-                        if let Some((line, col)) = item.position {
-                            editor.update(cx, |editor, cx| editor.goto_line_col(line, col, cx));
-                        }
-                    }
-                    None => self.focus_editor(window, cx),
-                }
+                false
             }
         }
     }
@@ -549,15 +501,8 @@ impl Workspace {
                     editor.update(cx, |editor, cx| run(editor, args, cx));
                 }
             }
-            Some(Handler::FileTree(run)) => {
-                self.file_tree.update(cx, |tree, cx| run(tree, args, cx));
-            }
-            Some(Handler::Git(run)) => {
-                let git = self.git.clone();
-                git.update(cx, |git, cx| run(git, args, window, cx));
-            }
             Some(Handler::Script(function)) => {
-                crate::script::run_command(function, args.clone(), window, cx);
+                script::run_command(function, args.clone(), window, cx);
             }
             None => self.set_message(format!("Unknown command: {name}"), cx),
         }
@@ -748,10 +693,8 @@ impl Workspace {
         })
         .children(server.map(|s| div().text_color(muted).child(s)))
         .children(
-            self.git
-                .read(cx)
-                .branch_name()
-                .filter(|name| !name.is_empty())
+            self.branch
+                .as_ref()
                 .map(|name| div().text_color(theme.success).child(format!(" {name}"))),
         )
         .child(div().text_color(muted).child(editor.language_name()))
@@ -760,23 +703,17 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// The user's panels that are up, each with its view.
+    /// The panels that are up, each with its view.
     fn shown_user_panels(&mut self, cx: &mut Context<Self>) -> Vec<(UserPanel, Entity<PanelView>)> {
         let panels = cx.global::<UserPanels>();
         let shown: Vec<UserPanel> = panels.shown().cloned().collect();
         let defined: Vec<SharedString> = panels.names().map(SharedString::new).collect();
         self.user_panels.retain(|name, _| defined.contains(name));
-        let workspace = cx.weak_entity();
         shown
             .into_iter()
             .map(|panel| {
-                let view = self
-                    .user_panels
-                    .entry(panel.name.clone())
-                    .or_insert_with(|| {
-                        cx.new(|_| PanelView::new(panel.name.clone(), workspace.clone()))
-                    });
-                (panel, view.clone())
+                let view = self.panel_view(&panel.name, cx);
+                (panel, view)
             })
             .collect()
     }
@@ -788,7 +725,7 @@ impl Render for Workspace {
         let theme = cx.theme();
         let (popover, popover_foreground) = (theme.popover, theme.popover_foreground);
         let line = theme.border;
-        // A sidebar of the user's, with a line between it and the editor.
+        // A sidebar, with a line between it and the editor.
         let sidebars = |at: At| {
             user_panels
                 .iter()
@@ -811,8 +748,13 @@ impl Render for Workspace {
         let (border, muted, overlay) = (theme.border, theme.muted_foreground, theme.overlay);
         let (background, foreground) = (theme.background, theme.foreground);
 
-        let body = if self.show_git {
-            div().flex_1().min_h_0().child(self.git.clone())
+        // A panel that takes the editor's place: the last one put up.
+        let full = user_panels
+            .iter()
+            .rev()
+            .find(|(panel, _)| panel.at == At::Full);
+        let body = if let Some((_, view)) = full {
+            div().flex_1().min_h_0().child(view.clone())
         } else {
             let center = match self.active_editor() {
                 Some(editor) => div().flex_1().min_h_0().child(editor.clone()),
@@ -822,23 +764,12 @@ impl Render for Workspace {
                     .items_center()
                     .justify_center()
                     .text_color(muted)
-                    .child("No file open  ·  ⌘P find file  ·  ⌘⇧F search  ·  ⌘⇧G git"),
+                    .child("No file open  ·  :e name opens one"),
             };
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
-                .when(self.show_tree, |el| {
-                    el.child(
-                        div()
-                            .w(px(260.))
-                            .flex_shrink_0()
-                            .h_full()
-                            .border_r_1()
-                            .border_color(border)
-                            .child(self.file_tree.clone()),
-                    )
-                })
                 .children(sidebars(At::Left))
                 .child(
                     div()
@@ -853,8 +784,8 @@ impl Render for Workspace {
                 .children(sidebars(At::Right))
         };
 
-        // A popup of the user's: over everything, as tall as what is in
-        // it, and put away by a click beside it.
+        // A popup: over everything, as tall as what is in it, and put away
+        // by a click beside it.
         let popups = user_panels
             .iter()
             .filter(|(panel, _)| panel.at == At::Popup)
@@ -873,11 +804,12 @@ impl Render for Workspace {
                     .occlude()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |_, _, window, cx| {
+                        cx.listener(move |this, _, window, cx| {
                             cx.global_mut::<UserPanels>().hide(&name);
-                            // The keyboard stays where it was.
+                            // The keyboard stays where it was, unless the
+                            // popup had it.
                             window.prevent_default();
-                            cx.notify();
+                            this.panels_changed(window, cx);
                         }),
                     )
                     .child(
@@ -895,31 +827,6 @@ impl Render for Workspace {
             })
             .collect::<Vec<_>>();
 
-        let picker = self.picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .flex()
-                .justify_center()
-                .pt(px(72.))
-                .bg(overlay.opacity(0.25))
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        this.close_picker(cx);
-                        this.focus_editor(window, cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(picker),
-                )
-        });
-
         div()
             .size_full()
             .relative()
@@ -934,16 +841,15 @@ impl Render for Workspace {
                 this.run_command(&action.0, &Args::default(), window, cx);
             }))
             // Escape puts a popup away before any view gets to see it.
-            .capture_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && cx.global_mut::<UserPanels>().hide_popups() {
                     cx.stop_propagation();
-                    cx.notify();
+                    this.panels_changed(window, cx);
                 }
             }))
             .child(body)
             .child(self.render_status(cx))
             .children(popups)
-            .children(picker)
     }
 }
 
@@ -952,14 +858,14 @@ pub(crate) fn register(commands: &mut Commands) {
     commands.register(
         "workspace.save",
         "Write the file; given a name, write it under that name",
-        W(|ws, args, _, cx| {
+        W(|ws, args, window, cx| {
             if !args.arg.is_empty() {
                 let path = ws.root.join(&args.arg);
                 if let Some(editor) = ws.active_editor().cloned() {
                     editor.update(cx, |editor, cx| editor.set_path(path, cx));
                 }
             }
-            ws.save_active(cx);
+            ws.save_active(window, cx);
         }),
     );
     commands.register(
@@ -1007,7 +913,7 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.save_and_quit",
         "Write the file, then close its tab",
         W(|ws, _, window, cx| {
-            if ws.save_active(cx) {
+            if ws.save_active(window, cx) {
                 ws.close_tab(ws.active, true, window, cx);
                 if ws.tabs.is_empty() {
                     cx.quit();
@@ -1045,45 +951,32 @@ pub(crate) fn register(commands: &mut Commands) {
         W(|ws, _, window, cx| ws.jump(false, window, cx)),
     );
     commands.register(
-        "workspace.find_file",
-        "Find a file by name",
-        W(|ws, _, window, cx| ws.open_picker(PickerMode::Files, window, cx)),
+        "workspace.sync",
+        "Read again the files that changed on disk",
+        W(|ws, _, window, cx| ws.sync_with_disk(window, cx)),
     );
     commands.register(
-        "workspace.search",
-        "Search the project",
-        W(|ws, _, window, cx| ws.open_picker(PickerMode::Grep, window, cx)),
-    );
-    commands.register(
-        "workspace.toggle_file_tree",
-        "Show or hide the file tree",
-        W(|ws, _, window, cx| ws.toggle_file_tree(window, cx)),
-    );
-    commands.register(
-        "workspace.focus_file_tree",
-        "Move to the file tree, or back from it",
-        W(|ws, _, window, cx| ws.focus_file_tree(window, cx)),
+        "workspace.focus_editor",
+        "Go back to the file being edited",
+        W(|ws, _, window, cx| ws.focus_editor(window, cx)),
     );
     commands.register(
         "workspace.eval",
         "Evaluate Lisp, as in :eval (bind 'normal \"Q\" \"workspace.quit\")",
-        W(|_, args, window, cx| crate::script::eval_from(args.arg.clone(), window, cx)),
+        W(|_, args, window, cx| script::eval_from(args.arg.clone(), window, cx)),
     );
     commands.register(
         "workspace.reload_init",
         "Run the init file again",
-        W(|ws, _, _, cx| {
-            let ran = crate::script::load_init(cx);
-            let message = crate::script::take_message(cx).unwrap_or_else(|| match ran {
+        W(|ws, _, window, cx| {
+            let ran = script::reload_init(cx);
+            let message = script::take_message(cx).unwrap_or_else(|| match ran {
                 Some(path) => format!("Ran {}", path.display()),
                 None => "There is no init.lisp".to_string(),
             });
             ws.set_message(message, cx);
+            // The panels it defined anew have a project to show.
+            script::run_hook("opened", Vec::new(), window, cx);
         }),
-    );
-    commands.register(
-        "workspace.toggle_git",
-        "Open or close the git screen",
-        W(|ws, _, window, cx| ws.toggle_git(window, cx)),
     );
 }
