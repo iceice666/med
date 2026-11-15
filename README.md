@@ -155,8 +155,8 @@ there. Each brings its commands and its keys:
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.lisp` | | the keys that can come next, after a pause |
 | `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
-| `dired.lisp` | `space -` | the file's directory as text to edit (in a listing, the one above) |
-| | `gf` | open the file or directory on a listing's line |
+| `dired.lisp` | `space -` | the file's directory as text to edit |
+| | `enter` / `-` | in a listing: open the line's file or directory / go up |
 
 With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
 lists what can follow at the bottom of the window once nothing has been
@@ -176,8 +176,8 @@ moves it, into directories that are made if need be. An empty line puts
 its file in the trash, which takes `:w!`. Nothing is done unless all of
 it can be: the lines must stay as many as the files, and a new name may
 not be one that is there already, another line's included, so two files
-trade names in two writes. `gf` is bound everywhere, and away from a
-listing only says so.
+trade names in two writes. `enter` and `-` are the listing's own keys,
+in the table `dired`, and are vim's everywhere else.
 
 Git screen (as in lazygit): `1`–`5` or `tab` switch panel, `j`/`k` move,
 `J`/`K` scroll the diff, `space` stage / checkout / apply, `a` stage all,
@@ -227,7 +227,22 @@ The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
 goes by the panel's name, or by its name and a part of it (`git.files`).
 `app` is the table of the shortcuts that work wherever the keyboard is,
 written as the window system has them (`cmd-shift-p`). `bind` refuses a
-command that does not exist. `:workspace.reload_init` runs the file
+command that does not exist.
+
+A tab can have keys of its own, in tables a program names with
+`defkeys`. The tab looks a key up in its tables first, and what none of
+them knows in its mode's:
+
+```lisp
+(defkeys 'listing)
+(bind 'listing "<CR>" "user.open")          ; in normal mode
+(bind 'listing.insert "<C-j>" "user.next")  ; also .visual, .operator
+(set-buffer-keys '(listing))                ; the tab up is in it, nil for none
+(buffer-keys)                               ; => ("listing")
+```
+
+A key a table binds is run at once, even where the mode's table has
+longer bindings that start with it. `:workspace.reload_init` runs the file
 again; what is wrong with it is said in the status bar, with the line.
 
 A command can be written there too. It is a function of no arguments, and
@@ -404,7 +419,7 @@ then with
 
 | Name | Is |
 | --- | --- |
-| `:tables` | the key tables the next key is looked up in, the first to know it deciding: `("normal")`, or a panel's, `("git.files" "git")` |
+| `:tables` | the key tables the next key is looked up in, the first to know it deciding: a tab's own and then its mode's, `("normal")` or `("listing.insert" "insert")`, or a panel's, `("git.files" "git")` |
 | `:keys` | the start of a binding typed so far, `"<Space>"`; `""` after a count or an operator, when any binding of the table can follow |
 | `:typed` | every key of the command so far, `"2dg"` |
 | `:awaiting` | `'register`, `'char`, `'text-object`, `'mark` or `'flash` when the next key is not looked up but taken as it is (after `"`, `f` or `r`, `di`, `m`, `s`) |
@@ -491,7 +506,7 @@ Given a function, `:w` calls it with the text, as a command
 (`command-bang` is there for `:w!`), and the text stays unsaved until the program gives the tab
 its text again. Without one, there is nothing in the tab to lose and
 nowhere to write it. `(current-file)` is `nil` there, and `:w name`
-makes the tab a file. [`examples/dired.lisp`](examples/dired.lisp) lists a directory in
+makes the tab a file, without the tab's own keys. [`examples/dired.lisp`](examples/dired.lisp) lists a directory in
 one and renames files with what is written.
 
 ## Scripting language
