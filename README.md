@@ -8,9 +8,10 @@ framework behind Zed.
 - Tree-sitter syntax highlighting for ~35 languages
 - LSP: diagnostics, completion, hover, go to definition, references
 - Panels written in the editor's own Lisp. The file tree, the fuzzy file
-  finder with project-wide search, and a lazygit-style git screen are
-  three of them, in [`examples/`](examples): not built in, and yours to
-  load, change or replace
+  finder with project-wide search, a lazygit-style git screen and the
+  which-key list of the keys that can come next are four of them, in
+  [`examples/`](examples): not built in, and yours to load, change or
+  replace
 
 ## Build and run
 
@@ -53,12 +54,13 @@ clipboard.
 ## The example panels
 
 An editor with no init file is the editor alone. The file tree, the
-picker and the git screen are programs in [`examples/`](examples), and an
-init file loads the ones it wants:
+picker, the git screen and the list of keys that can come next are
+programs in [`examples/`](examples), and an init file loads the ones it
+wants:
 
 ```lisp
 ; ~/.config/med/init.lisp
-(load "/path/to/med/examples/init.lisp")   ; all three, or one by one:
+(load "/path/to/med/examples/init.lisp")   ; all of them, or one by one:
 (load "/path/to/med/examples/tree.lisp")
 ```
 
@@ -73,6 +75,16 @@ there. Each brings its commands and its keys:
 | `picker.lisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |
+
+| `which-key.lisp` | | the keys that can come next, after a pause |
+
+With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
+lists what can follow at the bottom of the window once nothing has been
+typed for 300 ms (`which-key-delay`), in an editor and in a panel alike,
+and escape gives up on the command. A key that only starts longer
+bindings is listed by how many they are, or by a name: `(which-key-name
+"<Space>g" "git")`. It sets `key-timeout` to `nil`: `space` no longer
+moves right by itself after a second, but waits for the next key.
 
 With `picker.lisp`, `gr` lists the references to choose from; without it,
 `gr` goes to the first.
@@ -113,7 +125,7 @@ run at startup, or from the command line with `:eval`:
 (bind 'git.files "x" "git.discard")           ; a panel's keys
 (bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
 (unbind 'normal "gt")
-(set-option 'font-size 16)                    ; also font-family, lsp
+(set-option 'font-size 16)                    ; also font-family, lsp, key-timeout
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -145,12 +157,15 @@ of the command line, there are `command-bang` (was there a `!`) and
 cannot take the name of one of the editor's own.
 
 A key that is a binding by itself and also starts longer ones (`space`, which
-moves right) waits a second for the rest before acting.
+moves right) waits a second for the rest before acting. `(set-option
+'key-timeout 300)` gives it another time, in milliseconds, and `nil` has it
+wait for the next key however long that takes.
 
 ## Panels
 
-A program adds panels: sidebars to the left or right of the editor, popups
-over it, and whole screens in its place.
+A program adds panels: sidebars to the left or right of the editor, strips
+at the bottom of the window, popups over the editor, and whole screens in
+its place.
 
 ```lisp
 (def notes '("call Ada" "ship it"))
@@ -170,12 +185,16 @@ over it, and whole screens in its place.
 (bind 'normal "<Space>n" "user.notes")
 ```
 
-`defpanel` takes a name, the options `:at` (`'left`, `'right`, `'popup` or
-`'full`), `:width`, `:shown` (up from the start) and `:contexts` (below),
-and a layout. `show-panel`, `hide-panel` and `toggle-panel` put it up and
+`defpanel` takes a name, the options `:at` (`'left`, `'right`, `'bottom`,
+`'popup` or `'full`), `:width`, `:shown` (up from the start) and
+`:contexts` (below), and a layout. `show-panel`, `hide-panel` and `toggle-panel` put it up and
 away, and `panel-shown?` asks. A popup is as tall as what is in it, and a
-click beside it or escape puts it away. `set-layout` gives a panel that is
-already defined another layout.
+click beside it or escape puts it away. A panel at the bottom is as tall as
+what is in it too, goes across the window above the status bar, and stays
+there under a `'full` panel; it takes no key and no click from what is
+above it, which makes it the place for what is shown while a command is
+being typed. `set-layout` gives a panel that is already defined another
+layout.
 
 ### Layouts
 
@@ -260,12 +279,45 @@ at once.
 | `(fuzzy query list limit)` | the texts a few letters mean, best first |
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
 | `(git what arguments... function)` | the repository: see `crates/med/src/host.rs` |
+| `(bindings table [keys])` | the keys that can come after `keys` in a mode's table or a panel's |
+| `(after milliseconds function)` | a call that long from now, and a timer for `(cancel timer)` to call it off |
 | `(add-hook name function)` | a call when something happens |
 
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or
-`workspace.sync` was run) and `locations` (a list of places to choose
-from, such as the references to a name).
+`workspace.sync` was run), `locations` (a list of places to choose
+from, such as the references to a name) and `keys-pending` (below).
+
+### The keys being typed
+
+A program can follow a command as it is typed, to show what can come
+next. The `keys-pending` hook is called whenever what the keys typed so
+far wait for changes: with `nil` once they wait for nothing, and until
+then with
+
+| Name | Is |
+| --- | --- |
+| `:tables` | the key tables the next key is looked up in, the first to know it deciding: `("normal")`, or a panel's, `("git.files" "git")` |
+| `:keys` | the start of a binding typed so far, `"<Space>"`; `""` after a count or an operator, when any binding of the table can follow |
+| `:typed` | every key of the command so far, `"2dg"` |
+| `:awaiting` | `'register`, `'char` or `'text-object` when the next key is not looked up but taken as it is (after `"`, `f` or `r`, `di`) |
+
+`(bindings table keys)` lists what can follow, in the order of the keys'
+notation, each `(:key :keys :command :description :to :prefix)`: the key
+(`"f"`) and all the keys with it (`"<Space>f"`), the command they are
+bound to and what it says of itself (`nil` for the vim engine's own
+commands, which have only their names), or else the keys they stand for
+(`:to`), and whether longer bindings go on from there. With no keys it
+lists the first key of every binding. The `app` table cannot be listed.
+
+```lisp
+(def timer nil)
+(add-hook 'keys-pending
+  (fn (pending)
+    (cancel timer)                      ; nil is a timer that never was
+    (when pending
+      (set! timer (after 300 (fn () (message (get pending :typed) " …")))))))
+```
 
 ## Scripting language
 
