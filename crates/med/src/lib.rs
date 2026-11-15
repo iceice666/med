@@ -54,7 +54,7 @@ impl Global for VimGlobal {}
 /// Work out the project root and the files to open from the command line:
 /// `med` (current directory), `med dir`, or `med file...`.
 fn parse_args() -> (PathBuf, Vec<PathBuf>) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let cwd = launch_dir();
     let absolute = |path: PathBuf| {
         let path = if path.is_absolute() {
             path
@@ -83,6 +83,21 @@ fn parse_args() -> (PathBuf, Vec<PathBuf>) {
             .unwrap_or_else(|| default_root(&cwd))
     });
     (root, files)
+}
+
+/// The directory med was started from. An AppImage's launcher changes into
+/// the image's own `usr/` before running med, leaving the real one in
+/// `$OWD`; go back there so relative arguments, and anything med runs,
+/// see the directory the user did.
+fn launch_dir() -> PathBuf {
+    let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if var("APPIMAGE").is_some()
+        && let Some(owd) = var("OWD")
+        && std::env::set_current_dir(&owd).is_ok()
+    {
+        return PathBuf::from(owd);
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// The root when the command line names none: the current directory, unless
