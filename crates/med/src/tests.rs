@@ -1595,7 +1595,8 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
             "which-key",
             "dired-prompt",
             "statusline",
-            "titlebar"
+            "titlebar",
+            "titlebar-branches"
         ]
     );
 
@@ -1655,7 +1656,8 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
             "which-key",
             "dired-prompt",
             "statusline",
-            "titlebar"
+            "titlebar",
+            "titlebar-branches"
         ]
     );
     assert_eq!(lisp("(length tree-entries)", cx), "2");
@@ -1926,6 +1928,42 @@ fn stages_and_commits_from_the_git_screen(cx: &mut TestAppContext) {
     assert!(!shown("git", cx));
     cx.simulate_keystrokes("shift-g");
     assert_eq!(cursor(&ws, cx), (2, 1));
+}
+
+#[gpui::test]
+fn switches_branches_from_the_title_bar(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    project.git_init();
+    project.git(&["add", "-A"]);
+    project.git(&["commit", "-q", "-m", "first"]);
+    project.git(&["branch", "feature"]);
+    let repo = med_git::Repo::discover(&project.0).unwrap();
+
+    let (ws, cx) = open_with(&[TITLEBAR], &project, &["a.txt"], cx);
+    let branch = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let vars = ws.bar_vars(cx);
+            let (_, value) = vars.iter().find(|(name, _)| *name == "branch").unwrap();
+            value.to_string()
+        })
+    };
+    assert!(wait_for(cx, |cx| branch(&ws, cx) == "\"main\""));
+
+    // The branch is at the right of the title bar, and a click on it
+    // lists every branch, the current one first.
+    let width = cx.update(|window, _| f32::from(window.viewport_size().width));
+    cx.simulate_click(point(px(width - 30.), px(TITLE / 2.)), Modifiers::none());
+    assert!(wait_for(cx, |cx| shown("titlebar-branches", cx)));
+    assert_eq!(
+        lisp("(map (fn (b) (get b :name)) titlebar-branches)", cx),
+        r#"("main" "feature")"#
+    );
+
+    // Choosing another checks it out, and the bar follows.
+    eval_in(&ws, "(titlebar-checkout (car (cdr titlebar-branches)))", cx);
+    assert!(!shown("titlebar-branches", cx));
+    assert!(wait_for(cx, |cx| branch(&ws, cx) == "\"feature\""));
+    assert_eq!(repo.head().unwrap().name, "feature");
 }
 
 #[gpui::test]
