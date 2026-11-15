@@ -1896,6 +1896,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "frizbee"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19435f276a44d90570cb403d22fbe4b20c80eabc134f718d6ec0ae888eb47edc"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "futf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3924,6 +3933,7 @@ name = "med"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "frizbee",
  "futures",
  "gpui-kit",
  "gpui-pre",

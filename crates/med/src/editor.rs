@@ -1453,31 +1453,26 @@ impl Editor {
             self.completion = None;
             return;
         }
-        let needle = typed.to_lowercase();
-        let mut scored: Vec<(u8, &str, usize)> = menu
+        // blink.cmp's matcher, with its default of one typo per four
+        // typed characters. An empty needle matches everything at score 0.
+        let haystacks: Vec<&str> = menu
             .items
             .iter()
-            .enumerate()
-            .filter_map(|(index, item)| {
-                let text = item.filter_text.as_deref().unwrap_or(&item.label);
-                let lower = text.to_lowercase();
-                let score = if needle.is_empty() {
-                    1
-                } else if text.starts_with(&typed) {
-                    0
-                } else if lower.starts_with(&needle) {
-                    1
-                } else {
-                    // Subsequence match.
-                    let mut chars = lower.chars();
-                    if needle.chars().all(|n| chars.any(|c| c == n)) {
-                        2
-                    } else {
-                        return None;
-                    }
-                };
+            .map(|item| item.filter_text.as_deref().unwrap_or(&item.label))
+            .collect();
+        let config = frizbee::Config {
+            max_typos: Some((typed.len() / 4) as u16),
+            ..frizbee::Config::default()
+        };
+        let matches = frizbee::Matcher::new(typed.as_str(), &config).match_list(&haystacks);
+        // Best score first; the server's `sort_text` breaks ties.
+        let mut scored: Vec<(std::cmp::Reverse<u16>, &str, usize)> = matches
+            .into_iter()
+            .map(|m| {
+                let index = m.index as usize;
+                let item = &menu.items[index];
                 let order = item.sort_text.as_deref().unwrap_or(&item.label);
-                Some((score, order, index))
+                (std::cmp::Reverse(m.score), order, index)
             })
             .collect();
         scored.sort();
