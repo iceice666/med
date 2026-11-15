@@ -155,6 +155,8 @@ there. Each brings its commands and its keys:
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.lisp` | | the keys that can come next, after a pause |
 | `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
+| `dired.lisp` | `space -` | the file's directory as text to edit (in a listing, the one above) |
+| | `gf` | open the file or directory on a listing's line |
 
 With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
 lists what can follow at the bottom of the window once nothing has been
@@ -166,6 +168,16 @@ moves right by itself after a second, but waits for the next key.
 
 With `picker.lisp`, `gr` lists the references to choose from; without it,
 `gr` goes to the first.
+
+With `dired.lisp` (as Emacs's wdired), a directory is a tab of names, one
+to a line, a directory's with `/` after it, and what git ignores among
+them. Change a name and `:w` renames the file; a name with `/` in it
+moves it, into directories that are made if need be. An empty line puts
+its file in the trash, which takes `:w!`. Nothing is done unless all of
+it can be: the lines must stay as many as the files, and a new name may
+not be one that is there already, another line's included, so two files
+trade names in two writes. `gf` is bound everywhere, and away from a
+listing only says so.
 
 Git screen (as in lazygit): `1`–`5` or `tab` switch panel, `j`/`k` move,
 `J`/`K` scroll the diff, `space` stage / checkout / apply, `a` stage all,
@@ -356,8 +368,9 @@ at once.
 | --- | --- |
 | `(current-file)`, `(project-root)` | where the editor is |
 | `(open-file path [line [column]])` | the file in a tab, at a place counted from 1 |
-| `(list-dir path)` | what is in a directory: `((:name :path :dir)...)`, without what git ignores |
+| `(list-dir path [all])` | what is in a directory: `((:name :path :dir)...)`, without what git ignores unless `all` |
 | `(path-name p)`, `(path-parent p)`, `(path-join a b...)` | parts of paths |
+| `(file-exists? path)`, `(dir? path)` | whether anything is there; a directory |
 | `(walk-files function)` | every file of the project, as paths from its root |
 | `(fuzzy query list limit)` | the texts a few letters mean, best first |
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
@@ -365,6 +378,16 @@ at once.
 | `(bindings table [keys])` | the keys that can come after `keys` in a mode's table or a panel's |
 | `(after milliseconds function)` | a call that long from now, and a timer for `(cancel timer)` to call it off |
 | `(add-hook name function)` | a call when something happens |
+
+And it changes what is on disk. Each of these gives `nil` once it is
+done, or else what went wrong, and a path that does not start at the top
+is the project's:
+
+| Function | Does |
+| --- | --- |
+| `(rename-file from to)` | moves a file or a directory, never into the place of another; the tabs that had it go with it |
+| `(delete-file path)` | puts a file or a directory in the trash |
+| `(make-dir path)` | a directory, and the ones it is in |
 
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or
@@ -415,6 +438,7 @@ the place just past it.
 | `(mode)` | `'normal` `'insert` `'visual` `'visual-line` `'visual-block` `'command` |
 | `(selection)` | `(:start :end :text :kind)`, or `nil` |
 | `(line-count)`, `(buffer-line n)` | how many lines; the text of one |
+| `(modified?)` | whether it has changes that are not written |
 | `(buffer-text [start end])` | all the text, or what is between two places |
 | `(visible-lines)` | the first and the last line on screen |
 | `(insert text)` | text at the cursor |
@@ -452,6 +476,23 @@ And it is told what happens, with `add-hook`:
 [`examples/todo.lisp`](examples/todo.lisp) is a short program made of
 these: it reads the text once it has changed, puts a sign on the lines
 that say TODO, and has two commands that move the cursor.
+
+A program can also have a tab of text that is no file, by a name of its
+own:
+
+```lisp
+(open-scratch "notes")                       ; go to it, or make it
+(open-scratch "notes" "one\ntwo")            ; with this text, as written
+(open-scratch "notes" nil (fn (text) (message (length (lines text)) " lines")))
+(scratch-name)                               ; "notes" while it is up, else nil
+```
+
+Given a function, `:w` calls it with the text, as a command
+(`command-bang` is there for `:w!`), and the text stays unsaved until the program gives the tab
+its text again. Without one, there is nothing in the tab to lose and
+nowhere to write it. `(current-file)` is `nil` there, and `:w name`
+makes the tab a file. [`examples/dired.lisp`](examples/dired.lisp) lists a directory in
+one and renames files with what is written.
 
 ## Scripting language
 
