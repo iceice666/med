@@ -3,6 +3,9 @@ name = "med"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
+description = "A modal (vim-style) code editor built on GPUI"
+repository = "https://github.com/iceice666/med"
 
 [dependencies]
 med-core = { path = "../med-core" }
@@ -36,3 +39,34 @@ harness = false
 # gpui-kit's own `test-support` feature drags in an unpublished gpui-fast;
 # enabling it on the underlying GPUI crate is enough for `#[gpui::test]`.
 gpui-test-support = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
+
+# `cargo packager -p med --release` turns target/release/med into the
+# .app/.dmg (macOS) and .deb/.AppImage (Linux) attached to each release.
+[package.metadata.packager]
+product-name = "med"
+identifier = "dev.med.editor"
+authors = ["Brian Duan"]
+category = "DeveloperTool"
+binaries = [{ path = "med", main = true }]
+# A placeholder; the AppImage cannot be made without a square icon.
+icons = ["icons/med.png"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "13.0"
+# Ad-hoc: sealed, but by no Apple developer, so a downloaded copy needs
+# its quarantine cleared (see the README).
+signing-identity = "-"
+
+# What GPUI loads at run time on Linux: fonts, Wayland or X11, Vulkan.
+[package.metadata.packager.deb]
+depends = [
+  "libc6",
+  "libfontconfig1",
+  "libfreetype6",
+  "libwayland-client0",
+  "libxkbcommon0",
+  "libxkbcommon-x11-0",
+  "libx11-xcb1",
+  "libxcb1",
+  "libvulkan1",
+]

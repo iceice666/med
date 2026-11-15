@@ -7,6 +7,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 bin="$root/target/$profile/med"
 app="$root/target/$profile/med.app"
 [ -x "$bin" ] || { echo "build first: cargo build -p med${1:+ --$profile}" >&2; exit 1; }
+# The workspace version, the one release-plz bumps.
+version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n 1)"
 mkdir -p "$app/Contents/MacOS"
 cp "$bin" "$app/Contents/MacOS/med"
 cat > "$app/Contents/Info.plist" <<PLIST
@@ -19,7 +21,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>dev.med.editor</string>
   <key>CFBundleExecutable</key><string>med</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>

@@ -6,6 +6,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+# Nothing here goes to crates.io: releases are the binaries on GitHub.
+publish = false
 
 [workspace.dependencies]
 # gpui-kit re-exports GPUI (gpui-pre snapshot) + gpui-base + gpui-component.
