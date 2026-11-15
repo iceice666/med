@@ -3960,6 +3960,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "med-lisp"
+version = "0.1.0"
+
+[[package]]
 name = "med-lsp"
 version = "0.1.0"
 dependencies = [
