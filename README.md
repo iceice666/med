@@ -97,6 +97,7 @@ clipboard.
 | `space =`, `:format` | format the file |
 | `ctrl-s` (insert) | the signature of what is being called; it comes up by itself after `(` |
 | `ctrl-n` `ctrl-p` `tab` | completion menu: next, previous, accept |
+| `tab` / `shift-tab` (on `:`) | complete a command's name, a file after `:e` `:w`, or a topic after `:h`; again for the next / previous match |
 | `ctrl-o` / `ctrl-i` | jump back / forward |
 | `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |
 | `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
