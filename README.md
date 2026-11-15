@@ -36,8 +36,8 @@ xattr -dr com.apple.quarantine /Applications/med.app
 ```
 
 An app started from Finder or the Dock gets the system `PATH`, not your
-shell's, so language servers may not be found; start it from a shell with
-`/Applications/med.app/Contents/MacOS/med` to keep yours.
+shell's; med asks your login shell for its environment then (see
+[Project environment](#project-environment)).
 
 ## Build and run
 
@@ -54,12 +54,35 @@ cargo test --workspace
 current directory). `scripts/bundle.sh [debug|release]` wraps the built binary
 in a `med.app`.
 
-Language servers are looked up on `PATH` (rust-analyzer, clangd, gopls,
-pyright, typescript-language-server, nil/nixd, …), so start med from a shell
-that has them.
+Language servers are looked up on the project's `PATH` (rust-analyzer,
+clangd, gopls, pyright, typescript-language-server, nil/nixd, …).
 
 Environment: `MED_FONT`, `MED_FONT_SIZE` (default 14), `MED_NO_LSP`,
-`MED_CONFIG_DIR` (default `$XDG_CONFIG_HOME/med`, else `~/.config/med`).
+`MED_NO_PROJECT_ENV`, `MED_CONFIG_DIR` (default `$XDG_CONFIG_HOME/med`,
+else `~/.config/med`).
+
+### Project environment
+
+Language servers, and programs started with `spawn`, run in the project's
+environment, which med works out in the background when the window opens:
+
+1. Started from Finder, the Dock or a desktop launcher (with no `TERM`),
+   med runs your login shell (`$SHELL -l -i`; sh, bash, zsh, fish and
+   the like) in the project and takes its environment. Started from a
+   terminal, it keeps the one it has.
+2. If `direnv` is on that `PATH`, what `direnv export json` says the
+   project's `.envrc` changes goes on top. That is also how
+   [devbox](https://www.jetify.com/docs/devbox/ide-configuration/direnv)
+   (`devbox generate direnv`) and nix flakes (`use flake`, with
+   nix-direnv) reach the editor.
+
+Files opened meanwhile wait for it, `loading the environment` in the
+status bar. A `.envrc` that is not allowed yet is said in the status bar;
+med never runs `direnv allow` itself. After `direnv allow`, or a change
+to `.envrc`, `flake.nix` or `devbox.json`, `:workspace.reload_env` loads
+the environment again and restarts the language servers in it.
+`(set-option 'project-env false)` in the init file, or
+`MED_NO_PROJECT_ENV`, keeps med's own environment instead.
 
 ## Keys
 
@@ -267,7 +290,7 @@ run at startup, or from the command line with `:eval`:
 (bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
-                                              ; auto-pairs, format-on-save
+                                              ; auto-pairs, format-on-save, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -482,7 +505,7 @@ at once.
 | `(file-info path)` | what is there, a link and not what it points to: `(:name :path :kind :dir :size :modified :mode :links :uid :gid :target)`, or `nil` |
 | `(regex-match pattern text)` | the first match and each group's, or `nil` |
 | `(regex-replace pattern text replacement)` | every match replaced, `$1` and `${name}` being a group's |
-| `(spawn program arguments dir function)` | runs a program, in `dir` or the project for `nil`; the function gets `(:status :out :err)` and `nil`, or `nil` and why it could not be run |
+| `(spawn program arguments dir function)` | runs a program, in `dir` or the project for `nil`, in the project's environment; the function gets `(:status :out :err)` and `nil`, or `nil` and why it could not be run |
 | `(walk-files function)` | every file of the project, as paths from its root |
 | `(fuzzy query list limit)` | the texts a few letters mean, best first |
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
