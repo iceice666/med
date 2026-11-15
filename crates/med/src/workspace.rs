@@ -1160,11 +1160,15 @@ impl Workspace {
 
         // The command line takes over the left side while it is open.
         let left = match editor.vim.cmdline() {
-            Some((kind, text)) => div()
-                .flex_1()
-                .min_w_0()
-                .text_color(fg)
-                .child(format!("{kind}{text}▏")),
+            Some((kind, text)) => {
+                let at = editor.vim.cmdline_cursor().unwrap_or(text.len());
+                let (head, tail) = text.split_at(at);
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(fg)
+                    .child(format!("{kind}{head}▏{tail}"))
+            }
             None => {
                 let hint = self
                     .message

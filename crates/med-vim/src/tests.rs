@@ -391,6 +391,67 @@ fn the_host_replaces_the_command_line() {
 }
 
 #[test]
+fn the_command_line_is_edited_at_its_cursor() {
+    let mut h = Harness::new("|a");
+    h.keys(":wrte<left><left>i");
+    assert_eq!(h.vim.cmdline(), Some((':', "write")));
+    assert_eq!(h.vim.cmdline_cursor(), Some(3));
+    h.keys("<home>x<del><end><bs>e<left><right>!");
+    assert_eq!(h.vim.cmdline(), Some((':', "xrite!")));
+    h.keys("<c-b><right><right><c-u>");
+    assert_eq!(h.vim.cmdline(), Some((':', "ite!")));
+    h.keys("<c-e> a b<left><left><c-w>");
+    assert_eq!(h.vim.cmdline(), Some((':', "ite!  b")));
+    assert_eq!(h.vim.cmdline_cursor(), Some(5));
+    // Past either end, nothing to move over; wide chars move as one.
+    h.keys("<c-u><left>é<left><left><del>");
+    assert_eq!(h.vim.cmdline(), Some((':', " b")));
+    h.keys("<esc>");
+
+    // Completed from outside: the cursor goes to its end.
+    h.keys(":wr<left>");
+    h.vim.set_cmdline_text("write");
+    assert_eq!(h.vim.cmdline_cursor(), Some(5));
+}
+
+#[test]
+fn the_command_line_recalls_its_history() {
+    let mut h = Harness::new("|a\na\na");
+    h.keys(":foo<cr>:bar 1<cr>:foo 2<cr>/a<cr>");
+    let ex = |e: &Effect| matches!(e, Effect::Ex(_));
+    assert_eq!(h.effects.iter().filter(|e| ex(e)).count(), 3);
+
+    // Back through them all, newest first, then forward to what was typed.
+    h.keys(":x<c-p>");
+    assert_eq!(h.vim.cmdline(), Some((':', "foo 2")));
+    h.keys("<c-p><c-p><c-p>");
+    assert_eq!(h.vim.cmdline(), Some((':', "foo")), "stops at the oldest");
+    h.keys("<down><down><down>");
+    assert_eq!(h.vim.cmdline(), Some((':', "x")));
+    h.keys("<esc>");
+
+    // `Up` keeps to the lines that start as the typed one does.
+    h.keys(":fo<up>");
+    assert_eq!(h.vim.cmdline(), Some((':', "foo 2")));
+    assert_eq!(h.vim.cmdline_cursor(), Some(5));
+    h.keys("<up>");
+    assert_eq!(h.vim.cmdline(), Some((':', "foo")));
+    // An edit ends the walk: the next `Up` looks for the new line.
+    h.keys("<bs><bs><bs>b<up>");
+    assert_eq!(h.vim.cmdline(), Some((':', "bar 1")));
+    h.keys("<esc>");
+
+    // Run again, a line moves to the newest.
+    h.keys(":foo<cr>:<up>");
+    assert_eq!(h.vim.cmdline(), Some((':', "foo")));
+    h.keys("<esc>");
+
+    // Searches have their own.
+    h.keys("?<up>");
+    assert_eq!(h.vim.cmdline(), Some(('?', "a")));
+}
+
+#[test]
 fn effects() {
     let mut h = Harness::new("|a");
     h.keys("zzzt<c-e>");

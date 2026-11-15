@@ -206,9 +206,34 @@ pub struct Shared {
     /// than the text read back, which cannot say everything (a paste).
     macros: HashMap<char, (String, Vec<Key>)>,
     last_macro: Option<char>,
+    /// The `:` lines run, oldest first.
+    ex_history: Vec<String>,
+    /// The `/` and `?` patterns searched for, oldest first.
+    search_history: Vec<String>,
 }
 
 impl Shared {
+    /// The history the command line of `kind` goes through.
+    fn history(&mut self, kind: char) -> &mut Vec<String> {
+        match kind {
+            ':' => &mut self.ex_history,
+            _ => &mut self.search_history,
+        }
+    }
+
+    /// Put `line` last in its history, moving it there if it was in it.
+    fn remember(&mut self, kind: char, line: &str) {
+        if line.trim().is_empty() {
+            return;
+        }
+        let history = self.history(kind);
+        history.retain(|old| old != line);
+        history.push(line.to_string());
+        if history.len() > HISTORY_LEN {
+            history.remove(0);
+        }
+    }
+
     fn write_register(
         &mut self,
         name: Option<char>,
@@ -506,7 +531,24 @@ pub enum Awaiting {
 struct CmdLine {
     kind: char,
     text: String,
+    /// Byte offset of the cursor in `text`, on a char boundary.
+    cursor: usize,
+    /// Where `Up` and `Down` have got to in the history.
+    recall: Option<Recall>,
 }
+
+/// A walk through the command line's history, from what was typed.
+struct Recall {
+    /// The line as it was before the walk began: what `Down` comes back to.
+    typed: String,
+    /// The history entries `Up` and `Down` stop at must start with this.
+    prefix: String,
+    /// The entry shown; the history's length for `typed`.
+    at: usize,
+}
+
+/// How many lines each history keeps.
+const HISTORY_LEN: usize = 100;
 
 /// What a surround operator was given, until the delimiter is typed.
 struct Surround {
@@ -663,7 +705,15 @@ impl Vim {
     pub fn set_cmdline_text(&mut self, text: impl Into<String>) {
         if let Some(cl) = &mut self.cmdline {
             cl.text = text.into();
+            cl.cursor = cl.text.len();
+            cl.recall = None;
         }
+    }
+
+    /// Where the cursor is on the open command line: a byte offset into
+    /// its text.
+    pub fn cmdline_cursor(&self) -> Option<usize> {
+        self.cmdline.as_ref().map(|c| c.cursor)
     }
 
     /// Keys typed so far for an unfinished command (vim's `showcmd`).
@@ -2984,7 +3034,13 @@ impl Vim {
     // ---- command line --------------------------------------------------
 
     fn open_cmdline(&mut self, kind: char, text: String) {
-        self.cmdline = Some(CmdLine { kind, text });
+        let cursor = text.len();
+        self.cmdline = Some(CmdLine {
+            kind,
+            text,
+            cursor,
+            recall: None,
+        });
         self.mode = Mode::Command;
         self.no_repeat = true;
     }
@@ -2999,31 +3055,108 @@ impl Vim {
             self.mode = Mode::Normal;
             return;
         }
+        // Any key but the history's own ends a walk through it: the next
+        // `Up` looks for lines like the one there is now.
+        let recall = cl.recall.take();
+        let before = |cl: &CmdLine| cl.text[..cl.cursor].chars().next_back();
+        let after = |cl: &CmdLine| cl.text[cl.cursor..].chars().next();
         match key {
             Key::Enter | Key::Ctrl('j') | Key::Ctrl('m') => {
                 let cl = self.cmdline.take().expect("checked above");
                 self.mode = Mode::Normal;
+                cx.shared.remember(cl.kind, &cl.text);
                 match cl.kind {
                     ':' => self.run_ex(&cl.text, cx, fx),
                     kind => self.run_search(&cl.text, kind == '/', cx, fx),
                 }
             }
             Key::Backspace | Key::Ctrl('h') => {
-                if cl.text.pop().is_none() {
+                if cl.text.is_empty() {
                     self.cmdline = None;
                     self.mode = Mode::Normal;
+                } else if let Some(c) = before(cl) {
+                    cl.cursor -= c.len_utf8();
+                    cl.text.remove(cl.cursor);
                 }
             }
-            Key::Ctrl('u') => cl.text.clear(),
-            Key::Ctrl('w') => {
-                let trimmed = cl.text.trim_end_matches(|c: char| !c.is_whitespace());
-                let len = trimmed.trim_end().len();
-                cl.text.truncate(len);
+            Key::Delete => {
+                if after(cl).is_some() {
+                    cl.text.remove(cl.cursor);
+                }
             }
-            Key::Char(c) => cl.text.push(c),
-            Key::Text(text) => cl.text.extend(text.chars().filter(|c| !c.is_control())),
-            Key::Tab => cl.text.push('\t'),
-            _ => {}
+            Key::Ctrl('u') => {
+                cl.text.replace_range(..cl.cursor, "");
+                cl.cursor = 0;
+            }
+            Key::Ctrl('w') => {
+                // The blanks before the cursor, then the word before them.
+                let head = cl.text[..cl.cursor].trim_end();
+                let start = head.trim_end_matches(|c: char| !c.is_whitespace()).len();
+                cl.text.replace_range(start..cl.cursor, "");
+                cl.cursor = start;
+            }
+            Key::Left => {
+                if let Some(c) = before(cl) {
+                    cl.cursor -= c.len_utf8();
+                }
+            }
+            Key::Right => {
+                if let Some(c) = after(cl) {
+                    cl.cursor += c.len_utf8();
+                }
+            }
+            Key::Home | Key::Ctrl('b') => cl.cursor = 0,
+            Key::End | Key::Ctrl('e') => cl.cursor = cl.text.len(),
+            Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Ctrl('p') | Key::Ctrl('n') => {
+                let back = matches!(key, Key::Up | Key::PageUp | Key::Ctrl('p'));
+                // `Up` and `Down` keep to the lines that start as this one
+                // does, as vim's do; the others go through them all.
+                let filtered = matches!(key, Key::Up | Key::Down);
+                let history = cx.shared.history(cl.kind);
+                let mut recall = recall.unwrap_or_else(|| Recall {
+                    typed: cl.text.clone(),
+                    prefix: if filtered {
+                        cl.text.clone()
+                    } else {
+                        String::new()
+                    },
+                    at: history.len(),
+                });
+                let fits = |i: &usize| history[*i].starts_with(&recall.prefix);
+                let found = if back {
+                    (0..recall.at).rev().find(fits)
+                } else {
+                    (recall.at + 1..history.len()).find(fits)
+                };
+                match found {
+                    Some(i) => {
+                        recall.at = i;
+                        cl.text = history[i].clone();
+                    }
+                    // Down past the newest: back to what was typed.
+                    None if !back && recall.at < history.len() => {
+                        recall.at = history.len();
+                        cl.text = recall.typed.clone();
+                    }
+                    None => {}
+                }
+                cl.cursor = cl.text.len();
+                cl.recall = Some(recall);
+            }
+            Key::Char(c) => {
+                cl.text.insert(cl.cursor, c);
+                cl.cursor += c.len_utf8();
+            }
+            Key::Text(text) => {
+                let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                cl.text.insert_str(cl.cursor, &text);
+                cl.cursor += text.len();
+            }
+            Key::Tab => {
+                cl.text.insert(cl.cursor, '\t');
+                cl.cursor += 1;
+            }
+            _ => cl.recall = recall,
         }
     }
 
