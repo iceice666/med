@@ -13,6 +13,7 @@ pub mod script;
 pub mod syntax;
 #[cfg(test)]
 mod tests;
+pub mod user_panel;
 pub mod workspace;
 
 use commands::RunCommand;
@@ -91,6 +92,7 @@ pub fn init_globals(cx: &mut App) {
     commands::init(cx);
     defaults::init(cx);
     panel::init(cx);
+    user_panel::init(cx);
     script::init(cx);
 }
 

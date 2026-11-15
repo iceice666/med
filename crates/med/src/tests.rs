@@ -610,6 +610,165 @@ fn scripts_define_commands(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_user_defines_panels(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    // Type `:eval <source>` on one line, and read the status bar.
+    let eval = |source: &str, cx: &mut VisualTestContext| {
+        let source = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(&format!("eval {source}"));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+    let click = |x: f32, y: f32, cx: &mut VisualTestContext| {
+        cx.simulate_click(point(px(x), px(y)), Modifiers::none());
+        cx.run_until_parked();
+    };
+    let width = cx.update(|window, _| f32::from(window.viewport_size().width));
+
+    // A sidebar on the right. What it shows is the program's own: a count
+    // its click adds to.
+    eval("(def clicks 0)", cx);
+    eval("(def seen nil)", cx);
+    assert_eq!(
+        eval(
+            r#"(defpanel 'counter :at 'right :width 200
+                 (fn (panel)
+                   (col :width 'full :height 'full
+                     (text (str "clicked " clicks) :height 200
+                           :on-click (fn ()
+                                       (set! clicks (+ clicks 1))
+                                       (set! seen (get panel :file)))))))"#,
+            cx
+        ),
+        "\"counter\""
+    );
+    // It is not up until it is shown: a click where it will be lands in
+    // the editor.
+    assert_eq!(eval("(panel-shown? 'counter)", cx), "false");
+    click(width - 100., 100., cx);
+    assert_eq!(eval("clicks", cx), "0");
+    assert_eq!(eval("(show-panel 'counter)", cx), "true");
+    click(width - 100., 100., cx);
+    click(width - 100., 100., cx);
+    assert_eq!(eval("clicks", cx), "2");
+    // The panel was told which file is being edited.
+    assert_eq!(
+        eval("seen", cx),
+        format!("{:?}", project.path("a.txt").display().to_string())
+    );
+
+    // On the left a panel goes between the file tree and the editor, and
+    // `:shown` has it up from the start.
+    eval(
+        r#"(defpanel 'beside :at 'left :width 100 :shown true
+             (fn (panel)
+               (col :width 'full :height 'full
+                 (text "x" :height 30 :on-click (fn () (set! clicks 100))))))"#,
+        cx,
+    );
+    click(260. + 50., 15., cx);
+    assert_eq!(eval("clicks", cx), "100");
+
+    // A list of the program's, a row to a value. It is to the right of
+    // the first panel: they are drawn in the order they were defined.
+    eval("(def picked nil)", cx);
+    eval(
+        r#"(defpanel 'letters :at 'right :width 120 :shown true
+             (fn (panel)
+               (rows '("a" "b" "c") :width 'full :height 90
+                 (fn (letter)
+                   (row :width 'full :height 30
+                        :on-click (fn () (set! picked letter))
+                     (text letter))))))"#,
+        cx,
+    );
+    click(width - 60., 30. + 15., cx);
+    assert_eq!(eval("picked", cx), "\"b\"");
+    click(width - 120. - 100., 100., cx);
+    assert_eq!(eval("clicks", cx), "101");
+
+    // set-layout changes how a panel of the user's looks, too.
+    eval(
+        r#"(set-layout 'counter
+             (fn (panel)
+               (col :width 'full :height 'full
+                 (text "reset" :height 30 :on-click (fn () (set! clicks 0))))))"#,
+        cx,
+    );
+    click(width - 120. - 100., 15., cx);
+    assert_eq!(eval("clicks", cx), "0");
+
+    // A popup, over the editor. Its own click can put it away...
+    eval("(def answer nil)", cx);
+    eval(
+        r#"(defpanel 'ask :at 'popup :width 300
+             (fn (panel)
+               (col (text "Yes" :height 30
+                          :on-click (fn () (set! answer "yes") (hide-panel 'ask))))))"#,
+        cx,
+    );
+    eval("(show-panel 'ask)", cx);
+    click(width / 2., 72. + 15., cx);
+    assert_eq!(eval("answer", cx), "\"yes\"");
+    assert_eq!(eval("(panel-shown? 'ask)", cx), "false");
+    // ...and so can escape, or a click beside it. Sidebars stay.
+    eval("(show-panel 'ask)", cx);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(eval("(panel-shown? 'ask)", cx), "false");
+    assert_eq!(eval("(toggle-panel 'ask)", cx), "true");
+    click(width / 2., 400., cx);
+    assert_eq!(eval("(panel-shown? 'ask)", cx), "false");
+    assert_eq!(eval("(panel-shown? 'counter)", cx), "true");
+    // With no popup up, escape is the editor's as before.
+    cx.simulate_keystrokes("i z escape x");
+    assert_eq!(text(&ws, cx), "a\n");
+
+    // Mistakes are explained.
+    assert_eq!(
+        eval("(show-panel 'nope)", cx),
+        "1:1: nope is not a panel of yours (counter beside letters ask)"
+    );
+    assert_eq!(
+        eval("(defpanel 'tree (fn (panel) (col)))", cx),
+        "1:1: tree is one of the editor's own panels: set-layout changes how it looks"
+    );
+    assert_eq!(
+        eval("(defpanel 'x :at 'top (fn (panel) (col)))", cx),
+        "1:1: at: expected 'left, 'right, 'popup, got top"
+    );
+    assert_eq!(
+        eval("(defpanel 'x :colour 1 (fn (panel) (col)))", cx),
+        "1:1: colour is not an option of defpanel (at width shown)"
+    );
+    assert_eq!(
+        eval("(defpanel 'x 5)", cx),
+        "1:1: defpanel: expected a function, last, got 5"
+    );
+    assert_eq!(
+        eval("(set-layout 'x (fn (panel) (col)))", cx),
+        "1:1: x is not a panel with a layout (tree counter beside letters ask)"
+    );
+
+    // Running the init file again forgets the panels it did not define
+    // this time. One it does define is up if it was up before.
+    let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
+    assert!(!ran);
+    cx.run_until_parked();
+    assert_eq!(
+        eval("(panel-shown? 'counter)", cx),
+        "1:1: counter is not a panel of yours ()"
+    );
+    eval("(defpanel 'counter (fn (panel) (col)))", cx);
+    assert_eq!(eval("(panel-shown? 'counter)", cx), "true");
+    eval("(defpanel 'fresh (fn (panel) (col)))", cx);
+    assert_eq!(eval("(panel-shown? 'fresh)", cx), "false");
+}
+
+#[gpui::test]
 fn runs_an_init_file(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("a.txt", "a\n"),

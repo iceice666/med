@@ -7,11 +7,13 @@ use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::git_view::{GitEvent, GitView};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::picker::{Item, Picker, PickerEvent, PickerMode};
+use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
 use med_vim::Mode;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct Workspace {
@@ -26,6 +28,8 @@ pub struct Workspace {
     pub(crate) show_git: bool,
     pub(crate) picker: Option<Entity<Picker>>,
     _picker_subscription: Option<Subscription>,
+    /// The views of the user's panels, made as each is first drawn.
+    user_panels: HashMap<SharedString, Entity<PanelView>>,
     /// One-line feedback shown in the status bar until the next key.
     pub(crate) message: Option<SharedString>,
     /// Places `ctrl-o` / `ctrl-i` walk through.
@@ -89,6 +93,7 @@ impl Workspace {
             show_git: false,
             picker: None,
             _picker_subscription: None,
+            user_panels: HashMap::new(),
             message: None,
             jumps: Vec::new(),
             jump_index: 0,
@@ -754,9 +759,55 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// The user's panels that are up, each with its view.
+    fn shown_user_panels(&mut self, cx: &mut Context<Self>) -> Vec<(UserPanel, Entity<PanelView>)> {
+        let panels = cx.global::<UserPanels>();
+        let shown: Vec<UserPanel> = panels.shown().cloned().collect();
+        let defined: Vec<SharedString> = panels.names().map(SharedString::new).collect();
+        self.user_panels.retain(|name, _| defined.contains(name));
+        let workspace = cx.weak_entity();
+        shown
+            .into_iter()
+            .map(|panel| {
+                let view = self
+                    .user_panels
+                    .entry(panel.name.clone())
+                    .or_insert_with(|| {
+                        cx.new(|_| PanelView::new(panel.name.clone(), workspace.clone()))
+                    });
+                (panel, view.clone())
+            })
+            .collect()
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let user_panels = self.shown_user_panels(cx);
         let theme = cx.theme();
+        let (popover, popover_foreground) = (theme.popover, theme.popover_foreground);
+        let line = theme.border;
+        // A sidebar of the user's, with a line between it and the editor.
+        let sidebars = |at: At| {
+            user_panels
+                .iter()
+                .filter(move |(panel, _)| panel.at == at)
+                .map(move |(panel, view)| {
+                    div()
+                        .w(px(panel.width))
+                        .flex_shrink_0()
+                        .h_full()
+                        .border_color(line)
+                        .when(at == At::Left, |el| el.border_r_1())
+                        .when(at == At::Right, |el| el.border_l_1())
+                        // A click in it leaves the keyboard where it was.
+                        .on_mouse_down(MouseButton::Left, |_, window, _| {
+                            window.prevent_default();
+                        })
+                        .child(view.clone())
+                })
+        };
         let (border, muted, overlay) = (theme.border, theme.muted_foreground, theme.overlay);
         let (background, foreground) = (theme.background, theme.foreground);
 
@@ -788,6 +839,7 @@ impl Render for Workspace {
                             .child(self.file_tree.clone()),
                     )
                 })
+                .children(sidebars(At::Left))
                 .child(
                     div()
                         .flex_1()
@@ -798,7 +850,50 @@ impl Render for Workspace {
                         .when(!self.tabs.is_empty(), |el| el.child(self.render_tabs(cx)))
                         .child(center),
                 )
+                .children(sidebars(At::Right))
         };
+
+        // A popup of the user's: over everything, as tall as what is in
+        // it, and put away by a click beside it.
+        let popups = user_panels
+            .iter()
+            .filter(|(panel, _)| panel.at == At::Popup)
+            .map(|(panel, view)| {
+                let name = panel.name.clone();
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .justify_center()
+                    .items_start()
+                    .pt(px(72.))
+                    .bg(overlay.opacity(0.25))
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_, _, window, cx| {
+                            cx.global_mut::<UserPanels>().hide(&name);
+                            // The keyboard stays where it was.
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(panel.width))
+                            .bg(popover)
+                            .text_color(popover_foreground)
+                            .border_1()
+                            .border_color(border)
+                            .rounded_md()
+                            .overflow_hidden()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(view.clone()),
+                    )
+            })
+            .collect::<Vec<_>>();
 
         let picker = self.picker.clone().map(|picker| {
             div()
@@ -838,8 +933,16 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, action: &RunCommand, window, cx| {
                 this.run_command(&action.0, &Args::default(), window, cx);
             }))
+            // Escape puts a popup away before any view gets to see it.
+            .capture_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && cx.global_mut::<UserPanels>().hide_popups() {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .child(body)
             .child(self.render_status(cx))
+            .children(popups)
             .children(picker)
     }
 }

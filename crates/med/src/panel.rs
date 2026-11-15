@@ -26,6 +26,7 @@
 //! replaces one.
 
 use crate::script;
+use crate::user_panel::UserPanels;
 use gpui::component::{ActiveTheme as _, Theme};
 use gpui::prelude::*;
 use gpui::*;
@@ -36,6 +37,11 @@ use std::rc::Rc;
 
 /// The panels that have a layout.
 const PANELS: &[&str] = &["tree"];
+
+/// Whether `panel` is one of the editor's own, rather than the user's.
+pub(crate) fn is_built_in(panel: &str) -> bool {
+    PANELS.contains(&panel)
+}
 
 /// The layouts the editor starts out with, as a program that sets them.
 pub(crate) const BUILT_IN: &str = include_str!("panels/tree.lisp");
@@ -55,12 +61,21 @@ enum Content {
     Row(Vec<Rc<Node>>),
     Col(Vec<Rc<Node>>),
     Text(SharedString),
-    /// One of the host's lists, of which only the rows in view are drawn:
-    /// `item` is called for each to say how it looks.
+    /// A list of which only the rows in view are drawn: `item` is called
+    /// for each to say how it looks.
     Rows {
-        source: SharedString,
+        source: RowSource,
         item: Value,
     },
+}
+
+/// Where the rows of a list come from.
+#[derive(Clone)]
+enum RowSource {
+    /// One of the host's lists, by name. A row is the host's values for it.
+    Host(SharedString),
+    /// A list of the program's own. A row is one of its values.
+    Values(Rc<[Value]>),
 }
 
 /// What a click on a node does.
@@ -165,7 +180,7 @@ const THEME_COLORS: &[(&str, ThemeColor)] = &[
 
 // ---- from a program's values -------------------------------------------
 
-fn wrong(key: &str, expected: &str, got: &Value) -> Error {
+pub(crate) fn wrong(key: &str, expected: &str, got: &Value) -> Error {
     Error::new(
         ErrorKind::Type,
         format!("{key}: expected {expected}, got {got}"),
@@ -173,7 +188,7 @@ fn wrong(key: &str, expected: &str, got: &Value) -> Error {
 }
 
 /// A name as a program writes one: `'name`, `:name` or `"name"`.
-fn word(value: &Value) -> Option<String> {
+pub(crate) fn word(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(name) | Value::Keyword(name) => Some(name.name().to_string()),
         Value::Str(name) => Some(name.to_string()),
@@ -181,7 +196,7 @@ fn word(value: &Value) -> Option<String> {
     }
 }
 
-fn number(key: &str, value: &Value) -> Result<f32, Error> {
+pub(crate) fn number(key: &str, value: &Value) -> Result<f32, Error> {
     match value.as_float() {
         Ok(number) if number.is_finite() => Ok(number as f32),
         _ => Err(wrong(key, "a number", value)),
@@ -224,7 +239,7 @@ fn color(key: &str, value: &Value) -> Result<Color, Error> {
 }
 
 /// One of `choices`, by name.
-fn choice<T: Copy>(key: &str, value: &Value, choices: &[(&str, T)]) -> Result<T, Error> {
+pub(crate) fn choice<T: Copy>(key: &str, value: &Value, choices: &[(&str, T)]) -> Result<T, Error> {
     let name = word(value);
     match choices
         .iter()
@@ -409,12 +424,17 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         }
     });
 
-    // (rows list-name styles... function): the function is called with
-    // one row of the host's list and gives back how it looks. All rows
-    // must come out the same height.
+    // (rows list styles... function): the function is called with one
+    // row and gives back how it looks. The list is one of the program's
+    // own, or the name of one of the host's. All rows must come out the
+    // same height, and the list needs a height of its own or `:grow`.
     interp.define_native("rows", Arity::at_least(2), |_, args| {
-        let Some(source) = word(&args[0]) else {
-            return Err(wrong("rows", "the name of a list", &args[0]));
+        let source = match &args[0] {
+            list @ (Value::Nil | Value::Pair(_)) => RowSource::Values(list.to_vec()?.into()),
+            name => match word(name) {
+                Some(name) => RowSource::Host(SharedString::from(name)),
+                None => return Err(wrong("rows", "a list or the name of one", name)),
+            },
         };
         let [middle @ .., item] = &args[1..] else {
             unreachable!("rows takes at least two arguments");
@@ -423,7 +443,7 @@ pub(crate) fn define_functions(interp: &mut Interp) {
             return Err(wrong("rows", "a function for a row, last", item));
         }
         let mut node = Node::new(Content::Rows {
-            source: SharedString::from(source),
+            source,
             item: item.clone(),
         });
         match node.take_styles(middle)? {
@@ -439,22 +459,23 @@ pub(crate) fn define_functions(interp: &mut Interp) {
     // calling the function with the panel's values.
     interp.define_native("set-layout", 2, |call, args| {
         let panel = word(&args[0]).unwrap_or_default();
-        if !PANELS.contains(&panel.as_str()) {
+        if !matches!(args[1], Value::Fn(_) | Value::Native(_)) {
+            return Err(wrong("set-layout", "a function", &args[1]));
+        }
+        let cx = script::app(call)?;
+        let mut panels: Vec<&str> = PANELS.to_vec();
+        panels.extend(cx.global::<UserPanels>().names());
+        if !panels.contains(&panel.as_str()) {
             return Err(Error::new(
                 ErrorKind::Raised,
                 format!(
                     "{} is not a panel with a layout ({})",
                     args[0],
-                    PANELS.join(" ")
+                    panels.join(" ")
                 ),
             ));
         }
-        if !matches!(args[1], Value::Fn(_) | Value::Native(_)) {
-            return Err(wrong("set-layout", "a function", &args[1]));
-        }
-        let cx = script::app(call)?;
-        let layouts = &mut cx.global_mut::<Layouts>().layouts;
-        layouts.insert(panel, args[1].clone());
+        cx.global_mut::<Layouts>().set(&panel, args[1].clone());
         cx.refresh_windows();
         Ok(Value::Nil)
     });
@@ -601,8 +622,8 @@ struct Place<'a> {
 }
 
 /// Call a layout's function and take what it gives back for a node.
-fn describe(function: &Value, vars: Vars, cx: &mut App) -> Result<Rc<Node>, Error> {
-    let value = script::call_to_draw(function, &[vars.into_list()], cx)?;
+fn describe(function: &Value, values: Value, cx: &mut App) -> Result<Rc<Node>, Error> {
+    let value = script::call_to_draw(function, &[values], cx)?;
     node_of(&value).ok_or_else(|| {
         Error::new(
             ErrorKind::Type,
@@ -624,7 +645,7 @@ fn problem(error: &Error, cx: &App) -> AnyElement {
 pub fn render<H: Host>(panel: &str, host: &H, window: &Window, cx: &mut Context<H>) -> AnyElement {
     let layout = cx.global::<Layouts>().layouts.get(panel).cloned();
     let node = match layout {
-        Some(function) => describe(&function, host.vars(window, cx), cx),
+        Some(function) => describe(&function, host.vars(window, cx).into_list(), cx),
         None => Err(Error::new(
             ErrorKind::Raised,
             format!("the panel {panel} has no layout"),
@@ -644,7 +665,9 @@ pub fn render<H: Host>(panel: &str, host: &H, window: &Window, cx: &mut Context<
 fn build<H: Host>(node: &Node, host: &H, place: Place, cx: &Context<H>) -> AnyElement {
     let theme = cx.theme();
     let mut el = match &node.content {
-        Content::Rows { source, item } => return build_rows(node, source, item, host, cx),
+        Content::Rows { source, item } => {
+            return build_rows(node, source, item, host, place, cx);
+        }
         Content::Row(_) => div().flex(),
         Content::Col(_) => div().flex().flex_col(),
         Content::Text(text) => div().child(text.clone()),
@@ -684,23 +707,38 @@ fn build<H: Host>(node: &Node, host: &H, place: Place, cx: &Context<H>) -> AnyEl
 
 fn build_rows<H: Host>(
     node: &Node,
-    source: &SharedString,
+    source: &RowSource,
     item: &Value,
     host: &H,
+    place: Place,
     cx: &Context<H>,
 ) -> AnyElement {
+    let (id, count): (ElementId, usize) = match source {
+        RowSource::Host(name) => (name.clone().into(), host.row_count(name)),
+        RowSource::Values(values) => (("rows", place.key).into(), values.len()),
+    };
     let rows = cx.processor({
         let (source, item) = (source.clone(), item.clone());
         move |host: &mut H, range: Range<usize>, _, cx| {
             range
                 .map(|index| {
-                    let vars = host.row_vars(&source, index, cx);
+                    // What the row's function is called with, and the
+                    // host's list the row is in, if it is in one.
+                    let (values, row) = match &source {
+                        RowSource::Host(name) => {
+                            let values = host.row_vars(name, index, cx).into_list();
+                            (values, Some((name, index)))
+                        }
+                        RowSource::Values(values) => {
+                            (values.get(index).cloned().unwrap_or(Value::Nil), None)
+                        }
+                    };
                     let place = Place {
-                        row: Some((&source, index)),
+                        row,
                         key: index,
                         is_row: true,
                     };
-                    match describe(&item, vars, cx) {
+                    match describe(&item, values, cx) {
                         Ok(node) => build(&node, host, place, cx),
                         Err(error) => problem(&error, cx),
                     }
@@ -708,8 +746,10 @@ fn build_rows<H: Host>(
                 .collect::<Vec<_>>()
         }
     });
-    let mut list = uniform_list(source.clone(), host.row_count(source), rows);
-    if let Some(handle) = host.scroll_handle(source) {
+    let mut list = uniform_list(id, count, rows);
+    if let RowSource::Host(name) = source
+        && let Some(handle) = host.scroll_handle(name)
+    {
         list = list.track_scroll(handle);
     }
     node.style.apply(list, cx.theme()).into_any_element()
@@ -725,6 +765,18 @@ pub struct Layouts {
 
 impl Global for Layouts {}
 
+impl Layouts {
+    /// Draw `panel` with `function` from now on.
+    pub(crate) fn set(&mut self, panel: &str, function: Value) {
+        self.layouts.insert(panel.to_string(), function);
+    }
+
+    /// Forget the layout of every panel that is not the editor's own.
+    pub(crate) fn forget_users(&mut self) {
+        self.layouts.retain(|panel, _| is_built_in(panel));
+    }
+}
+
 /// Start out with no layouts: the interpreter sets the built-in ones.
 pub fn init(cx: &mut App) {
     cx.set_global(Layouts::default());
@@ -733,7 +785,7 @@ pub fn init(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that would bring in GPUI's `test` attribute.
-    use super::{Click, Color, Content, Node, Size, define_functions};
+    use super::{Click, Color, Content, Node, RowSource, Size, define_functions};
     use med_lisp::Interp;
     use std::rc::Rc;
 
@@ -800,8 +852,21 @@ mod tests {
         let [list] = inside(&col) else {
             panic!("expected one child");
         };
-        assert!(matches!(&list.content, Content::Rows { source, .. } if source == "entries"));
+        assert!(matches!(
+            &list.content,
+            Content::Rows { source: RowSource::Host(name), .. } if name == "entries"
+        ));
         assert!(list.style.grow);
+        // A list of the program's own does as well as the name of one.
+        let col = node("(col (rows '(1 2 3) :height 90 (fn (n) (text n))))");
+        let [list] = inside(&col) else {
+            panic!("expected one child");
+        };
+        assert!(matches!(
+            &list.content,
+            Content::Rows { source: RowSource::Values(values), .. } if values.len() == 3
+        ));
+        assert!(matches!(list.style.height, Some(Size::Pixels(90.))));
 
         let click = node("(text \"x\" :on-click (fn () 1))");
         assert!(matches!(click.on_click, Some(Click::Function(_))));
@@ -864,6 +929,10 @@ mod tests {
         assert_eq!(
             error("(rows 'entries 5)"),
             "1:1: rows: expected a function for a row, last, got 5"
+        );
+        assert_eq!(
+            error("(rows 5 (fn (row) (text row)))"),
+            "1:1: rows: expected a list or the name of one, got 5"
         );
     }
 }

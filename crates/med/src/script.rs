@@ -20,6 +20,7 @@
 //! (run "workspace.edit" "notes.md")    ; a command, with its argument
 //! (current-file)  (project-root)
 //! (set-layout 'tree (fn (panel) ...))  ; how a panel is drawn: panel.rs
+//! (defpanel 'notes :at 'right ...)     ; a panel of one's own: user_panel.rs
 //! ```
 //!
 //! A mode, a panel or an option is named by a symbol, a keyword or a
@@ -97,6 +98,7 @@ pub fn init(cx: &mut App) {
     interp.set_step_limit(Some(STEP_LIMIT));
     define_functions(&mut interp);
     crate::panel::define_functions(&mut interp);
+    crate::user_panel::define_functions(&mut interp);
     for (name, value) in INVOCATION.iter().zip(invocation(&Args::default())) {
         interp.define(name, value);
     }
@@ -109,8 +111,9 @@ pub fn init(cx: &mut App) {
     reset_layouts(cx);
 }
 
-/// Put the built-in panel layouts back.
+/// Put the built-in panel layouts back, and forget the user's panels.
 fn reset_layouts(cx: &mut App) {
+    crate::user_panel::reset(cx);
     if let Err(error) = eval(crate::panel::BUILT_IN, cx) {
         panic!("built-in panel layouts: {error}");
     }
@@ -178,6 +181,8 @@ fn start(
                 .update(cx, |workspace, cx| workspace.set_message(message, cx))
                 .ok();
         }
+        // Whatever the program changed, panels may show it.
+        cx.refresh_windows();
     });
 }
 
