@@ -65,7 +65,7 @@ use gpui::{
 use med_lisp::{Arity, Call, Error, ErrorKind, Interp, Value};
 use med_vim::{Awaiting, Bound, MapMode, NextKey, PendingKeys, format_keys, parse_keys};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -113,9 +113,9 @@ const HOOKS: &[&str] = &[
 const KEYS_PENDING: &str = "keys-pending";
 
 /// The key table of the shortcuts the window system handles (`cmd-s`).
-const APP_TABLE: &str = "app";
+pub(crate) const APP_TABLE: &str = "app";
 
-const MODES: &[(&str, MapMode)] = &[
+pub(crate) const MODES: &[(&str, MapMode)] = &[
     ("normal", MapMode::Normal),
     ("visual", MapMode::Visual),
     ("operator", MapMode::Operator),
@@ -144,8 +144,9 @@ pub struct Script {
     loading: Vec<PathBuf>,
     /// The init file that was run, to run again.
     init_file: Option<PathBuf>,
-    /// The shortcuts programs have bound in the `app` table.
-    app_keys: HashSet<String>,
+    /// The shortcuts programs have bound in the `app` table, and the
+    /// command each runs.
+    app_keys: HashMap<String, String>,
     /// Set to stop the search that is under way: a new one takes over.
     pub(crate) search: Arc<AtomicBool>,
 }
@@ -194,7 +195,7 @@ pub fn init(cx: &mut App) {
         last_timer: 0,
         loading: Vec::new(),
         init_file: None,
-        app_keys: HashSet::new(),
+        app_keys: HashMap::new(),
         search: Arc::default(),
     });
 }
@@ -206,6 +207,18 @@ fn reset_panels(cx: &mut App) {
     let script = cx.global_mut::<Script>();
     script.hooks.clear();
     script.timers.clear();
+}
+
+/// The shortcuts of the `app` table that run `command`, sorted.
+pub(crate) fn app_keys_for(command: &str, cx: &App) -> Vec<String> {
+    let bound = &cx.global::<Script>().app_keys;
+    let mut keys: Vec<String> = bound
+        .iter()
+        .filter(|(_, to)| *to == command)
+        .map(|(keys, _)| keys.clone())
+        .collect();
+    keys.sort();
+    keys
 }
 
 /// Call a layout's function while its panel is being drawn.
@@ -709,7 +722,7 @@ fn define_functions(interp: &mut Interp) {
                     let binding = app_binding(keys, Box::new(action), cx)?;
                     cx.bind_keys([binding]);
                     let bound = &mut cx.global_mut::<Script>().app_keys;
-                    bound.insert(keys.to_string());
+                    bound.insert(keys.to_string(), command.to_string());
                 }
             }
         }
@@ -818,7 +831,7 @@ fn define_functions(interp: &mut Interp) {
                 }
                 Table::Panel(panel) => cx.global_mut::<PanelKeymaps>().unbind(&panel, keys),
                 Table::App => {
-                    let bound = cx.global_mut::<Script>().app_keys.remove(keys);
+                    let bound = cx.global_mut::<Script>().app_keys.remove(keys).is_some();
                     if bound {
                         let binding = app_binding(keys, Box::new(NoAction), cx)?;
                         cx.bind_keys([binding]);

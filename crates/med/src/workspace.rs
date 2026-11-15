@@ -5,8 +5,8 @@ use crate::commands::{Args, Commands, Handler, RunCommand};
 use crate::defaults::{self, InstallError};
 use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
-use crate::script;
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
+use crate::{help, script};
 use gpui::component::{ActiveTheme as _, TitleBar};
 use gpui::prelude::*;
 use gpui::*;
@@ -1423,6 +1423,19 @@ pub(crate) fn register(commands: &mut Commands) {
             ws.set_message(message, cx);
             // The panels it defined anew have a project to show.
             script::run_hook("opened", Vec::new(), window, cx);
+        }),
+    );
+    commands.register(
+        "workspace.help",
+        "Show what a command does and how to run it: :help w; with no command, every command",
+        W(|ws, args, window, cx| match help::page(&args.arg, cx) {
+            Some(page) => {
+                ws.open_scratch(help::TAB, Some(&page), None, window, cx);
+                if let Some(editor) = ws.active_editor().cloned() {
+                    editor.update(cx, |editor, cx| editor.goto_offset(0, cx));
+                }
+            }
+            None => ws.set_message(format!("No help for {}", args.arg), cx),
         }),
     );
     commands.register(

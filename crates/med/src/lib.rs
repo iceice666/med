@@ -4,6 +4,7 @@ pub mod buffer_api;
 pub mod commands;
 pub mod defaults;
 pub mod editor;
+pub mod help;
 pub mod host;
 pub mod keymap;
 pub mod lsp;

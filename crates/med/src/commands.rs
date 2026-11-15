@@ -90,6 +90,18 @@ impl Commands {
             .cloned()
     }
 
+    /// The ex command names `command` goes by, shortest first.
+    pub fn ex_names(&self, command: &str) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .ex
+            .iter()
+            .filter(|(_, to)| to.as_ref() == command)
+            .map(|(name, _)| name.as_ref())
+            .collect();
+        names.sort_by_key(|name| (name.len(), *name));
+        names
+    }
+
     /// Every command, sorted by name.
     pub fn all(&self) -> Vec<&Command> {
         let mut commands: Vec<&Command> = self.commands.values().collect();

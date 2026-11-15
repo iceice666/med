@@ -26,6 +26,7 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["qa", "qall"], "workspace.quit_all"),
     (&["e", "edit"], "workspace.edit"),
     (&["eval"], "workspace.eval"),
+    (&["h", "help"], "workspace.help"),
     (
         &["install_default_config"],
         "workspace.install_default_config",

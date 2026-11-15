@@ -1598,6 +1598,18 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
         ]
     );
 
+    // `:help` shows what every command says of itself: the editor's own
+    // and the examples' all say something.
+    let silent: Vec<String> = cx.update(|_, cx| {
+        let commands = cx.global::<crate::commands::Commands>().all();
+        commands
+            .iter()
+            .filter(|command| command.description.trim().is_empty())
+            .map(|command| command.name.to_string())
+            .collect()
+    });
+    assert_eq!(silent, Vec::<String>::new(), "commands with no description");
+
     // The leader keys work from the tree as they do from an editor.
     cx.simulate_keystrokes("space e");
     cx.run_until_parked();
@@ -3021,4 +3033,95 @@ fn programs_draw_the_status_and_title_bars(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(bar(At::Status, cx), Some("statusline".to_string()));
     assert_eq!(bar(At::Title, cx), Some("titlebar".to_string()));
+}
+
+#[gpui::test]
+fn help_is_made_from_the_commands_and_their_keys(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let mine = r#"
+        (defcommand "user.hello" "Say hello" (fn () nil))
+        (bind 'normal "<Space>h" "user.hello")
+        (defkeys 'listing)
+        (bind 'listing.insert "<C-h>" "user.hello")
+        (bind 'tree "H" "user.hello")
+        (bind 'app "cmd-shift-h" "user.hello")
+    "#;
+    let (ws, cx) = open_with(&[TREE, mine], &project, &["a.txt"], cx);
+    let title = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| ws.active_editor().unwrap().read(cx).title())
+    };
+
+    // A command by an ex name: what it says, its names, every key bound.
+    cx.simulate_keystrokes(": h space w enter");
+    cx.run_until_parked();
+    assert_eq!(title(&ws, cx), crate::help::TAB);
+    let page = text(&ws, cx);
+    assert!(page.starts_with("workspace.save\nWrite the file"), "{page}");
+    assert!(page.contains(":w  :write  :workspace.save"), "{page}");
+    assert!(page.contains("normal  <Space>w"), "{page}");
+    assert!(page.contains("app     cmd-s"), "{page}");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+
+    // One of the init file's, in every kind of table; the same tab.
+    cx.simulate_keystrokes("G : h e l p space : u s e r . h e l l o enter");
+    cx.run_until_parked();
+    let page = text(&ws, cx);
+    assert!(page.starts_with("user.hello\nSay hello\n"), "{page}");
+    for line in [
+        "  normal          <Space>h",
+        "  listing.insert  <C-h>",
+        "  tree            H",
+        "  app             cmd-shift-h",
+    ] {
+        assert!(page.contains(line), "{line:?} in\n{page}");
+    }
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    let tabs = ws.read_with(cx, |ws, _| ws.tabs.len());
+    assert_eq!(tabs, 2);
+
+    // The engine's commands have keys, and no command line.
+    cx.simulate_keystrokes(": h space m o t i o n . w o r d _ f o r w a r d enter");
+    cx.run_until_parked();
+    let page = text(&ws, cx);
+    assert!(page.contains("the command line cannot"), "{page}");
+    assert!(!page.contains("Command line"), "{page}");
+    assert!(page.contains("normal    w"), "{page}");
+
+    // With nothing, every command.
+    cx.simulate_keystrokes(": h enter");
+    cx.run_until_parked();
+    let page = text(&ws, cx);
+    assert!(page.contains("\nuser.hello "), "{page}");
+    assert!(page.contains("Say hello"), "{page}");
+    assert!(page.contains("\nworkspace.help "), "{page}");
+    let word = page
+        .lines()
+        .find(|line| line.starts_with("motion.word_forward "))
+        .unwrap();
+    assert!(word.ends_with(" w"), "{word}");
+
+    // And what is no command says so, and leaves the page alone.
+    cx.simulate_keystrokes(": h space n o p e enter");
+    cx.run_until_parked();
+    let said = ws.read_with(cx, |ws, _| ws.message.clone());
+    assert_eq!(said.as_deref(), Some("No help for nope"));
+    assert_eq!(text(&ws, cx), page);
+}
+
+#[gpui::test]
+fn help_works_with_no_keys_bound(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let (ws, cx) = open_window(false, &[], &project, &["a.txt"], cx);
+    cx.simulate_keystrokes(": h e l p space w q enter");
+    cx.run_until_parked();
+    let page = text(&ws, cx);
+    assert!(page.starts_with("workspace.save_and_quit\n"), "{page}");
+    assert!(
+        page.contains(":x  :wq  :xit  :workspace.save_and_quit"),
+        "{page}"
+    );
+    assert!(
+        page.contains("  none: (bind 'normal \"<keys>\" \"workspace.save_and_quit\")"),
+        "{page}"
+    );
 }

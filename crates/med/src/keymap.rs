@@ -50,6 +50,23 @@ impl PanelKeymaps {
         }
     }
 
+    /// Every binding of `command`: the panel table it is in and its keys,
+    /// by table, then keys.
+    pub fn keys_for(&self, command: &str) -> Vec<(String, String)> {
+        let mut found: Vec<(String, String)> = self
+            .contexts
+            .iter()
+            .flat_map(|(context, trie)| {
+                trie.bindings()
+                    .into_iter()
+                    .filter(|(_, bound)| bound.as_ref() == command)
+                    .map(|(keys, _)| (context.clone(), format_keys(&keys)))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
     /// The first of `contexts` that has anything to say about `keys`
     /// decides.
     fn lookup(&self, contexts: &[&str], keys: &[Key]) -> Lookup<SharedString> {
