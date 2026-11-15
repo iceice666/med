@@ -1,11 +1,14 @@
 //! A lazygit-style git screen: numbered panels on the left, a preview of
 //! the selection on the right, single-key commands.
 
+use crate::commands::{Args, Commands, Handler};
+use crate::keymap::{KeySequence, Press, panel_key};
 use gpui::component::ActiveTheme as _;
 use gpui::component::input::{Escape, Input, InputEvent, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use med_git::{Branch, Commit, FileStatus, Head, Repo, Stash};
+use med_vim::Key;
 use std::path::PathBuf;
 
 const ROW_HEIGHT: f32 = 22.;
@@ -16,6 +19,8 @@ pub enum GitEvent {
     OpenFile(PathBuf),
     /// Something on disk may have changed (checkout, pull, discard…).
     Changed,
+    /// A key bound to a command that is not the git screen's to run.
+    Command(SharedString),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +43,17 @@ impl Panel {
 
     fn index(self) -> usize {
         Self::ALL.iter().position(|p| *p == self).unwrap_or(0)
+    }
+
+    /// The panel's own key table, looked at before `git`.
+    fn key_context(self) -> &'static str {
+        match self {
+            Panel::Status => "git.status",
+            Panel::Files => "git.files",
+            Panel::Branches => "git.branches",
+            Panel::Commits => "git.commits",
+            Panel::Stash => "git.stash",
+        }
     }
 
     fn title(self) -> &'static str {
@@ -108,6 +124,8 @@ pub struct GitView {
     busy: Option<&'static str>,
     prompt: Option<Prompt>,
     confirm: Option<Confirm>,
+    /// A key sequence in progress.
+    keys: KeySequence,
     _refresh: Option<Task<()>>,
     _preview: Option<Task<()>>,
     _command: Option<Task<()>>,
@@ -148,6 +166,7 @@ impl GitView {
             busy: None,
             prompt: None,
             confirm: None,
+            keys: KeySequence::default(),
             _refresh: None,
             _preview: None,
             _command: None,
@@ -176,6 +195,15 @@ impl GitView {
 
     pub fn selected_file(&self) -> Option<&FileStatus> {
         self.data.files.get(self.selected[Panel::Files.index()])
+    }
+
+    fn selected_branch(&self) -> Option<&Branch> {
+        let index = self.selected[Panel::Branches.index()];
+        self.data.branches.get(index)
+    }
+
+    fn selected_stash(&self) -> Option<&Stash> {
+        self.data.stashes.get(self.selected[Panel::Stash.index()])
     }
 
     /// Re-read everything from git.
@@ -421,169 +449,142 @@ impl GitView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let keystroke = &event.keystroke;
-        if keystroke.modifiers.platform || keystroke.modifiers.alt || self.prompt.is_some() {
+        if event.keystroke.modifiers.platform || self.prompt.is_some() {
             return;
         }
-        let ctrl = keystroke.modifiers.control;
-        let key = match &keystroke.key_char {
-            _ if keystroke.modifiers.shift && keystroke.key == "tab" => "backtab",
-            Some(text) if !ctrl && keystroke.key.chars().count() == 1 => text.as_str(),
-            _ => keystroke.key.as_str(),
+        let Some(key) = panel_key(&event.keystroke) else {
+            return;
         };
         cx.stop_propagation();
 
         if let Some(confirm) = self.confirm.take() {
-            if matches!(key, "y" | "Y" | "enter") {
+            self.keys.clear();
+            if matches!(key, Key::Char('y' | 'Y') | Key::Enter) {
                 self.run(confirm.label, confirm.command, cx);
             }
             cx.notify();
             return;
         }
-        if self.busy.is_some() && !matches!(key, "q" | "escape") {
+
+        let contexts = [self.panel.key_context(), "git"];
+        let Press::Command(name) = self.keys.press(key, &contexts, cx) else {
+            return;
+        };
+        // While git runs, the only way is out.
+        if self.busy.is_some() && name != "git.close" {
             return;
         }
-
-        let index = self.current();
-        let count = Panel::ALL.len();
-        match key {
-            "q" | "escape" => cx.emit(GitEvent::Close),
-            "1" | "2" | "3" | "4" | "5" => {
-                let panel = Panel::ALL[key.parse::<usize>().unwrap_or(1) - 1];
-                self.focus_panel(panel, cx);
-            }
-            "tab" | "l" | "right" => {
-                self.focus_panel(Panel::ALL[(self.panel.index() + 1) % count], cx)
-            }
-            "backtab" | "h" | "left" => {
-                self.focus_panel(Panel::ALL[(self.panel.index() + count - 1) % count], cx)
-            }
-            "d" if ctrl => self.scroll_preview(15, cx),
-            "u" if ctrl => self.scroll_preview(-15, cx),
-            "j" | "down" => self.select(index + 1, cx),
-            "k" | "up" => self.select(index.saturating_sub(1), cx),
-            "<" => self.select(0, cx),
-            ">" => self.select(usize::MAX, cx),
-            "J" | "pagedown" => self.scroll_preview(10, cx),
-            "K" | "pageup" => self.scroll_preview(-10, cx),
-            "R" => self.refresh(cx),
-            "p" => self.run("pull", |repo| repo.pull(), cx),
-            "P" => self.run("push", |repo| repo.push(), cx),
-            "f" => self.run("fetch", |repo| repo.fetch(), cx),
-            _ => self.panel_key(key, index, window, cx),
+        match cx.global::<Commands>().handler(&name) {
+            Some(Handler::Git(run)) => run(self, &Args::default(), window, cx),
+            _ => cx.emit(GitEvent::Command(name)),
         }
     }
 
-    fn panel_key(&mut self, key: &str, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        match self.panel {
-            Panel::Files => {
-                let file = self.data.files.get(index).cloned();
-                match (key, file) {
-                    (" " | "space", Some(file)) => {
-                        // Anything left unstaged gets staged; a fully staged
-                        // file gets unstaged.
-                        if file.has_unstaged() {
-                            self.run(
-                                "stage",
-                                move |repo| repo.stage(&file.path).map(|_| String::new()),
-                                cx,
-                            );
-                        } else {
-                            self.run(
-                                "unstage",
-                                move |repo| repo.unstage(&file.path).map(|_| String::new()),
-                                cx,
-                            );
-                        }
-                    }
-                    ("a", _) => {
-                        if self.data.files.iter().any(FileStatus::has_unstaged) {
-                            self.run(
-                                "stage all",
-                                |repo| repo.stage_all().map(|_| String::new()),
-                                cx,
-                            );
-                        } else {
-                            self.run(
-                                "unstage all",
-                                |repo| repo.unstage_all().map(|_| String::new()),
-                                cx,
-                            );
-                        }
-                    }
-                    ("c", _) => {
-                        if self.data.files.iter().any(FileStatus::has_staged) {
-                            self.open_prompt(PromptKind::Commit, window, cx);
-                        } else {
-                            self.message = Some(("Nothing staged to commit".into(), true));
-                            cx.notify();
-                        }
-                    }
-                    ("A", _) => self.open_prompt(PromptKind::Amend, window, cx),
-                    ("d", Some(file)) => {
-                        let question = format!(
-                            "Discard all changes to {}? This cannot be undone.",
-                            file.path
-                        );
-                        self.ask(
-                            question,
-                            "discard",
-                            move |repo| repo.discard(&file).map(|_| String::new()),
-                            cx,
-                        );
-                    }
-                    ("s", _) => self.run("stash", |repo| repo.stash_push(None), cx),
-                    ("enter" | "e" | "o", Some(file)) => {
-                        if let Some(repo) = &self.repo {
-                            cx.emit(GitEvent::OpenFile(repo.root.join(&file.path)));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Panel::Branches => {
-                let branch = self.data.branches.get(index).cloned();
-                match (key, branch) {
-                    (" " | "space" | "enter", Some(branch)) if !branch.current => {
-                        self.run("checkout", move |repo| repo.checkout(&branch.name), cx);
-                    }
-                    ("n", _) => self.open_prompt(PromptKind::NewBranch, window, cx),
-                    ("d", Some(branch)) if !branch.current => {
-                        let question = format!("Delete branch {}?", branch.name);
-                        self.ask(
-                            question,
-                            "delete branch",
-                            move |repo| repo.delete_branch(&branch.name, false),
-                            cx,
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            Panel::Stash => {
-                let stash = self.data.stashes.get(index).cloned();
-                match (key, stash) {
-                    (" " | "space", Some(stash)) => {
-                        self.run("stash apply", move |repo| repo.stash_apply(stash.index), cx)
-                    }
-                    ("g", Some(stash)) => {
-                        self.run("stash pop", move |repo| repo.stash_pop(stash.index), cx)
-                    }
-                    ("d", Some(stash)) => {
-                        let question =
-                            format!("Drop stash \"{}\"? This cannot be undone.", stash.message);
-                        self.ask(
-                            question,
-                            "stash drop",
-                            move |repo| repo.stash_drop(stash.index),
-                            cx,
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            Panel::Status | Panel::Commits => {}
+    fn cycle_panel(&mut self, delta: usize, cx: &mut Context<Self>) {
+        let count = Panel::ALL.len();
+        self.focus_panel(Panel::ALL[(self.panel.index() + delta) % count], cx);
+    }
+
+    /// Stage whatever of the file is unstaged; unstage a fully staged one.
+    fn toggle_stage(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.selected_file().cloned() else {
+            return;
+        };
+        if file.has_unstaged() {
+            self.run(
+                "stage",
+                move |repo| repo.stage(&file.path).map(|_| String::new()),
+                cx,
+            );
+        } else {
+            self.run(
+                "unstage",
+                move |repo| repo.unstage(&file.path).map(|_| String::new()),
+                cx,
+            );
         }
+    }
+
+    fn toggle_stage_all(&mut self, cx: &mut Context<Self>) {
+        if self.data.files.iter().any(FileStatus::has_unstaged) {
+            self.run(
+                "stage all",
+                |repo| repo.stage_all().map(|_| String::new()),
+                cx,
+            );
+        } else {
+            self.run(
+                "unstage all",
+                |repo| repo.unstage_all().map(|_| String::new()),
+                cx,
+            );
+        }
+    }
+
+    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.data.files.iter().any(FileStatus::has_staged) {
+            self.open_prompt(PromptKind::Commit, window, cx);
+        } else {
+            self.message = Some(("Nothing staged to commit".into(), true));
+            cx.notify();
+        }
+    }
+
+    fn discard(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.selected_file().cloned() else {
+            return;
+        };
+        let question = format!(
+            "Discard all changes to {}? This cannot be undone.",
+            file.path
+        );
+        self.ask(
+            question,
+            "discard",
+            move |repo| repo.discard(&file).map(|_| String::new()),
+            cx,
+        );
+    }
+
+    fn open_selected_file(&mut self, cx: &mut Context<Self>) {
+        if let (Some(file), Some(repo)) = (self.selected_file(), &self.repo) {
+            cx.emit(GitEvent::OpenFile(repo.root.join(&file.path)));
+        }
+    }
+
+    fn checkout(&mut self, cx: &mut Context<Self>) {
+        if let Some(branch) = self.selected_branch().cloned()
+            && !branch.current
+        {
+            self.run("checkout", move |repo| repo.checkout(&branch.name), cx);
+        }
+    }
+
+    fn delete_branch(&mut self, cx: &mut Context<Self>) {
+        if let Some(branch) = self.selected_branch().cloned()
+            && !branch.current
+        {
+            let question = format!("Delete branch {}?", branch.name);
+            self.ask(
+                question,
+                "delete branch",
+                move |repo| repo.delete_branch(&branch.name, false),
+                cx,
+            );
+        }
+    }
+
+    fn stash_drop(&mut self, cx: &mut Context<Self>) {
+        let Some(stash) = self.selected_stash().cloned() else {
+            return;
+        };
+        let question = format!("Drop stash \"{}\"? This cannot be undone.", stash.message);
+        self.ask(
+            question,
+            "stash drop",
+            move |repo| repo.stash_drop(stash.index),
+            cx,
+        );
     }
 
     // ---- rendering -----------------------------------------------------
@@ -954,4 +955,181 @@ impl Render for GitView {
         )
         .children(prompt)
     }
+}
+
+pub(crate) fn register(commands: &mut Commands) {
+    use Handler::Git as G;
+    commands.register(
+        "git.close",
+        "Leave the git screen",
+        G(|_, _, _, cx| cx.emit(GitEvent::Close)),
+    );
+    commands.register(
+        "git.focus_status",
+        "Go to the status panel",
+        G(|git, _, _, cx| git.focus_panel(Panel::Status, cx)),
+    );
+    commands.register(
+        "git.focus_files",
+        "Go to the files panel",
+        G(|git, _, _, cx| git.focus_panel(Panel::Files, cx)),
+    );
+    commands.register(
+        "git.focus_branches",
+        "Go to the branches panel",
+        G(|git, _, _, cx| git.focus_panel(Panel::Branches, cx)),
+    );
+    commands.register(
+        "git.focus_commits",
+        "Go to the commits panel",
+        G(|git, _, _, cx| git.focus_panel(Panel::Commits, cx)),
+    );
+    commands.register(
+        "git.focus_stash",
+        "Go to the stash panel",
+        G(|git, _, _, cx| git.focus_panel(Panel::Stash, cx)),
+    );
+    commands.register(
+        "git.next_panel",
+        "Go to the next panel",
+        G(|git, _, _, cx| git.cycle_panel(1, cx)),
+    );
+    commands.register(
+        "git.prev_panel",
+        "Go to the previous panel",
+        G(|git, _, _, cx| git.cycle_panel(Panel::ALL.len() - 1, cx)),
+    );
+    commands.register(
+        "git.down",
+        "Select the next row",
+        G(|git, _, _, cx| git.select(git.current() + 1, cx)),
+    );
+    commands.register(
+        "git.up",
+        "Select the previous row",
+        G(|git, _, _, cx| git.select(git.current().saturating_sub(1), cx)),
+    );
+    commands.register(
+        "git.first",
+        "Select the first row",
+        G(|git, _, _, cx| git.select(0, cx)),
+    );
+    commands.register(
+        "git.last",
+        "Select the last row",
+        G(|git, _, _, cx| git.select(usize::MAX, cx)),
+    );
+    commands.register(
+        "git.preview_down",
+        "Scroll the preview down",
+        G(|git, _, _, cx| git.scroll_preview(10, cx)),
+    );
+    commands.register(
+        "git.preview_up",
+        "Scroll the preview up",
+        G(|git, _, _, cx| git.scroll_preview(-10, cx)),
+    );
+    commands.register(
+        "git.preview_page_down",
+        "Scroll the preview down by more",
+        G(|git, _, _, cx| git.scroll_preview(15, cx)),
+    );
+    commands.register(
+        "git.preview_page_up",
+        "Scroll the preview up by more",
+        G(|git, _, _, cx| git.scroll_preview(-15, cx)),
+    );
+    commands.register(
+        "git.refresh",
+        "Re-read the repository",
+        G(|git, _, _, cx| git.refresh(cx)),
+    );
+    commands.register(
+        "git.pull",
+        "Pull",
+        G(|git, _, _, cx| git.run("pull", |repo| repo.pull(), cx)),
+    );
+    commands.register(
+        "git.push",
+        "Push",
+        G(|git, _, _, cx| git.run("push", |repo| repo.push(), cx)),
+    );
+    commands.register(
+        "git.fetch",
+        "Fetch",
+        G(|git, _, _, cx| git.run("fetch", |repo| repo.fetch(), cx)),
+    );
+    commands.register(
+        "git.toggle_stage",
+        "Stage the selected file, or unstage it if fully staged",
+        G(|git, _, _, cx| git.toggle_stage(cx)),
+    );
+    commands.register(
+        "git.toggle_stage_all",
+        "Stage everything, or unstage everything if nothing is left",
+        G(|git, _, _, cx| git.toggle_stage_all(cx)),
+    );
+    commands.register(
+        "git.commit",
+        "Commit what is staged",
+        G(|git, _, window, cx| git.commit(window, cx)),
+    );
+    commands.register(
+        "git.amend",
+        "Amend the last commit",
+        G(|git, _, window, cx| git.open_prompt(PromptKind::Amend, window, cx)),
+    );
+    commands.register(
+        "git.discard",
+        "Discard the selected file's changes, after asking",
+        G(|git, _, _, cx| git.discard(cx)),
+    );
+    commands.register(
+        "git.stash",
+        "Stash all changes",
+        G(|git, _, _, cx| git.run("stash", |repo| repo.stash_push(None), cx)),
+    );
+    commands.register(
+        "git.open_file",
+        "Open the selected file in an editor",
+        G(|git, _, _, cx| git.open_selected_file(cx)),
+    );
+    commands.register(
+        "git.checkout",
+        "Check out the selected branch",
+        G(|git, _, _, cx| git.checkout(cx)),
+    );
+    commands.register(
+        "git.new_branch",
+        "Create a branch",
+        G(|git, _, window, cx| git.open_prompt(PromptKind::NewBranch, window, cx)),
+    );
+    commands.register(
+        "git.delete_branch",
+        "Delete the selected branch, after asking",
+        G(|git, _, _, cx| git.delete_branch(cx)),
+    );
+    commands.register(
+        "git.stash_apply",
+        "Apply the selected stash",
+        G(|git, _, _, cx| {
+            if let Some(index) = git.selected_stash().map(|stash| stash.index) {
+                git.run("stash apply", move |repo| repo.stash_apply(index), cx);
+            }
+        }),
+    );
+    commands.register(
+        "git.stash_pop",
+        "Apply the selected stash and drop it",
+        G(|git, _, _, cx| {
+            if let Some(index) = git.selected_stash().map(|stash| stash.index) {
+                git.run("stash pop", move |repo| repo.stash_pop(index), cx);
+            }
+        }),
+    );
+    commands.register(
+        "git.stash_drop",
+        "Drop the selected stash, after asking",
+        G(|git, _, _, cx| git.stash_drop(cx)),
+    );
 }

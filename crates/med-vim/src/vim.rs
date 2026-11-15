@@ -3,15 +3,24 @@
 //! The engine is UI-agnostic. The host feeds it [`Key`]s and applies the
 //! returned [`Effect`]s for anything that reaches outside the buffer (ex
 //! commands such as `:w`, LSP requests, scrolling).
+//!
+//! Which key does what is data: the [`Keymap`] in [`Shared`] binds key
+//! sequences to named commands. The grammar those commands plug into —
+//! counts, registers, operator + motion — lives here.
 
+use crate::command::{Action, Await, Builtin, Cmd, InsertCmd};
 use crate::ex::{self, RangeCtx};
+use crate::keymap::{Keymap, Lookup, MapMode, format_keys};
 use crate::motion::{self, Find, WS, class, first_non_blank, leading_ws};
 use crate::textobj;
 use med_core::Buffer;
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Keys run for one key press before giving up on a mapping as endless.
+const MAX_MAPPED_KEYS: usize = 1000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Char(char),
     /// Literal text for insert mode or the command line (a paste). Unlike
@@ -23,6 +32,8 @@ pub enum Key {
     Backspace,
     Delete,
     Tab,
+    /// Shift-Tab.
+    BackTab,
     Left,
     Right,
     Up,
@@ -131,10 +142,11 @@ pub struct Search {
     pub forward: bool,
 }
 
-/// State shared by every editor: registers, the last search, the last
-/// repeatable change.
+/// State shared by every editor: the key bindings, registers, the last
+/// search, the last repeatable change.
 #[derive(Default)]
 pub struct Shared {
+    pub keymap: Keymap,
     registers: HashMap<char, Register>,
     pub search: Option<Search>,
     pub hlsearch: bool,
@@ -226,20 +238,16 @@ pub enum Effect {
     Jump {
         from: usize,
     },
-    JumpBack,
-    JumpForward,
-    GotoDefinition,
-    References,
-    Hover,
-    NextDiagnostic,
-    PrevDiagnostic,
-    TriggerCompletion,
-    NextTab,
-    PrevTab,
+    /// A key bound to a command that is not one of the engine's own
+    /// (see [`command_names`](crate::command_names)): the host runs it.
+    Command {
+        name: String,
+        count: Option<usize>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Operator {
+pub(crate) enum Operator {
     Delete,
     Change,
     Yank,
@@ -252,7 +260,7 @@ enum Operator {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Motion {
+pub(crate) enum Motion {
     Left,
     Right,
     Up,
@@ -332,33 +340,23 @@ enum Target {
     Lines(usize, usize),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-enum Prefix {
-    #[default]
-    None,
-    G,
-    Z,
-    Find {
-        forward: bool,
-        till: bool,
-    },
-    Replace,
-    TextObject {
-        around: bool,
-    },
-    Register,
-    Bracket {
-        forward: bool,
-    },
-}
-
+/// A command that is only partly typed.
 #[derive(Default)]
 struct Pending {
     count: Option<usize>,
     op: Option<Operator>,
+    /// The key that finished the operator's binding (`d`, the `u` of
+    /// `gu`): pressed again, it applies the operator to whole lines.
+    op_key: Option<Key>,
     op_count: Option<usize>,
     register: Option<char>,
-    prefix: Prefix,
+    /// A command waiting for its literal argument (`f`, `r`, `"`…).
+    awaiting: Option<Await>,
+    /// Keys that so far only start a binding (`g`, the `space` of a
+    /// leader binding).
+    seq: Vec<Key>,
+    /// Every key of the command so far, for display.
+    typed: Vec<Key>,
 }
 
 impl Pending {
@@ -367,7 +365,8 @@ impl Pending {
             && self.op.is_none()
             && self.op_count.is_none()
             && self.register.is_none()
-            && self.prefix == Prefix::None
+            && self.awaiting.is_none()
+            && self.seq.is_empty()
     }
 
     fn count(&self) -> Option<usize> {
@@ -398,6 +397,9 @@ pub struct Vim {
     cmd_changed: bool,
     no_repeat: bool,
     replaying: bool,
+    /// Keys put back to be run next: the rest of a sequence whose start
+    /// turned out to be a shorter binding, or what a key is mapped to.
+    unread: Vec<Key>,
     last_visual: Option<(usize, usize, Mode)>,
     /// A one-line message for the status bar (errors, substitution counts).
     pub message: Option<String>,
@@ -431,6 +433,7 @@ impl Vim {
             cmd_changed: false,
             no_repeat: false,
             replaying: false,
+            unread: Vec::new(),
             last_visual: None,
             message: None,
         }
@@ -445,47 +448,7 @@ impl Vim {
 
     /// Keys typed so far for an unfinished command (vim's `showcmd`).
     pub fn pending_display(&self) -> String {
-        let p = &self.pending;
-        let mut out = String::new();
-        if let Some(r) = p.register {
-            out.push('"');
-            out.push(r);
-        }
-        if let Some(c) = p.count {
-            out.push_str(&c.to_string());
-        }
-        if let Some(op) = p.op {
-            out.push_str(match op {
-                Operator::Delete => "d",
-                Operator::Change => "c",
-                Operator::Yank => "y",
-                Operator::Indent => ">",
-                Operator::Outdent => "<",
-                Operator::Lower => "gu",
-                Operator::Upper => "gU",
-                Operator::ToggleCase => "g~",
-                Operator::Comment => "gc",
-            });
-        }
-        if let Some(c) = p.op_count {
-            out.push_str(&c.to_string());
-        }
-        match p.prefix {
-            Prefix::None => {}
-            Prefix::G => out.push('g'),
-            Prefix::Z => out.push('z'),
-            Prefix::Find { forward, till } => out.push(match (forward, till) {
-                (true, false) => 'f',
-                (false, false) => 'F',
-                (true, true) => 't',
-                (false, true) => 'T',
-            }),
-            Prefix::Replace => out.push('r'),
-            Prefix::TextObject { around } => out.push(if around { 'a' } else { 'i' }),
-            Prefix::Register => out.push('"'),
-            Prefix::Bracket { forward } => out.push(if forward { ']' } else { '[' }),
-        }
-        out
+        format_keys(&self.pending.typed)
     }
 
     /// True while a multi-key command is half typed.
@@ -585,6 +548,28 @@ impl Vim {
         fx
     }
 
+    /// True while the keys typed so far are a binding of their own that
+    /// longer bindings also start with (or, in insert mode, are held back
+    /// as the possible start of one). The engine keeps no clock: if no key
+    /// follows, the host calls [`Vim::timeout`] to settle it.
+    pub fn wants_timeout(&self, shared: &Shared) -> bool {
+        let seq = &self.pending.seq;
+        !seq.is_empty()
+            && (self.mode == Mode::Insert
+                || shared.keymap.longest_prefix(self.map_mode(), seq).is_some())
+    }
+
+    /// Stop waiting for a longer binding: run what the keys typed so far
+    /// are bound to (vim's `timeout`).
+    pub fn timeout(&mut self, cx: &mut Ctx<'_>) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        if self.wants_timeout(cx.shared) {
+            self.message = None;
+            self.drive(None, cx, &mut fx);
+        }
+        fx
+    }
+
     fn dispatch(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         if !self.replaying {
             if self.keys.is_empty() {
@@ -594,38 +579,39 @@ impl Vim {
             }
             self.keys.push(key.clone());
         }
+        self.drive(Some(key), cx, fx);
+    }
+
+    /// Run `key` — or with `None`, settle a sequence that was waiting for
+    /// more — and then every key that puts back.
+    fn drive(&mut self, key: Option<Key>, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         let version = cx.buf.version();
-        match self.mode {
-            Mode::Insert => self.insert_key(key, cx, fx),
-            Mode::Command => self.cmdline_key(key, cx, fx),
-            Mode::Normal | Mode::Visual | Mode::VisualLine => {
-                let undo_redo = self.mode == Mode::Normal
-                    && self.pending.op.is_none()
-                    && self.pending.prefix == Prefix::None
-                    && matches!(key, Key::Char('u') | Key::Ctrl('r'));
-                if undo_redo {
-                    // Undo cannot run inside the undo group below.
-                    let count = self.pending.count().unwrap_or(1);
-                    self.pending = Pending::default();
-                    self.no_repeat = true;
-                    for _ in 0..count {
-                        let pos = if key == Key::Char('u') {
-                            cx.buf.undo()
-                        } else {
-                            cx.buf.redo()
-                        };
-                        match pos {
-                            Some(pos) => self.cursor = pos,
-                            None => break,
-                        }
-                    }
-                    self.goal_col = None;
-                } else {
-                    cx.buf.begin(self.cursor);
-                    self.normal_key(key, cx, fx);
-                    cx.buf.end();
-                }
+        let mut queue = VecDeque::new();
+        match key {
+            Some(key) => queue.push_back(key),
+            None => {
+                let seq = std::mem::take(&mut self.pending.seq);
+                self.resolve_partial(seq, cx, fx);
             }
+        }
+        let mut steps = 0;
+        loop {
+            for key in self.unread.drain(..).rev() {
+                queue.push_front(key);
+            }
+            let Some(key) = queue.pop_front() else {
+                break;
+            };
+            steps += 1;
+            if steps > MAX_MAPPED_KEYS {
+                self.pending.seq.clear();
+                if self.mode != Mode::Insert {
+                    self.reset_pending();
+                }
+                self.message = Some("Key mapping never ends".to_string());
+                break;
+            }
+            self.step(key, cx, fx);
         }
         if cx.buf.version() != version {
             self.cmd_changed = true;
@@ -641,260 +627,199 @@ impl Vim {
         }
     }
 
+    fn step(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        match self.mode {
+            Mode::Command => return self.cmdline_key(key, cx, fx),
+            // Pasted text is not typing: it is never mapped.
+            Mode::Insert if self.pending.seq.is_empty() && matches!(key, Key::Text(_)) => {
+                return self.insert_default(key, cx);
+            }
+            Mode::Insert => {
+                self.pending.typed.push(key.clone());
+                self.map_key(key, cx, fx);
+            }
+            Mode::Normal | Mode::Visual | Mode::VisualLine => {
+                // Escape always abandons a half-typed command, whatever
+                // the keymap says; then it is looked up like any other key.
+                if key.is_escape() && !self.pending.is_idle() {
+                    self.reset_pending();
+                }
+                self.pending.typed.push(key.clone());
+                self.normal_key(key, cx, fx);
+            }
+        }
+        if self.pending.is_idle() {
+            self.pending.typed.clear();
+        }
+    }
+
     fn reset_pending(&mut self) {
         self.pending = Pending::default();
     }
 
+    /// The key table in force.
+    fn map_mode(&self) -> MapMode {
+        match self.mode {
+            Mode::Insert => MapMode::Insert,
+            _ if self.pending.op.is_some() => MapMode::Operator,
+            Mode::Visual | Mode::VisualLine => MapMode::Visual,
+            Mode::Normal | Mode::Command => MapMode::Normal,
+        }
+    }
+
+    /// The grammar around the keymap: literal arguments, counts, and the
+    /// doubled operator.
     fn normal_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
-        if key.is_escape() {
-            self.reset_pending();
-            if self.mode.is_visual() {
-                self.exit_visual();
-            }
+        if let Some(awaiting) = self.pending.awaiting.take() {
+            cx.buf.begin(self.cursor);
+            self.argument_key(awaiting, key, cx, fx);
+            cx.buf.end();
             return;
         }
 
-        match std::mem::take(&mut self.pending.prefix) {
-            Prefix::None => {}
-            Prefix::Register => {
-                match key {
-                    Key::Char(c) => self.pending.register = Some(c),
-                    _ => self.reset_pending(),
+        if self.pending.seq.is_empty() {
+            // Counts. A leading 0 is whatever `0` is bound to.
+            if let Key::Char(c @ '0'..='9') = key {
+                let slot = if self.pending.op.is_some() {
+                    &mut self.pending.op_count
+                } else {
+                    &mut self.pending.count
+                };
+                if c != '0' || slot.is_some() {
+                    let digit = c as usize - '0' as usize;
+                    *slot = Some((slot.unwrap_or(0).saturating_mul(10) + digit).min(1_000_000));
+                    return;
                 }
+            }
+
+            // `dd`, `guu`, `gcc`: the operator's own key again.
+            if let Some(op) = self.pending.op
+                && self.pending.op_key.as_ref() == Some(&key)
+            {
+                cx.buf.begin(self.cursor);
+                self.operator_key(op, cx);
+                cx.buf.end();
                 return;
             }
-            Prefix::Find { forward, till } => {
-                match key {
-                    Key::Char(c) => {
-                        let find = Find { c, forward, till };
-                        cx.shared.last_find = Some(find);
-                        self.run_motion(Motion::Find(find), cx, fx);
+        }
+
+        self.map_key(key, cx, fx);
+    }
+
+    /// Add `key` to the sequence being typed and run what that is bound to.
+    fn map_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        self.pending.seq.push(key);
+        match cx.shared.keymap.lookup(self.map_mode(), &self.pending.seq) {
+            Lookup::Pending => {}
+            Lookup::Found(action) => {
+                let seq = std::mem::take(&mut self.pending.seq);
+                self.exec(action, &seq[seq.len() - 1], cx, fx);
+            }
+            Lookup::None => {
+                let seq = std::mem::take(&mut self.pending.seq);
+                self.resolve_partial(seq, cx, fx);
+            }
+        }
+    }
+
+    /// `seq` is not a binding, or no key came to make it a longer one: run
+    /// the longest leading part that is bound and put the rest back.
+    fn resolve_partial(&mut self, seq: Vec<Key>, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        match cx.shared.keymap.longest_prefix(self.map_mode(), &seq) {
+            Some((len, action)) => {
+                self.exec(action, &seq[len - 1], cx, fx);
+                self.unread.extend(seq.into_iter().skip(len));
+            }
+            // Unbound keys insert themselves.
+            None if self.mode == Mode::Insert => {
+                let mut keys = seq.into_iter();
+                if let Some(first) = keys.next() {
+                    self.insert_default(first, cx);
+                }
+                self.unread.extend(keys);
+            }
+            None => self.reset_pending(),
+        }
+    }
+
+    /// Run what a key sequence is bound to; `trigger` is its last key.
+    fn exec(&mut self, action: Action, trigger: &Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        match action {
+            // Count, register and operator stay pending for the new keys.
+            Action::Keys(keys) => self.unread.extend(keys.iter().cloned()),
+            Action::Host(name) => {
+                let count = self.pending.count();
+                self.reset_pending();
+                fx.push(Effect::Command {
+                    name: name.to_string(),
+                    count,
+                });
+            }
+            Action::Builtin(builtin) if self.mode == Mode::Insert => {
+                self.insert_command(builtin, cx, fx)
+            }
+            Action::Builtin(Builtin::Cmd(Cmd::Undo)) => self.undo(false, cx),
+            Action::Builtin(Builtin::Cmd(Cmd::Redo)) => self.undo(true, cx),
+            Action::Builtin(builtin) => {
+                cx.buf.begin(self.cursor);
+                match builtin {
+                    Builtin::Motion(motion) => self.run_motion(motion, cx, fx),
+                    Builtin::Operator(op) => {
+                        self.operator_key(op, cx);
+                        if self.pending.op.is_some() {
+                            self.pending.op_key = Some(trigger.clone());
+                        }
                     }
-                    _ => self.reset_pending(),
+                    Builtin::Await(awaiting) => self.pending.awaiting = Some(awaiting),
+                    Builtin::Scroll(scroll) => {
+                        fx.push(Effect::Scroll(scroll));
+                        self.reset_pending();
+                    }
+                    Builtin::Cmd(cmd) => self.command(cmd, cx, fx),
+                    // Insert-mode commands mean nothing here.
+                    Builtin::Insert(_) => self.reset_pending(),
                 }
-                return;
+                cx.buf.end();
             }
-            Prefix::Replace => {
-                match key {
-                    Key::Char(c) => self.replace_chars(c, cx),
-                    Key::Enter => self.replace_chars('\n', cx),
-                    _ => {}
-                }
-                self.reset_pending();
-                return;
-            }
-            Prefix::TextObject { around } => {
-                match key {
-                    Key::Char(c) => self.run_text_object(c, around, cx),
-                    _ => self.reset_pending(),
-                }
-                return;
-            }
-            Prefix::G => return self.g_key(key, cx, fx),
-            Prefix::Z => {
-                match key {
-                    Key::Char('z') | Key::Char('.') => fx.push(Effect::Scroll(Scroll::Center)),
-                    Key::Char('t') | Key::Enter => fx.push(Effect::Scroll(Scroll::Top)),
-                    Key::Char('b') | Key::Char('-') => fx.push(Effect::Scroll(Scroll::Bottom)),
-                    _ => {}
-                }
-                self.reset_pending();
-                return;
-            }
-            Prefix::Bracket { forward } => {
-                if key == Key::Char('d') {
-                    fx.push(if forward {
-                        Effect::NextDiagnostic
-                    } else {
-                        Effect::PrevDiagnostic
-                    });
-                }
-                self.reset_pending();
-                return;
-            }
-        }
-
-        // Counts. A leading 0 is the line-start motion.
-        if let Key::Char(c @ '0'..='9') = key {
-            let slot = if self.pending.op.is_some() {
-                &mut self.pending.op_count
-            } else {
-                &mut self.pending.count
-            };
-            if c != '0' || slot.is_some() {
-                let digit = c as usize - '0' as usize;
-                *slot = Some((slot.unwrap_or(0).saturating_mul(10) + digit).min(1_000_000));
-                return;
-            }
-        }
-
-        let op_pending = self.pending.op.is_some();
-        let visual = self.mode.is_visual();
-
-        // Doubled g-operators: `guu`, `gUU`, `g~~`, `gcc`.
-        if let (Some(op), Key::Char(c)) = (self.pending.op, &key) {
-            let doubled = matches!(
-                (op, *c),
-                (Operator::Lower, 'u')
-                    | (Operator::Upper, 'U')
-                    | (Operator::ToggleCase, '~')
-                    | (Operator::Comment, 'c')
-            );
-            if doubled {
-                return self.operator_key(op, cx);
-            }
-        }
-
-        if let Some(motion) = Self::key_to_motion(&key) {
-            return self.run_motion(motion, cx, fx);
-        }
-
-        let Key::Char(c) = key else {
-            match key {
-                Key::Ctrl('o') if !op_pending => fx.push(Effect::JumpBack),
-                Key::Ctrl('i') | Key::Tab if !op_pending => fx.push(Effect::JumpForward),
-                Key::Ctrl('e') if !op_pending => fx.push(Effect::Scroll(Scroll::Lines(1))),
-                Key::Ctrl('y') if !op_pending => fx.push(Effect::Scroll(Scroll::Lines(-1))),
-                Key::Delete if !op_pending => self.delete_chars(false, cx),
-                _ => {}
-            }
-            self.reset_pending();
-            return;
-        };
-
-        match c {
-            '"' => self.pending.prefix = Prefix::Register,
-            'f' => {
-                self.pending.prefix = Prefix::Find {
-                    forward: true,
-                    till: false,
-                }
-            }
-            'F' => {
-                self.pending.prefix = Prefix::Find {
-                    forward: false,
-                    till: false,
-                }
-            }
-            't' => {
-                self.pending.prefix = Prefix::Find {
-                    forward: true,
-                    till: true,
-                }
-            }
-            'T' => {
-                self.pending.prefix = Prefix::Find {
-                    forward: false,
-                    till: true,
-                }
-            }
-            'g' => self.pending.prefix = Prefix::G,
-            'z' if !op_pending => self.pending.prefix = Prefix::Z,
-            ']' if !op_pending => self.pending.prefix = Prefix::Bracket { forward: true },
-            '[' if !op_pending => self.pending.prefix = Prefix::Bracket { forward: false },
-            'i' | 'a' if op_pending || visual => {
-                self.pending.prefix = Prefix::TextObject { around: c == 'a' }
-            }
-            'd' => self.operator_key(Operator::Delete, cx),
-            'c' => self.operator_key(Operator::Change, cx),
-            'y' => self.operator_key(Operator::Yank, cx),
-            '>' => self.operator_key(Operator::Indent, cx),
-            '<' => self.operator_key(Operator::Outdent, cx),
-            _ if op_pending => self.reset_pending(),
-            _ if visual => self.visual_command(c, cx, fx),
-            _ => self.normal_command(c, cx, fx),
         }
     }
 
-    fn key_to_motion(key: &Key) -> Option<Motion> {
-        Some(match key {
-            Key::Char('h') | Key::Left | Key::Backspace | Key::Ctrl('h') => Motion::Left,
-            Key::Char('l') | Key::Right | Key::Char(' ') => Motion::Right,
-            Key::Char('j') | Key::Down | Key::Ctrl('j') | Key::Ctrl('n') => Motion::Down,
-            Key::Char('k') | Key::Up | Key::Ctrl('p') => Motion::Up,
-            Key::Char('w') => Motion::WordFwd(false),
-            Key::Char('W') => Motion::WordFwd(true),
-            Key::Char('b') => Motion::WordBack(false),
-            Key::Char('B') => Motion::WordBack(true),
-            Key::Char('e') => Motion::WordEnd(false),
-            Key::Char('E') => Motion::WordEnd(true),
-            Key::Char('0') | Key::Home => Motion::LineStart,
-            Key::Char('^') => Motion::FirstNonBlank,
-            Key::Char('$') | Key::End => Motion::LineEnd,
-            Key::Char('G') => Motion::Line { default_last: true },
-            Key::Char(';') => Motion::RepeatFind { reverse: false },
-            Key::Char(',') => Motion::RepeatFind { reverse: true },
-            Key::Char('%') => Motion::MatchPair,
-            Key::Char('}') => Motion::ParaFwd,
-            Key::Char('{') => Motion::ParaBack,
-            Key::Char('H') => Motion::ScreenTop,
-            Key::Char('M') => Motion::ScreenMid,
-            Key::Char('L') => Motion::ScreenBot,
-            Key::Ctrl('d') => Motion::Page {
-                down: true,
-                half: true,
-            },
-            Key::Ctrl('u') => Motion::Page {
-                down: false,
-                half: true,
-            },
-            Key::Ctrl('f') | Key::PageDown => Motion::Page {
-                down: true,
-                half: false,
-            },
-            Key::Ctrl('b') | Key::PageUp => Motion::Page {
-                down: false,
-                half: false,
-            },
-            Key::Char('n') => Motion::SearchNext { reverse: false },
-            Key::Char('N') => Motion::SearchNext { reverse: true },
-            Key::Char('*') => Motion::WordSearch { forward: true },
-            Key::Char('#') => Motion::WordSearch { forward: false },
-            Key::Char('+') | Key::Enter => Motion::NextLine,
-            Key::Char('-') => Motion::PrevLine,
-            Key::Char('_') => Motion::CurLine,
-            Key::Char('|') => Motion::Column,
-            _ => return None,
-        })
+    /// The key after `f`, `r`, `"`, or a text object's `i` / `a`.
+    fn argument_key(&mut self, awaiting: Await, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        match (awaiting, key) {
+            (Await::Register, Key::Char(c)) => self.pending.register = Some(c),
+            (Await::Find { forward, till }, Key::Char(c)) => {
+                let find = Find { c, forward, till };
+                cx.shared.last_find = Some(find);
+                self.run_motion(Motion::Find(find), cx, fx);
+            }
+            (Await::Replace, Key::Char(c)) => {
+                self.replace_chars(c, cx);
+                self.reset_pending();
+            }
+            (Await::Replace, Key::Enter) => {
+                self.replace_chars('\n', cx);
+                self.reset_pending();
+            }
+            (Await::TextObject { around }, Key::Char(c)) => self.run_text_object(c, around, cx),
+            _ => self.reset_pending(),
+        }
     }
 
-    fn g_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
-        let op_pending = self.pending.op.is_some();
-        match key {
-            Key::Char('g') => {
-                return self.run_motion(
-                    Motion::Line {
-                        default_last: false,
-                    },
-                    cx,
-                    fx,
-                );
-            }
-            Key::Char('e') => return self.run_motion(Motion::WordEndBack(false), cx, fx),
-            Key::Char('E') => return self.run_motion(Motion::WordEndBack(true), cx, fx),
-            Key::Char('j') => return self.run_motion(Motion::Down, cx, fx),
-            Key::Char('k') => return self.run_motion(Motion::Up, cx, fx),
-            Key::Char('u') => return self.operator_key(Operator::Lower, cx),
-            Key::Char('U') => return self.operator_key(Operator::Upper, cx),
-            Key::Char('~') => return self.operator_key(Operator::ToggleCase, cx),
-            Key::Char('c') => return self.operator_key(Operator::Comment, cx),
-            _ if op_pending => {}
-            Key::Char('d') | Key::Char('D') => fx.push(Effect::GotoDefinition),
-            Key::Char('r') => fx.push(Effect::References),
-            Key::Char('h') => fx.push(Effect::Hover),
-            Key::Char('t') => fx.push(Effect::NextTab),
-            Key::Char('T') => fx.push(Effect::PrevTab),
-            Key::Char('J') => self.join_lines(false, cx),
-            Key::Char('v') => {
-                if let Some((anchor, cursor, mode)) = self.last_visual {
-                    self.anchor = anchor;
-                    self.cursor = cursor;
-                    self.mode = mode;
-                }
-            }
-            _ => {}
-        }
+    /// `u` / `ctrl-r`. Never inside an undo group, so `exec` keeps these
+    /// out of the one it opens for everything else.
+    fn undo(&mut self, redo: bool, cx: &mut Ctx<'_>) {
+        let count = self.pending.count().unwrap_or(1);
         self.reset_pending();
+        self.no_repeat = true;
+        for _ in 0..count {
+            let pos = if redo { cx.buf.redo() } else { cx.buf.undo() };
+            match pos {
+                Some(pos) => self.cursor = pos,
+                None => break,
+            }
+        }
+        self.goal_col = None;
     }
 
     // ---- motions -------------------------------------------------------
@@ -1404,25 +1329,27 @@ impl Vim {
 
     // ---- simple commands -----------------------------------------------
 
-    fn normal_command(&mut self, c: char, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+    fn command(&mut self, cmd: Cmd, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         let line = cx.buf.line_of(self.cursor);
-        match c {
-            'i' => self.enter_insert(cx.buf),
-            'a' => {
+        let visual = self.mode.is_visual();
+        match cmd {
+            Cmd::Escape => self.exit_visual(),
+            Cmd::Insert => self.enter_insert(cx.buf),
+            Cmd::Append => {
                 self.enter_insert(cx.buf);
                 if cx.buf.line_len(line) > 0 {
                     self.cursor += 1;
                 }
             }
-            'I' => {
+            Cmd::InsertLineStart => {
                 self.enter_insert(cx.buf);
                 self.cursor = first_non_blank(cx.buf, line);
             }
-            'A' => {
+            Cmd::AppendLineEnd => {
                 self.enter_insert(cx.buf);
                 self.cursor = cx.buf.line_end(line);
             }
-            'o' => {
+            Cmd::OpenBelow => {
                 self.enter_insert(cx.buf);
                 let buf = &mut *cx.buf;
                 let mut indent = leading_ws(buf, line);
@@ -1433,7 +1360,7 @@ impl Vim {
                 buf.insert(at, &format!("\n{indent}"));
                 self.cursor = at + 1 + indent.chars().count();
             }
-            'O' => {
+            Cmd::OpenAbove => {
                 self.enter_insert(cx.buf);
                 let buf = &mut *cx.buf;
                 let indent = leading_ws(buf, line);
@@ -1441,41 +1368,34 @@ impl Vim {
                 buf.insert(at, &format!("{indent}\n"));
                 self.cursor = at + indent.chars().count();
             }
-            'x' => self.delete_chars(false, cx),
-            'X' => self.delete_chars(true, cx),
-            's' => {
+            Cmd::DeleteChar { before } => self.delete_chars(before, cx),
+            Cmd::SubstituteChar => {
                 let n = self.pending.count().unwrap_or(1);
                 let end = (self.cursor + n).min(cx.buf.line_end(line));
                 self.apply_operator(Operator::Change, Target::Chars(self.cursor, end), cx);
             }
-            'S' => self.repeat_op_on_lines(Operator::Change, cx),
-            'Y' => self.repeat_op_on_lines(Operator::Yank, cx),
-            'D' | 'C' => {
+            Cmd::Lines(op) if visual => {
+                self.mode = Mode::VisualLine;
+                self.operator_key(op, cx);
+            }
+            Cmd::Lines(op) => self.repeat_op_on_lines(op, cx),
+            Cmd::ToLineEnd(op) => {
                 let n = self.pending.count().unwrap_or(1).max(1);
                 let last = (line + n - 1).min(cx.buf.last_line());
                 let end = cx.buf.line_end(last);
-                let op = if c == 'D' {
-                    Operator::Delete
-                } else {
-                    Operator::Change
-                };
                 self.apply_operator(op, Target::Chars(self.cursor, end), cx);
             }
-            'r' => {
-                self.pending.prefix = Prefix::Replace;
-                return;
-            }
-            'J' => self.join_lines(true, cx),
-            '~' => {
+            Cmd::Join { space } => self.join_lines(space, cx),
+            Cmd::ToggleCaseChar => {
                 let n = self.pending.count().unwrap_or(1).max(1);
                 let le = cx.buf.line_end(line);
                 let end = (self.cursor + n).min(le);
                 change_case(cx.buf, Operator::ToggleCase, self.cursor, end);
                 self.cursor = end;
             }
-            'p' => self.put(false, cx),
-            'P' => self.put(true, cx),
-            '.' => {
+            Cmd::Put { .. } if visual => self.visual_put(cx),
+            Cmd::Put { before } => self.put(before, cx),
+            Cmd::Repeat => {
                 let keys = cx.shared.last_change.clone();
                 if !keys.is_empty() {
                     self.reset_pending();
@@ -1487,66 +1407,43 @@ impl Vim {
                     self.no_repeat = true;
                 }
             }
-            'v' => {
-                self.mode = Mode::Visual;
-                self.anchor = self.cursor;
-            }
-            'V' => {
-                self.mode = Mode::VisualLine;
-                self.anchor = self.cursor;
-            }
-            ':' | '/' | '?' => self.open_cmdline(c, String::new()),
-            'K' => fx.push(Effect::Hover),
-            _ => {}
-        }
-        self.reset_pending();
-    }
-
-    fn visual_command(&mut self, c: char, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
-        match c {
-            'v' | 'V' => {
-                let target = if c == 'v' {
-                    Mode::Visual
-                } else {
+            // `exec` runs these itself, outside its undo group.
+            Cmd::Undo | Cmd::Redo => {}
+            Cmd::Visual { linewise } => {
+                let target = if linewise {
                     Mode::VisualLine
+                } else {
+                    Mode::Visual
                 };
                 if self.mode == target {
                     self.exit_visual();
                 } else {
+                    if !visual {
+                        self.anchor = self.cursor;
+                    }
                     self.mode = target;
                 }
             }
-            'o' => std::mem::swap(&mut self.anchor, &mut self.cursor),
-            'x' => self.operator_key(Operator::Delete, cx),
-            's' => self.operator_key(Operator::Change, cx),
-            'u' => self.operator_key(Operator::Lower, cx),
-            'U' => self.operator_key(Operator::Upper, cx),
-            '~' => self.operator_key(Operator::ToggleCase, cx),
-            'Y' | 'D' | 'X' | 'C' | 'S' | 'R' => {
-                self.mode = Mode::VisualLine;
-                let op = match c {
-                    'Y' => Operator::Yank,
-                    'D' | 'X' => Operator::Delete,
-                    _ => Operator::Change,
-                };
-                self.operator_key(op, cx);
+            Cmd::SwapEnds => {
+                if visual {
+                    std::mem::swap(&mut self.anchor, &mut self.cursor);
+                }
             }
-            'J' => self.join_lines(true, cx),
-            'r' => {
-                self.pending.prefix = Prefix::Replace;
-                return;
+            Cmd::Reselect => {
+                if let Some((anchor, cursor, mode)) = self.last_visual {
+                    self.anchor = anchor;
+                    self.cursor = cursor;
+                    self.mode = mode;
+                }
             }
-            'p' | 'P' => self.visual_put(cx),
-            ':' => {
+            Cmd::Prompt(':') if visual => {
                 self.last_visual = Some((self.anchor, self.cursor, self.mode));
                 self.open_cmdline(':', "'<,'>".to_string());
             }
-            '/' | '?' => {
+            Cmd::Prompt(kind) => {
                 self.exit_visual();
-                self.open_cmdline(c, String::new());
+                self.open_cmdline(kind, String::new());
             }
-            'K' => fx.push(Effect::Hover),
-            _ => {}
         }
         self.reset_pending();
     }
@@ -1755,16 +1652,13 @@ impl Vim {
         self.cursor += 1;
     }
 
-    fn insert_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
-        if key.is_escape() {
-            self.finish_insert(cx.buf);
-            return;
-        }
+    /// A key with no binding in insert mode: typed text inserts itself.
+    fn insert_default(&mut self, key: Key, cx: &mut Ctx<'_>) {
         let buf = &mut *cx.buf;
-        let line = buf.line_of(self.cursor);
-        let (ls, le) = (buf.line_start(line), buf.line_end(line));
         match key {
             Key::Char(c) => {
+                let line = buf.line_of(self.cursor);
+                let (ls, le) = (buf.line_start(line), buf.line_end(line));
                 // A closing bracket on an otherwise blank line dedents.
                 if matches!(c, '}' | ')' | ']')
                     && self.cursor == le
@@ -1786,8 +1680,22 @@ impl Vim {
                 buf.insert(self.cursor, &text);
                 self.cursor += text.chars().count();
             }
-            Key::Enter | Key::Ctrl('j') | Key::Ctrl('m') => self.insert_newline(cx),
-            Key::Backspace | Key::Ctrl('h') => {
+            _ => {}
+        }
+    }
+
+    fn insert_command(&mut self, builtin: Builtin, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
+        // Normal-mode commands mean nothing while inserting.
+        let Builtin::Insert(cmd) = builtin else {
+            return;
+        };
+        let buf = &mut *cx.buf;
+        let line = buf.line_of(self.cursor);
+        let (ls, le) = (buf.line_start(line), buf.line_end(line));
+        match cmd {
+            InsertCmd::Escape => self.finish_insert(buf),
+            InsertCmd::Newline => self.insert_newline(cx),
+            InsertCmd::Backspace => {
                 if self.cursor == 0 {
                     return;
                 }
@@ -1802,12 +1710,12 @@ impl Vim {
                 buf.delete(self.cursor - n..self.cursor);
                 self.cursor -= n;
             }
-            Key::Delete => {
+            InsertCmd::Delete => {
                 if self.cursor < buf.max_offset() {
                     buf.delete(self.cursor..self.cursor + 1);
                 }
             }
-            Key::Tab => {
+            InsertCmd::Tab => {
                 if cx.lang.expand_tab {
                     let width = cx.lang.tab_width.max(1);
                     let n = width - (self.cursor - ls) % width;
@@ -1817,7 +1725,7 @@ impl Vim {
                     self.insert_raw('\t', buf);
                 }
             }
-            Key::Ctrl('w') => {
+            InsertCmd::DeleteWord => {
                 if self.cursor > ls {
                     let start = motion::prev_word_start(buf, self.cursor, false).max(ls);
                     buf.delete(start..self.cursor);
@@ -1827,15 +1735,15 @@ impl Vim {
                     self.cursor -= 1;
                 }
             }
-            Key::Ctrl('u') => {
+            InsertCmd::DeleteLine => {
                 let fnb = first_non_blank(buf, line);
                 let start = if self.cursor > fnb { fnb } else { ls };
                 buf.delete(start..self.cursor);
                 self.cursor = start;
             }
-            Key::Ctrl('t') | Key::Ctrl('d') => {
+            InsertCmd::Indent | InsertCmd::Outdent => {
                 let before = buf.len_chars();
-                let op = if key == Key::Ctrl('t') {
+                let op = if cmd == InsertCmd::Indent {
                     Operator::Indent
                 } else {
                     Operator::Outdent
@@ -1847,46 +1755,44 @@ impl Vim {
                     .saturating_sub(before)
                     .max(cx.buf.line_start(line));
             }
-            Key::Left => {
+            InsertCmd::Left => {
                 if self.cursor > ls {
                     self.cursor -= 1;
                 }
                 self.goal_col = None;
             }
-            Key::Right => {
+            InsertCmd::Right => {
                 if self.cursor < le {
                     self.cursor += 1;
                 }
                 self.goal_col = None;
             }
-            Key::Up | Key::Down | Key::PageUp | Key::PageDown => {
+            InsertCmd::Up | InsertCmd::Down | InsertCmd::PageUp | InsertCmd::PageDown => {
                 let page = cx.viewport.height.saturating_sub(2).max(1);
-                let row = match key {
-                    Key::Up => line.saturating_sub(1),
-                    Key::Down => line + 1,
-                    Key::PageUp => line.saturating_sub(page),
+                let row = match cmd {
+                    InsertCmd::Up => line.saturating_sub(1),
+                    InsertCmd::Down => line + 1,
+                    InsertCmd::PageUp => line.saturating_sub(page),
                     _ => line + page,
                 }
                 .min(buf.last_line());
                 if row != line {
                     self.cursor = self.vertical(buf, row);
-                    if matches!(key, Key::PageUp | Key::PageDown) {
+                    if matches!(cmd, InsertCmd::PageUp | InsertCmd::PageDown) {
                         let moved = row as isize - line as isize;
                         fx.push(Effect::Scroll(Scroll::Lines(moved)));
                     }
                 }
             }
-            Key::Home => {
+            InsertCmd::Home => {
                 let fnb = first_non_blank(buf, line);
                 self.cursor = if self.cursor == fnb { ls } else { fnb };
                 self.goal_col = None;
             }
-            Key::End => {
+            InsertCmd::End => {
                 self.cursor = le;
                 self.goal_col = None;
             }
-            Key::Ctrl('n') | Key::Ctrl('p') | Key::Ctrl(' ') => fx.push(Effect::TriggerCompletion),
-            _ => {}
         }
     }
 

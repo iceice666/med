@@ -1,15 +1,12 @@
 //! The window's root view: tabs of editors, the status bar, and the ex
 //! commands that act on them.
 
+use crate::commands::{Args, Commands, Handler, RunCommand};
 use crate::editor::{Editor, EditorEvent};
 use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::git_view::{GitEvent, GitView};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::picker::{Item, Picker, PickerEvent, PickerMode};
-use crate::{
-    CloseTab, FileFinder, FocusFileTree, NextTab, PrevTab, ProjectSearch, Quit, Save,
-    ToggleFileTree, ToggleGit,
-};
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::*;
 use gpui::*;
@@ -30,7 +27,7 @@ pub struct Workspace {
     pub(crate) picker: Option<Entity<Picker>>,
     _picker_subscription: Option<Subscription>,
     /// One-line feedback shown in the status bar until the next key.
-    message: Option<SharedString>,
+    pub(crate) message: Option<SharedString>,
     /// Places `ctrl-o` / `ctrl-i` walk through.
     jumps: Vec<(PathBuf, usize)>,
     jump_index: usize,
@@ -346,6 +343,7 @@ impl Workspace {
             EditorEvent::Changed => cx.notify(),
             EditorEvent::Message(message) => self.set_message(message.clone(), cx),
             EditorEvent::Ex(command) => self.run_ex(command, window, cx),
+            EditorEvent::Command { name, args } => self.run_command(name, args, window, cx),
             EditorEvent::OpenLocation { path, position } => {
                 self.open_location(path, *position, window, cx)
             }
@@ -377,10 +375,6 @@ impl Workspace {
                     self.push_jump(path, *offset);
                 }
             }
-            EditorEvent::JumpBack => self.jump(true, window, cx),
-            EditorEvent::JumpForward => self.jump(false, window, cx),
-            EditorEvent::NextTab => self.cycle_tab(1, window, cx),
-            EditorEvent::PrevTab => self.cycle_tab(-1, window, cx),
         }
     }
 
@@ -398,6 +392,7 @@ impl Workspace {
                 self.open_path(path, window, cx);
             }
             FileTreeEvent::Dismiss => self.focus_editor(window, cx),
+            FileTreeEvent::Command(name) => self.run_command(name, &Args::default(), window, cx),
         }
     }
 
@@ -420,6 +415,7 @@ impl Workspace {
                 }
             }
             GitEvent::Changed => self.sync_with_disk(cx),
+            GitEvent::Command(name) => self.run_command(name, &Args::default(), window, cx),
         }
     }
 
@@ -522,61 +518,54 @@ impl Workspace {
         }
     }
 
+    // ---- commands ------------------------------------------------------
+
+    /// Run a command by name on the view it belongs to.
+    pub fn run_command(
+        &mut self,
+        name: &str,
+        args: &Args,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match cx.global::<Commands>().handler(name) {
+            Some(Handler::Workspace(run)) => run(self, args, window, cx),
+            Some(Handler::Editor(run)) => {
+                if let Some(editor) = self.active_editor().cloned() {
+                    editor.update(cx, |editor, cx| run(editor, args, cx));
+                }
+            }
+            Some(Handler::FileTree(run)) => {
+                self.file_tree.update(cx, |tree, cx| run(tree, args, cx));
+            }
+            Some(Handler::Git(run)) => {
+                let git = self.git.clone();
+                git.update(cx, |git, cx| run(git, args, window, cx));
+            }
+            None => self.set_message(format!("Unknown command: {name}"), cx),
+        }
+    }
+
+    /// An ex command line the vim engine left to us: `name[!] [argument]`.
     fn run_ex(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (name, arg) = match command.split_once(char::is_whitespace) {
             Some((name, arg)) => (name, arg.trim()),
             None => (command, ""),
         };
-        let (name, force) = match name.strip_suffix('!') {
+        let (name, bang) = match name.strip_suffix('!') {
             Some(name) => (name, true),
             None => (name, false),
         };
-        match name {
-            "w" | "write" => {
-                if !arg.is_empty() {
-                    let path = self.root.join(arg);
-                    if let Some(editor) = self.active_editor().cloned() {
-                        editor.update(cx, |editor, cx| editor.set_path(path, cx));
-                    }
-                }
-                self.save_active(cx);
+        match cx.global::<Commands>().resolve_ex(name) {
+            Some(name) => {
+                let args = Args {
+                    count: None,
+                    arg: arg.to_string(),
+                    bang,
+                };
+                self.run_command(&name, &args, window, cx);
             }
-            "q" | "quit" | "bd" | "bdelete" => {
-                self.close_tab(self.active, force, window, cx);
-                if self.tabs.is_empty() && matches!(name, "q" | "quit") {
-                    cx.quit();
-                }
-            }
-            "wq" | "x" | "xit" => {
-                if self.save_active(cx) {
-                    self.close_tab(self.active, true, window, cx);
-                    if self.tabs.is_empty() {
-                        cx.quit();
-                    }
-                }
-            }
-            "wa" | "wall" => {
-                let mut saved = 0;
-                for tab in self.tabs.clone() {
-                    if tab.read(cx).is_dirty() && tab.update(cx, |e, cx| e.save(cx)).is_ok() {
-                        saved += 1;
-                    }
-                }
-                self.set_message(format!("{saved} file(s) written"), cx);
-            }
-            "qa" | "qall" => {
-                if force || !self.tabs.iter().any(|tab| tab.read(cx).is_dirty()) {
-                    cx.quit();
-                } else {
-                    self.set_message("No write since last change (add ! to override)", cx);
-                }
-            }
-            "e" | "edit" if !arg.is_empty() => {
-                self.open_path(Path::new(arg), window, cx);
-            }
-            "bn" | "bnext" | "tabn" | "tabnext" => self.cycle_tab(1, window, cx),
-            "bp" | "bprev" | "bprevious" | "tabp" | "tabprevious" => self.cycle_tab(-1, window, cx),
-            _ => self.set_message(format!("Not an editor command: {command}"), cx),
+            None => self.set_message(format!("Not an editor command: {command}"), cx),
         }
     }
 
@@ -834,36 +823,135 @@ impl Render for Workspace {
             .text_size(px(13.))
             .track_focus(&self.focus_handle)
             .key_context("Workspace")
-            .on_action(cx.listener(|this, _: &Save, _, cx| {
-                this.save_active(cx);
-            }))
-            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                this.close_tab(this.active, false, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
-            .on_action(cx.listener(|this, _: &PrevTab, window, cx| this.cycle_tab(-1, window, cx)))
-            .on_action(
-                cx.listener(|this, _: &ToggleFileTree, window, cx| {
-                    this.toggle_file_tree(window, cx)
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &FocusFileTree, window, cx| this.focus_file_tree(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &FileFinder, window, cx| {
-                this.open_picker(PickerMode::Files, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ProjectSearch, window, cx| {
-                this.open_picker(PickerMode::Grep, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ToggleGit, window, cx| this.toggle_git(window, cx)))
-            .on_action(cx.listener(|this, _: &Quit, _, cx| {
-                if this.can_quit(cx) {
-                    cx.quit();
-                }
+            .on_action(cx.listener(|this, action: &RunCommand, window, cx| {
+                this.run_command(&action.0, &Args::default(), window, cx);
             }))
             .child(body)
             .child(self.render_status(cx))
             .children(picker)
     }
+}
+
+pub(crate) fn register(commands: &mut Commands) {
+    use Handler::Workspace as W;
+    commands.register(
+        "workspace.save",
+        "Write the file; given a name, write it under that name",
+        W(|ws, args, _, cx| {
+            if !args.arg.is_empty() {
+                let path = ws.root.join(&args.arg);
+                if let Some(editor) = ws.active_editor().cloned() {
+                    editor.update(cx, |editor, cx| editor.set_path(path, cx));
+                }
+            }
+            ws.save_active(cx);
+        }),
+    );
+    commands.register(
+        "workspace.save_all",
+        "Write every changed file",
+        W(|ws, _, _, cx| {
+            let mut saved = 0;
+            for tab in ws.tabs.clone() {
+                if tab.read(cx).is_dirty() && tab.update(cx, |e, cx| e.save(cx)).is_ok() {
+                    saved += 1;
+                }
+            }
+            ws.set_message(format!("{saved} file(s) written"), cx);
+        }),
+    );
+    commands.register(
+        "workspace.edit",
+        "Open the named file in a tab",
+        W(|ws, args, window, cx| {
+            if args.arg.is_empty() {
+                ws.set_message("No file name", cx);
+            } else {
+                ws.open_path(Path::new(&args.arg), window, cx);
+            }
+        }),
+    );
+    commands.register(
+        "workspace.close_tab",
+        "Close the tab; with ! even if it has unsaved changes",
+        W(|ws, args, window, cx| {
+            ws.close_tab(ws.active, args.bang, window, cx);
+        }),
+    );
+    commands.register(
+        "workspace.quit",
+        "Close the tab, and the application with the last one",
+        W(|ws, args, window, cx| {
+            ws.close_tab(ws.active, args.bang, window, cx);
+            if ws.tabs.is_empty() {
+                cx.quit();
+            }
+        }),
+    );
+    commands.register(
+        "workspace.save_and_quit",
+        "Write the file, then close its tab",
+        W(|ws, _, window, cx| {
+            if ws.save_active(cx) {
+                ws.close_tab(ws.active, true, window, cx);
+                if ws.tabs.is_empty() {
+                    cx.quit();
+                }
+            }
+        }),
+    );
+    commands.register(
+        "workspace.quit_all",
+        "Quit; with ! even if there are unsaved changes",
+        W(|ws, args, _, cx| {
+            if args.bang || ws.can_quit(cx) {
+                cx.quit();
+            }
+        }),
+    );
+    commands.register(
+        "workspace.next_tab",
+        "Go to the next tab",
+        W(|ws, _, window, cx| ws.cycle_tab(1, window, cx)),
+    );
+    commands.register(
+        "workspace.prev_tab",
+        "Go to the previous tab",
+        W(|ws, _, window, cx| ws.cycle_tab(-1, window, cx)),
+    );
+    commands.register(
+        "workspace.jump_back",
+        "Go back in the jump list",
+        W(|ws, _, window, cx| ws.jump(true, window, cx)),
+    );
+    commands.register(
+        "workspace.jump_forward",
+        "Go forward in the jump list",
+        W(|ws, _, window, cx| ws.jump(false, window, cx)),
+    );
+    commands.register(
+        "workspace.find_file",
+        "Find a file by name",
+        W(|ws, _, window, cx| ws.open_picker(PickerMode::Files, window, cx)),
+    );
+    commands.register(
+        "workspace.search",
+        "Search the project",
+        W(|ws, _, window, cx| ws.open_picker(PickerMode::Grep, window, cx)),
+    );
+    commands.register(
+        "workspace.toggle_file_tree",
+        "Show or hide the file tree",
+        W(|ws, _, window, cx| ws.toggle_file_tree(window, cx)),
+    );
+    commands.register(
+        "workspace.focus_file_tree",
+        "Move to the file tree, or back from it",
+        W(|ws, _, window, cx| ws.focus_file_tree(window, cx)),
+    );
+    commands.register(
+        "workspace.toggle_git",
+        "Open or close the git screen",
+        W(|ws, _, window, cx| ws.toggle_git(window, cx)),
+    );
 }

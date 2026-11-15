@@ -1,5 +1,7 @@
 //! The project file tree in the sidebar, driven with vim-style keys.
 
+use crate::commands::{Args, Commands, Handler};
+use crate::keymap::{KeySequence, Press, panel_key};
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::*;
 use gpui::*;
@@ -12,6 +14,8 @@ pub enum FileTreeEvent {
     Open(PathBuf),
     /// The user is done here; focus should go back to the editor.
     Dismiss,
+    /// A key bound to a command that is not the tree's to run.
+    Command(SharedString),
 }
 
 struct Entry {
@@ -31,7 +35,8 @@ pub struct FileTree {
     scroll: UniformListScrollHandle,
     /// Porcelain status letter per changed path, plus every parent directory.
     git_status: HashMap<PathBuf, char>,
-    pending_g: bool,
+    /// A key sequence in progress (`g` of `gg`).
+    keys: KeySequence,
     _status_task: Option<Task<()>>,
 }
 
@@ -75,7 +80,7 @@ impl FileTree {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             git_status: HashMap::new(),
-            pending_g: false,
+            keys: KeySequence::default(),
             _status_task: None,
         };
         this.refresh(cx);
@@ -223,47 +228,99 @@ impl FileTree {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let keystroke = &event.keystroke;
-        if keystroke.modifiers.platform || keystroke.modifiers.alt {
-            return;
+    /// `l`: unfold a directory, open a file.
+    fn expand_or_open(&mut self, cx: &mut Context<Self>) {
+        let expandable = self
+            .entries
+            .get(self.selected)
+            .is_some_and(|e| e.is_dir && !self.expanded.contains(&e.path));
+        if expandable {
+            self.toggle(self.selected, cx);
+        } else if self.entries.get(self.selected).is_some_and(|e| !e.is_dir) {
+            self.activate(self.selected, cx);
         }
-        let ctrl = keystroke.modifiers.control;
-        // Named keys ("enter", "escape") by name; printable ones by the
-        // character they produce, so shift and layout are accounted for.
-        let key = match &keystroke.key_char {
-            Some(text) if !ctrl && keystroke.key.chars().count() == 1 => text.as_str(),
-            _ => keystroke.key.as_str(),
-        };
-        let was_pending_g = std::mem::take(&mut self.pending_g);
+    }
+
+    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         let last = self.entries.len().saturating_sub(1);
-        match key {
-            "d" if ctrl => self.select((self.selected + 10).min(last), cx),
-            "u" if ctrl => self.select(self.selected.saturating_sub(10), cx),
-            "j" | "down" => self.select((self.selected + 1).min(last), cx),
-            "k" | "up" => self.select(self.selected.saturating_sub(1), cx),
-            "h" | "left" => self.collapse_or_parent(cx),
-            "l" | "right" => {
-                let expandable = self
-                    .entries
-                    .get(self.selected)
-                    .is_some_and(|e| e.is_dir && !self.expanded.contains(&e.path));
-                if expandable {
-                    self.toggle(self.selected, cx);
-                } else if self.entries.get(self.selected).is_some_and(|e| !e.is_dir) {
-                    self.activate(self.selected, cx);
-                }
-            }
-            "enter" | "o" => self.activate(self.selected, cx),
-            "g" if was_pending_g => self.select(0, cx),
-            "g" => self.pending_g = true,
-            "G" => self.select(last, cx),
-            "R" => self.refresh(cx),
-            "escape" | "q" => cx.emit(FileTreeEvent::Dismiss),
-            _ => return,
+        let index = self.selected.saturating_add_signed(delta).min(last);
+        self.select(index, cx);
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = panel_key(&event.keystroke) else {
+            return;
+        };
+        match self.keys.press(key, &["tree"], cx) {
+            // Not ours: let it travel on.
+            Press::Unbound => return,
+            Press::Pending => {}
+            Press::Command(name) => match cx.global::<Commands>().handler(&name) {
+                Some(Handler::FileTree(run)) => run(self, &Args::default(), cx),
+                _ => cx.emit(FileTreeEvent::Command(name)),
+            },
         }
         cx.stop_propagation();
     }
+}
+
+pub(crate) fn register(commands: &mut Commands) {
+    use Handler::FileTree as T;
+    commands.register(
+        "tree.down",
+        "Select the next entry",
+        T(|tree, _, cx| tree.move_selection(1, cx)),
+    );
+    commands.register(
+        "tree.up",
+        "Select the previous entry",
+        T(|tree, _, cx| tree.move_selection(-1, cx)),
+    );
+    commands.register(
+        "tree.page_down",
+        "Move the selection down ten entries",
+        T(|tree, _, cx| tree.move_selection(10, cx)),
+    );
+    commands.register(
+        "tree.page_up",
+        "Move the selection up ten entries",
+        T(|tree, _, cx| tree.move_selection(-10, cx)),
+    );
+    commands.register(
+        "tree.first",
+        "Select the first entry",
+        T(|tree, _, cx| tree.select(0, cx)),
+    );
+    commands.register(
+        "tree.last",
+        "Select the last entry",
+        T(|tree, _, cx| tree.select(usize::MAX, cx)),
+    );
+    commands.register(
+        "tree.collapse",
+        "Fold the directory, or go to its parent",
+        T(|tree, _, cx| tree.collapse_or_parent(cx)),
+    );
+    commands.register(
+        "tree.expand",
+        "Unfold the directory, or open the file",
+        T(|tree, _, cx| tree.expand_or_open(cx)),
+    );
+    commands.register(
+        "tree.open",
+        "Open the file, or fold or unfold the directory",
+        T(|tree, _, cx| tree.activate(tree.selected, cx)),
+    );
+    commands.register(
+        "tree.refresh",
+        "Re-read the directory",
+        T(|tree, _, cx| tree.refresh(cx)),
+    );
+    commands.register(
+        "tree.close",
+        "Go back to the editor",
+        T(|_, _, cx| cx.emit(FileTreeEvent::Dismiss)),
+    );
 }
 
 impl Render for FileTree {

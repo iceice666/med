@@ -10,43 +10,6 @@ struct Harness {
     effects: Vec<Effect>,
 }
 
-/// Parse `"dw<esc>"`-style key notation.
-fn parse_keys(keys: &str) -> Vec<Key> {
-    let mut out = Vec::new();
-    let mut rest = keys;
-    while let Some(c) = rest.chars().next() {
-        if c == '<'
-            && let Some(end) = rest.find('>')
-        {
-            let name = rest[1..end].to_ascii_lowercase();
-            let key = match name.as_str() {
-                "esc" => Some(Key::Esc),
-                "cr" => Some(Key::Enter),
-                "bs" => Some(Key::Backspace),
-                "del" => Some(Key::Delete),
-                "tab" => Some(Key::Tab),
-                "lt" => Some(Key::Char('<')),
-                "up" => Some(Key::Up),
-                "down" => Some(Key::Down),
-                "left" => Some(Key::Left),
-                "right" => Some(Key::Right),
-                n if n.starts_with("c-") && n.len() == 3 => {
-                    Some(Key::Ctrl(n.chars().nth(2).unwrap()))
-                }
-                _ => None,
-            };
-            if let Some(key) = key {
-                out.push(key);
-                rest = &rest[end + 1..];
-                continue;
-            }
-        }
-        out.push(Key::Char(c));
-        rest = &rest[c.len_utf8()..];
-    }
-    out
-}
-
 impl Harness {
     /// `|` in `text` marks the cursor.
     fn new(text: &str) -> Self {
@@ -80,6 +43,18 @@ impl Harness {
             self.effects.extend(fx);
         }
         self
+    }
+
+    fn timeout(&mut self) {
+        let mut cx = Ctx {
+            buf: &mut self.buf,
+            shared: &mut self.shared,
+            clipboard: &mut self.clipboard,
+            viewport: Viewport { top: 0, height: 10 },
+            lang: &self.lang,
+        };
+        let fx = self.vim.timeout(&mut cx);
+        self.effects.extend(fx);
     }
 
     /// Buffer text with `|` at the cursor, minus the final newline.
@@ -384,15 +359,13 @@ fn ex_commands() {
 #[test]
 fn effects() {
     let mut h = Harness::new("|a");
-    h.keys("gdKzz]d[d");
+    h.keys("zzzt<c-e>");
     assert_eq!(
         h.effects,
         vec![
-            Effect::GotoDefinition,
-            Effect::Hover,
             Effect::Scroll(Scroll::Center),
-            Effect::NextDiagnostic,
-            Effect::PrevDiagnostic,
+            Effect::Scroll(Scroll::Top),
+            Effect::Scroll(Scroll::Lines(1)),
         ]
     );
 
@@ -437,4 +410,194 @@ fn pending_display_and_selection() {
     assert_eq!(h.vim.selection(&h.buf), Some((0, 2)));
     h.keys("V");
     assert_eq!(h.vim.selection(&h.buf), Some((0, 8)));
+}
+
+fn command(name: &str, count: Option<usize>) -> Effect {
+    Effect::Command {
+        name: name.to_string(),
+        count,
+    }
+}
+
+#[test]
+fn host_commands() {
+    let mut h = Harness::new("|abc");
+    let keymap = &mut h.shared.keymap;
+    keymap.bind(MapMode::Normal, "gd", "editor.goto_definition");
+    keymap.bind(MapMode::Normal, "]d", "editor.next_diagnostic");
+    keymap.bind(MapMode::Visual, "K", "editor.hover");
+    keymap.bind(MapMode::Insert, "<C-n>", "editor.complete");
+    assert_eq!(
+        keymap.command(MapMode::Normal, "gd"),
+        Some("editor.goto_definition")
+    );
+
+    h.keys("gd3]dvK<esc>i<c-n>x<esc>");
+    assert_eq!(
+        h.effects,
+        vec![
+            command("editor.goto_definition", None),
+            command("editor.next_diagnostic", Some(3)),
+            command("editor.hover", None),
+            command("editor.complete", None),
+        ]
+    );
+    assert_eq!(h.state(), "|xabc");
+    // The rest of `g` still works, and an unbound `g` combination is dropped.
+    h.keys("$gg");
+    assert_eq!(h.state(), "|xabc");
+    h.keys("gqx");
+    assert_eq!(h.state(), "|abc");
+}
+
+#[test]
+fn rebinding() {
+    // Any key can be an operator; doubling it still means "this line".
+    let mut h = Harness::new("a |b c\nd");
+    for mode in [MapMode::Normal, MapMode::Operator] {
+        h.shared.keymap.bind(mode, "Q", "operator.delete");
+        h.shared.keymap.bind(mode, "<Space>e", "motion.line_end");
+    }
+    h.keys("Qw");
+    assert_eq!(h.state(), "a |c\nd");
+    h.keys("Q<space>e");
+    assert_eq!(h.state(), "a| \nd");
+    h.keys("QQ");
+    assert_eq!(h.state(), "|d");
+
+    // Unbound keys are dead, in every table they were removed from.
+    let mut h = Harness::new("|abc");
+    assert!(h.shared.keymap.unbind(MapMode::Normal, "x"));
+    assert!(!h.shared.keymap.unbind(MapMode::Normal, "x"));
+    h.keys("x");
+    assert_eq!(h.state(), "|abc");
+    h.shared.keymap.bind(MapMode::Normal, "x", "motion.right");
+    h.keys("xdx");
+    assert_eq!(h.state(), "a|bc");
+
+    // An empty keymap leaves only typing — and no way out of insert mode.
+    let mut h = Harness::new("|abc");
+    h.shared.keymap = Keymap::empty();
+    h.keys("xdd");
+    assert_eq!(h.state(), "|abc");
+    h.shared.keymap.bind(MapMode::Normal, "i", "mode.insert");
+    h.keys("ix<esc>");
+    assert_eq!(h.vim.mode, Mode::Insert);
+    assert_eq!(h.state(), "x|abc");
+}
+
+#[test]
+fn shorter_binding_inside_a_longer_one() {
+    // `space` moves right, but also starts a leader binding.
+    let mut h = Harness::new("|abcd");
+    h.shared
+        .keymap
+        .bind(MapMode::Normal, "<Space>f", "workspace.find_file");
+    h.keys("<space>");
+    assert_eq!(h.state(), "|abcd");
+    assert_eq!(h.vim.pending_display(), "<Space>");
+    assert!(h.vim.wants_timeout(&h.shared));
+    h.keys("f");
+    assert_eq!(h.effects, vec![command("workspace.find_file", None)]);
+    assert!(!h.vim.has_pending());
+
+    // Another key: `space` runs as itself, then that key.
+    h.keys("<space>x");
+    assert_eq!(h.state(), "a|cd");
+    // No key at all: the host's timer settles it.
+    h.keys("<space>");
+    h.timeout();
+    assert_eq!(h.state(), "ac|d");
+    assert!(!h.vim.has_pending());
+
+    // A prefix that is nothing by itself just waits; escape abandons it.
+    h.keys("g");
+    assert!(h.vim.has_pending() && !h.vim.wants_timeout(&h.shared));
+    h.timeout();
+    assert!(h.vim.has_pending());
+    h.keys("<esc>x");
+    assert_eq!(h.state(), "a|c");
+}
+
+#[test]
+fn keys_mapped_to_keys() {
+    let mut h = Harness::new("ab |cd ef\ngh");
+    h.shared.keymap.bind_keys(MapMode::Normal, "Y", "y$");
+    h.shared.keymap.bind_keys(MapMode::Normal, "Q", "dw");
+    h.keys("YP");
+    assert_eq!(h.state(), "ab cd e|fcd ef\ngh");
+    // A count goes to the first mapped command; `.` repeats the mapping.
+    h.keys("0Q.");
+    assert_eq!(h.state(), "|efcd ef\ngh");
+    h.keys("u2Q");
+    assert_eq!(h.state(), "|ef\ngh");
+
+    // The result is mapped again, so a mapping can lead back to itself.
+    let mut h = Harness::new("|abc");
+    h.shared.keymap.bind_keys(MapMode::Normal, "x", "lx");
+    h.keys("x");
+    assert_eq!(h.vim.message.as_deref(), Some("Key mapping never ends"));
+    assert!(!h.vim.has_pending());
+    assert_eq!(h.state(), "ab|c");
+}
+
+#[test]
+fn insert_mode_mappings() {
+    let mut h = Harness::new("|");
+    h.shared.keymap.bind(MapMode::Insert, "jk", "insert.escape");
+    h.shared
+        .keymap
+        .bind(MapMode::Insert, "<C-a>", "insert.home");
+    h.keys("ijk");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert_eq!(h.state(), "|");
+
+    // `j` is held back until the next key shows it is not `jk`.
+    h.keys("ij");
+    assert_eq!(h.state(), "|");
+    h.keys("a");
+    assert_eq!(h.state(), "ja|");
+    h.keys("jjk");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert_eq!(h.state(), "ja|j");
+
+    // …or until the host gives up waiting.
+    h.keys("aj");
+    assert!(h.vim.wants_timeout(&h.shared));
+    h.timeout();
+    assert_eq!(h.state(), "jajj|");
+    h.keys("<c-a>x<esc>");
+    assert_eq!(h.state(), "|xjajj");
+
+    // Pasted text is not typing, and is never mapped.
+    let mut cx = Ctx {
+        buf: &mut h.buf,
+        shared: &mut h.shared,
+        clipboard: &mut h.clipboard,
+        viewport: Viewport { top: 0, height: 10 },
+        lang: &h.lang,
+    };
+    h.vim.handle_key(Key::Char('i'), &mut cx);
+    h.vim.paste("jk", &mut cx);
+    assert_eq!(h.vim.mode, Mode::Insert);
+    assert_eq!(h.buf.text(), "jkxjajj\n");
+}
+
+#[test]
+fn every_builtin_command_runs() {
+    // Bind each command to a key in each table and press it: none may
+    // panic, wherever it is used.
+    for name in command_names() {
+        for mode in MapMode::ALL {
+            let mut h = Harness::new("fn main() {\n    let |x = (1, \"two\");\n}\n\nend");
+            h.shared.keymap.bind(mode, "<C-q>", name);
+            let lead = match mode {
+                MapMode::Normal => "",
+                MapMode::Visual => "v",
+                MapMode::Operator => "d",
+                MapMode::Insert => "i",
+            };
+            h.keys(lead).keys("<c-q>").keys("w<esc><esc>");
+        }
+    }
 }

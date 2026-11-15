@@ -143,7 +143,7 @@ fn main() {
 
     let cleanup = dir.clone();
     gpui::platform::headless().run(move |cx| {
-        cx.set_global(med::VimGlobal(med_vim::Shared::default()));
+        med::init_globals(cx);
         let store = cx.new(|_| LspStore::new(dir.clone(), true));
         let editor = cx.new(|cx| Editor::new(Some(file.clone()), SOURCE, Some(store), cx));
 

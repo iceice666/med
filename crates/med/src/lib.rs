@@ -1,8 +1,11 @@
 //! med — a modal editor built on GPUI.
 
+pub mod commands;
+pub mod defaults;
 pub mod editor;
 pub mod file_tree;
 pub mod git_view;
+pub mod keymap;
 pub mod lsp;
 pub mod picker;
 pub mod syntax;
@@ -10,27 +13,10 @@ pub mod syntax;
 mod tests;
 pub mod workspace;
 
+use commands::RunCommand;
 use gpui::*;
 use std::path::PathBuf;
 use workspace::Workspace;
-
-actions!(
-    med,
-    [
-        Quit,
-        Save,
-        CloseTab,
-        NextTab,
-        PrevTab,
-        ToggleFileTree,
-        FocusFileTree,
-        FileFinder,
-        ProjectSearch,
-        ToggleGit,
-        Paste,
-        Copy,
-    ]
-);
 
 #[derive(Clone)]
 pub struct Settings {
@@ -82,6 +68,14 @@ fn parse_args() -> (PathBuf, Vec<PathBuf>) {
     (root, files)
 }
 
+/// The globals views read: vim state, commands, key tables. Needs no
+/// window system, so headless code can stop here.
+pub fn init_globals(cx: &mut App) {
+    cx.set_global(VimGlobal(med_vim::Shared::default()));
+    commands::init(cx);
+    defaults::init(cx);
+}
+
 /// Globals and key bindings; everything a window needs before it opens.
 pub fn init(cx: &mut App) {
     gpui::init(cx);
@@ -96,42 +90,14 @@ pub fn init(cx: &mut App) {
             .unwrap_or(14.),
         lsp: std::env::var_os("MED_NO_LSP").is_none(),
     });
-    cx.set_global(VimGlobal(med_vim::Shared::default()));
-
-    let normal = Some("Editor && vim_mode == normal");
-    // Not in the git view: there space stages, and a leader prefix would
-    // make it wait for a second key.
-    let panel = Some("FileTree");
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-s", Save, Some("Workspace")),
-        KeyBinding::new("cmd-w", CloseTab, Some("Workspace")),
-        KeyBinding::new("cmd-shift-]", NextTab, Some("Workspace")),
-        KeyBinding::new("cmd-shift-[", PrevTab, Some("Workspace")),
-        KeyBinding::new("ctrl-tab", NextTab, Some("Workspace")),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Workspace")),
-        KeyBinding::new("cmd-b", ToggleFileTree, Some("Workspace")),
-        KeyBinding::new("cmd-shift-e", FocusFileTree, Some("Workspace")),
-        KeyBinding::new("cmd-p", FileFinder, Some("Workspace")),
-        KeyBinding::new("cmd-shift-f", ProjectSearch, Some("Workspace")),
-        KeyBinding::new("cmd-shift-g", ToggleGit, Some("Workspace")),
-        KeyBinding::new("cmd-v", Paste, Some("Editor")),
-        KeyBinding::new("cmd-c", Copy, Some("Editor")),
-        // Leader keys, vim normal mode only.
-        KeyBinding::new("space f", FileFinder, normal),
-        KeyBinding::new("space space", FileFinder, normal),
-        KeyBinding::new("space /", ProjectSearch, normal),
-        KeyBinding::new("space e", FocusFileTree, normal),
-        KeyBinding::new("space g", ToggleGit, normal),
-        KeyBinding::new("space w", Save, normal),
-        KeyBinding::new("space q", CloseTab, normal),
-        // The same leader keys work from the side panels.
-        KeyBinding::new("space f", FileFinder, panel),
-        KeyBinding::new("space /", ProjectSearch, panel),
-        KeyBinding::new("space e", FocusFileTree, panel),
-        KeyBinding::new("space g", ToggleGit, panel),
-    ]);
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    init_globals(cx);
+    defaults::bind_app_keys(cx);
+    // With no window to ask about unsaved work, quitting just quits.
+    cx.on_action(|action: &RunCommand, cx| {
+        if action.0 == "workspace.quit_all" {
+            cx.quit();
+        }
+    });
 }
 
 /// Run the editor: parse the command line, open the window, block until quit.

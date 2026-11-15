@@ -1,9 +1,10 @@
 //! Headless end-to-end tests: a real `Workspace` in a test window, driven by
 //! simulated keystrokes.
 
+use crate::keymap::PanelKeymaps;
 use crate::workspace::Workspace;
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
-use med_vim::Mode;
+use med_vim::{MapMode, Mode};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -369,4 +370,64 @@ fn mouse_and_app_shortcuts(cx: &mut TestAppContext) {
         text(&ws, cx),
         "// pasted\nfn main() {\n    let name = 1;\n}// pasted\n\n"
     );
+}
+
+#[gpui::test]
+fn keys_and_commands_are_data(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one two\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
+    let message = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, _| ws.message.clone().unwrap_or_default())
+    };
+
+    // Nothing about a key is fixed: the tables can change while running.
+    cx.update(|_, cx| {
+        let keymap = &mut cx.global_mut::<crate::VimGlobal>().0.keymap;
+        keymap.bind(MapMode::Normal, "<Space>n", "workspace.next_tab");
+        keymap.bind(MapMode::Normal, "Q", "operator.delete");
+        assert!(keymap.unbind(MapMode::Normal, "gt"));
+        cx.global_mut::<PanelKeymaps>()
+            .bind("tree", "x", "tree.close");
+    });
+    cx.simulate_keystrokes("space n");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+    cx.simulate_keystrokes("g t");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
+
+    // Every command can be run by name from the command line.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("workspace.prev_tab");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("nope");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(message(cx), "Not an editor command: nope");
+
+    // An engine command on a new key, with the grammar still around it.
+    cx.simulate_keystrokes("shift-q w");
+    assert_eq!(text(&ws, cx), "two\n");
+
+    // `space` starts the leader bindings, so alone it waits before moving.
+    cx.simulate_keystrokes("space");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    cx.executor().advance_clock(Duration::from_millis(1100));
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (1, 2));
+
+    // The panels read their keys from a table too.
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("x");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("x");
+    assert_eq!(text(&ws, cx), "to\n");
+
+    // A key bound to a command nobody implements says so.
+    cx.update(|_, cx| {
+        let keymap = &mut cx.global_mut::<crate::VimGlobal>().0.keymap;
+        keymap.bind(MapMode::Normal, "Z", "no.such_command");
+    });
+    cx.simulate_keystrokes("shift-z");
+    assert_eq!(message(cx), "Unknown command: no.such_command");
 }

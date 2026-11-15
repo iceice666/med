@@ -1,9 +1,10 @@
 //! The editor view: one buffer, its vim state, and everything needed to
 //! draw it and feed it input.
 
+use crate::commands::{Args, Commands, Handler};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::syntax::{self, LangInfo, Syntax};
-use crate::{Copy, Paste, Settings, VimGlobal};
+use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
 use gpui::component::ActiveTheme as _;
 use gpui::component::text::TextView;
@@ -14,10 +15,13 @@ use med_core::Buffer;
 use med_vim::{Clipboard, Ctx, Effect, Key, Mode, Scroll, Viewport, Vim};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Lines kept between the cursor and the top/bottom edge.
 const SCROLL_OFF: usize = 3;
+/// How long a key that is a binding by itself waits to become a longer
+/// one (`space` before `space f`); vim's `timeoutlen`.
+const KEY_TIMEOUT: Duration = Duration::from_millis(1000);
 const COMPLETION_ROWS: usize = 10;
 
 /// A diagnostic in buffer coordinates (char offsets).
@@ -33,6 +37,11 @@ pub struct Diag {
 pub enum EditorEvent {
     /// An ex command for the workspace (`w`, `q`, `e foo`…).
     Ex(String),
+    /// A key bound to a command that is not the editor's to run.
+    Command {
+        name: String,
+        args: Args,
+    },
     /// A key is about to be handled: what the status bar says about the
     /// last one is stale.
     KeyPress,
@@ -45,10 +54,6 @@ pub enum EditorEvent {
     References(Vec<lsp::Location>),
     /// The cursor is about to jump away from this offset.
     PushJump(usize),
-    JumpBack,
-    JumpForward,
-    NextTab,
-    PrevTab,
     Message(String),
 }
 
@@ -92,6 +97,7 @@ pub struct Editor {
     diagnostics: Vec<Diag>,
     completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
+    key_timeout: Option<Task<()>>,
     hover: Option<SharedString>,
     request_task: Option<Task<()>>,
     drag_anchor: Option<usize>,
@@ -164,7 +170,10 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn translate_key(keystroke: &Keystroke, mode: Mode) -> Option<Key> {
+/// A keystroke as the vim engine's key. `None` for the ones that are not
+/// its business: app shortcuts, and text that must go through the input
+/// method.
+pub(crate) fn translate_key(keystroke: &Keystroke, mode: Mode) -> Option<Key> {
     let m = &keystroke.modifiers;
     if m.platform || m.function {
         return None;
@@ -262,6 +271,7 @@ impl Editor {
             diagnostics: Vec::new(),
             completion: None,
             completion_task: None,
+            key_timeout: None,
             hover: None,
             request_task: None,
             drag_anchor: None,
@@ -482,6 +492,27 @@ impl Editor {
         self.apply_effects(effects, cx);
         self.after_change(cx);
         self.refresh_completion();
+        self.arm_key_timeout(cx);
+    }
+
+    /// While the keys typed could still grow into a longer binding, give
+    /// the next key a moment to arrive, then settle for what there is.
+    fn arm_key_timeout(&mut self, cx: &mut Context<Self>) {
+        if !self.vim.wants_timeout(&cx.global::<VimGlobal>().0) {
+            self.key_timeout = None;
+            return;
+        }
+        let timer = cx.background_executor().timer(KEY_TIMEOUT);
+        self.key_timeout = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            this.update(cx, |this, cx| {
+                let effects = this.with_vim(cx, |vim, ctx| vim.timeout(ctx));
+                this.apply_effects(effects, cx);
+                this.after_change(cx);
+                this.refresh_completion();
+            })
+            .ok();
+        }));
     }
 
     pub fn feed_keys(&mut self, keys: impl IntoIterator<Item = Key>, cx: &mut Context<Self>) {
@@ -497,6 +528,7 @@ impl Editor {
         let effects = self.with_vim(cx, |vim, ctx| vim.type_text(text, ctx));
         self.apply_effects(effects, cx);
         self.after_change(cx);
+        self.arm_key_timeout(cx);
         if self.vim.mode != Mode::Insert {
             self.completion = None;
             return;
@@ -524,16 +556,18 @@ impl Editor {
                 Effect::Ex(command) => cx.emit(EditorEvent::Ex(command)),
                 Effect::Scroll(scroll) => self.scroll(scroll),
                 Effect::Jump { from } => cx.emit(EditorEvent::PushJump(from)),
-                Effect::JumpBack => cx.emit(EditorEvent::JumpBack),
-                Effect::JumpForward => cx.emit(EditorEvent::JumpForward),
-                Effect::NextTab => cx.emit(EditorEvent::NextTab),
-                Effect::PrevTab => cx.emit(EditorEvent::PrevTab),
-                Effect::GotoDefinition => self.goto_definition(cx),
-                Effect::References => self.find_references(cx),
-                Effect::Hover => self.show_hover(cx),
-                Effect::NextDiagnostic => self.jump_to_diagnostic(true, cx),
-                Effect::PrevDiagnostic => self.jump_to_diagnostic(false, cx),
-                Effect::TriggerCompletion => self.request_completion(None, cx),
+                Effect::Command { name, count } => {
+                    let args = Args {
+                        count,
+                        ..Args::default()
+                    };
+                    match cx.global::<Commands>().handler(&name) {
+                        Some(Handler::Editor(run)) => run(self, &args, cx),
+                        // Another view's, or unknown: the workspace sorts
+                        // it out.
+                        _ => cx.emit(EditorEvent::Command { name, args }),
+                    }
+                }
             }
         }
         if let Some(message) = self.vim.message.clone() {
@@ -977,7 +1011,7 @@ impl Editor {
         self.hover.as_deref()
     }
 
-    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+    fn paste(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -989,7 +1023,7 @@ impl Editor {
         }
     }
 
-    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+    fn copy(&mut self, cx: &mut Context<Self>) {
         if self.vim.mode.is_visual() {
             self.handle_key(Key::Char('y'), cx);
         }
@@ -1580,8 +1614,6 @@ impl Render for Editor {
             .key_context(key_context)
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::copy))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1766,4 +1798,48 @@ impl EntityInputHandler for Editor {
         // method out of it stops it swallowing them.
         matches!(self.vim.mode, Mode::Insert | Mode::Command)
     }
+}
+
+pub(crate) fn register(commands: &mut Commands) {
+    use Handler::Editor as E;
+    commands.register(
+        "editor.goto_definition",
+        "Go to the definition of the symbol under the cursor",
+        E(|editor, _, cx| editor.goto_definition(cx)),
+    );
+    commands.register(
+        "editor.references",
+        "List the references to the symbol under the cursor",
+        E(|editor, _, cx| editor.find_references(cx)),
+    );
+    commands.register(
+        "editor.hover",
+        "Show documentation for the symbol under the cursor",
+        E(|editor, _, cx| editor.show_hover(cx)),
+    );
+    commands.register(
+        "editor.next_diagnostic",
+        "Go to the next diagnostic",
+        E(|editor, _, cx| editor.jump_to_diagnostic(true, cx)),
+    );
+    commands.register(
+        "editor.prev_diagnostic",
+        "Go to the previous diagnostic",
+        E(|editor, _, cx| editor.jump_to_diagnostic(false, cx)),
+    );
+    commands.register(
+        "editor.complete",
+        "Ask the language server for completions",
+        E(|editor, _, cx| editor.request_completion(None, cx)),
+    );
+    commands.register(
+        "editor.paste",
+        "Paste from the system clipboard",
+        E(|editor, _, cx| editor.paste(cx)),
+    );
+    commands.register(
+        "editor.copy",
+        "Copy the selection to the system clipboard",
+        E(|editor, _, cx| editor.copy(cx)),
+    );
 }
