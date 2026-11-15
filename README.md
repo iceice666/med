@@ -605,3 +605,7 @@ there are no macros yet.
 
 `examples/` has the keys and the panels, which are written in Lisp rather
 than built in.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
