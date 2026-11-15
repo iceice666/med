@@ -210,6 +210,15 @@ named command, and keys are bound to names in tables:
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
 can also be run by its full name, as in `:workspace.find_file`.
 
+`:help` (`:h`) says what a command does: `:help w` or `:help
+workspace.save` gives what it says of itself, the names the command line
+knows it by, and every key bound to it, in the modes' tables, the
+buffers', the panels' and `app`. Nothing in it is written by hand: the
+page is made when it is asked for, so it has the keys and the commands of
+the init file as they are then. `:help` alone lists every command, and
+the vim engine's with their keys in normal mode. The pages come up in a
+tab of their own, called `help`, which each `:help` reuses.
+
 The tables are changed from the init file, `<config>/init.lisp`, which is
 run at startup, or from the command line with `:eval`:
 
