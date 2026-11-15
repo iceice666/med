@@ -2744,21 +2744,22 @@ fn renames_files_by_editing_a_listing(cx: &mut TestAppContext) {
     assert!(!project.path("b.txt").exists());
     assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
 
-    // gf goes into a directory, and space - back up to it.
-    cx.simulate_keystrokes("g g g f");
+    // Enter goes into a directory, and - back up to it: keys of the
+    // listing's own.
+    cx.simulate_keystrokes("g g enter");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "sub/\ninner.txt\n");
-    cx.simulate_keystrokes("space -");
+    cx.simulate_keystrokes("-");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "dir/\nc.txt\n");
     assert_eq!(cursor(&ws, cx), (1, 1));
-    // On a file, gf opens it; away from a listing it only says so.
-    cx.simulate_keystrokes("j g f");
+    // On a file, enter opens it, where - and enter are vim's again.
+    cx.simulate_keystrokes("j enter");
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
-    cx.simulate_keystrokes("g f");
+    cx.simulate_keystrokes("-");
     cx.run_until_parked();
-    assert_eq!(message(&ws, cx), "Not a listing: space - makes one");
+    assert_eq!(active_file(&ws, cx), Some(project.path("c.txt")));
 
     // :wq writes what the listing had, though another tab is up by the
     // time the program runs: here c.txt, as many lines long.
@@ -2789,10 +2790,17 @@ fn a_listing_keeps_what_is_not_written(cx: &mut TestAppContext) {
         ("dir/inner.txt", "inner\n"),
         ("sp ", "s\n"),
     ]);
-    let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    let seen = "(def seen nil)
+                (add-hook 'keys-pending (fn (p) (when p (set! seen (get p :tables)))))";
+    let (ws, cx) = open_with(&[DIRED, seen], &project, &["a.txt"], cx);
     cx.simulate_keystrokes("space -");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
+    // A half-typed command in a listing is looked up in its keys first.
+    cx.simulate_keystrokes("g");
+    cx.run_until_parked();
+    assert_eq!(lisp("seen", cx), r#"("dired" "normal")"#);
+    cx.simulate_keystrokes("escape");
     // Made with its text, there is nothing before it to undo to.
     cx.simulate_keystrokes("u");
     assert_eq!(text(&ws, cx), "dir/\na.txt\nsp \n");
@@ -2801,10 +2809,10 @@ fn a_listing_keeps_what_is_not_written(cx: &mut TestAppContext) {
     assert_eq!(cursor(&ws, cx), (2, 1));
     cx.simulate_keystrokes("c c");
     cx.simulate_input("b.txt");
-    cx.simulate_keystrokes("escape g g g f");
+    cx.simulate_keystrokes("escape g g enter");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "inner.txt\n");
-    cx.simulate_keystrokes("space -");
+    cx.simulate_keystrokes("-");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "dir/\nb.txt\nsp \n");
     assert!(dirty(&ws, cx));

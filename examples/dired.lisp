@@ -4,8 +4,9 @@
 ;   (load "dired.lisp")
 ;
 ; space - lists the directory of the file being edited in a tab of its
-; own, one name to a line, a directory's with / after it; in a listing it
-; goes to the directory above. gf on a line opens its file or directory.
+; own, one name to a line, a directory's with / after it. In a listing,
+; enter opens the file or directory on the line, and - goes to the
+; directory above: keys of the listing's own, in the table `dired`.
 ;
 ; Change a name and :w renames the file; a name with / in it moves it,
 ; into directories that are made if there are none. An empty line puts
@@ -13,9 +14,8 @@
 ; all of it can be: the lines must stay as many as the files, and no
 ; name may be one that is already there, another line's included, so
 ; that two files change names in two goes, by way of a third.
-;
-; There are no keys of a tab's own, so space - and gf are the editor's
-; everywhere; away from a listing, gf only says so.
+
+(defkeys 'dired)
 
 ; A listing's tab is named after its directory, with a / after it.
 (defn dired-tab-name (dir)
@@ -51,6 +51,7 @@
 ; `again`, after they are.
 (defn dired-show (dir name again)
   (open-scratch (dired-tab-name dir))
+  (set-buffer-keys '(dired))
   (when (or again (not (modified?)))
     (let ((entries (list-dir dir true)))
       (open-scratch (dired-tab-name dir)
@@ -155,7 +156,7 @@
   (fn ()
     (let ((here (dired-here)))
       (if (not here)
-          (message "Not a listing: space - makes one")
+          (message "Not a listing: dired.open makes one")
           (let ((name (dired-bare (or (buffer-line (car (cursor))) ""))))
             (cond ((= name "") nil)
                   ((not (file-exists? (path-join here name)))
@@ -164,4 +165,5 @@
                   (true (open-file (path-join here name)))))))))
 
 (bind 'normal "<Space>-" "dired.open")
-(bind 'normal "gf" "dired.enter")
+(bind 'dired "-" "dired.open")
+(bind 'dired "<CR>" "dired.enter")
