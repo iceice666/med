@@ -170,12 +170,46 @@ A layout only describes: it cannot bind keys or run commands while it is
 being drawn, though the function it gives `on-click` can when clicked. One
 that fails is drawn as its error message.
 
+## Panels of your own
+
+A program can add panels: sidebars to the left or right of the editor, and
+popups over it.
+
+```lisp
+(def notes '("call Ada" "ship it"))
+
+(defpanel 'notes :at 'right :width 240
+  (fn (panel)
+    (col :width 'full :height 'full :bg 'sidebar
+      (text "Notes" :bold true :padding-x 12 :height 32)
+      (rows notes :grow true
+        (fn (note)
+          (row :width 'full :height 24 :padding-x 12
+               :hover (list :bg 'list-hover)
+               :on-click (fn () (set! notes (filter (fn (n) (not (= n note))) notes)))
+            (text note)))))))
+
+(defcommand "user.notes" "Show or hide my notes" (fn () (toggle-panel 'notes)))
+(bind 'normal "<Space>n" "user.notes")
+```
+
+`defpanel` takes a name, the options `:at` (`'left`, `'right` or
+`'popup`), `:width` and `:shown` (up from the start), and a layout as
+above. `show-panel`, `hide-panel` and `toggle-panel` put it up and away,
+and `panel-shown?` asks. A popup is as tall as what is in it, and a click
+beside it or escape puts it away.
+
+The layout's `panel` has `:name`, `:file` (the file being edited, or
+`nil`) and `:root`. Anything else a panel shows is the program's own: what
+it keeps with `def` and changes with `set!`. Panels are drawn again after
+any program has run, so a click that changes a value shows at once. `rows`
+takes a list of the program's as well as the name of one of the panel's.
+
 ## Scripting language
 
 `med-lisp` is a small Lisp, the language of the init file and of `:eval`.
-A program can change keys and options, define commands, lay out a panel
-(all above) and say something with `(message ...)`; it cannot yet make a
-panel of its own. One
+A program can change keys and options, define commands, lay out a panel,
+add panels of its own (all above) and say something with `(message ...)`. One
 interpreter serves the whole session, so what `init.lisp` defines can be
 used from `:eval`. A program that never ends is stopped after ten million
 steps rather than left to hang the window.
