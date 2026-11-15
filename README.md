@@ -7,8 +7,10 @@ framework behind Zed.
   that runs with no UI attached (`med-vim`)
 - Tree-sitter syntax highlighting for ~35 languages
 - LSP: diagnostics, completion, hover, go to definition, references
-- File tree, fuzzy file finder, project-wide search
-- A lazygit-style git screen
+- Panels written in the editor's own Lisp. The file tree, the fuzzy file
+  finder with project-wide search, and a lazygit-style git screen are
+  three of them, in [`examples/`](examples): not built in, and yours to
+  load, change or replace
 
 ## Build and run
 
@@ -41,17 +43,39 @@ clipboard.
 
 | Key | Action |
 | --- | --- |
-| `space f` / `⌘P` | find file |
-| `space /` / `⌘⇧F` | search in project |
-| `space e` / `⌘⇧E` | focus file tree (`j k h l`, `enter`, `R` refresh, `q` back) |
-| `⌘B` | show/hide file tree |
-| `space g` / `⌘⇧G` | git screen |
 | `gd` / `gr` / `K` | definition / references / hover |
 | `]d` / `[d` | next / previous diagnostic |
 | `ctrl-n` `ctrl-p` `tab` | completion menu: next, previous, accept |
 | `ctrl-o` / `ctrl-i` | jump back / forward |
 | `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |
 | `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
+
+## The example panels
+
+An editor with no init file is the editor alone. The file tree, the
+picker and the git screen are programs in [`examples/`](examples), and an
+init file loads the ones it wants:
+
+```lisp
+; ~/.config/med/init.lisp
+(load "/path/to/med/examples/init.lisp")   ; all three, or one by one:
+(load "/path/to/med/examples/tree.lisp")
+```
+
+A path that does not start at the top is looked for beside the file that
+loads it, so the files can also be copied next to `init.lisp` and changed
+there. Each brings its commands and its keys:
+
+| File | Key | Action |
+| --- | --- | --- |
+| `tree.lisp` | `space e` / `⌘⇧E` | focus file tree (`j k h l`, `enter`, `R` refresh, `q` back) |
+| | `⌘B` | show/hide file tree |
+| `picker.lisp` | `space f` / `⌘P` | find file |
+| | `space /` / `⌘⇧F` | search in project |
+| `git.lisp` | `space g` / `⌘⇧G` | git screen |
+
+With `picker.lisp`, `gr` lists the references to choose from; without it,
+`gr` goes to the first.
 
 Git screen (as in lazygit): `1`–`5` or `tab` switch panel, `j`/`k` move,
 `J`/`K` scroll the diff, `space` stage / checkout / apply, `a` stage all,
@@ -68,11 +92,12 @@ named command, and keys are bound to names in tables:
   `insert.newline`, … — `med_vim::command_names()`) and its stock layout,
   `Keymap::vim()` in `med-vim/src/keymap.rs`. Counts, registers and
   operator + motion are grammar, and work with whatever keys are bound.
-- The application's commands (`workspace.*`, `editor.*`, `tree.*`, `git.*`),
-  registered by each view in `Commands`.
+- The application's commands (`workspace.*`, `editor.*`), registered by
+  each view in `Commands`, and the ones programs define (`tree.*`, `git.*`
+  and `picker.*` are the examples').
 - `med/src/defaults.rs`: the editor keys that reach outside the buffer
-  (`gd`, the `space` leader keys), the file tree's and git screen's keys, the
-  `⌘` shortcuts, and the names ex commands go by (`:w` is `workspace.save`).
+  (`gd`, the `space` leader keys), the `⌘` shortcuts, and the names ex
+  commands go by (`:w` is `workspace.save`).
 
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
 can also be run by its full name, as in `:workspace.find_file`.
@@ -86,13 +111,16 @@ run at startup, or from the command line with `:eval`:
 (bind '(normal visual) "gh" "editor.hover")   ; several modes at once
 (bind-keys 'normal "Y" "y$")                  ; keys typed in place of others
 (bind 'git.files "x" "git.discard")           ; a panel's keys
+(bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; also font-family, lsp
 ```
 
-The modes are `normal`, `visual`, `operator` and `insert`; the panels are
-`tree`, `git`, `git.files`, `git.branches` and `git.stash`. `bind` refuses
-a command that does not exist. `:workspace.reload_init` runs the file
+The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
+goes by the panel's name, or by its name and a part of it (`git.files`).
+`app` is the table of the shortcuts that work wherever the keyboard is,
+written as the window system has them (`cmd-shift-p`). `bind` refuses a
+command that does not exist. `:workspace.reload_init` runs the file
 again; what is wrong with it is said in the status bar, with the line.
 
 A command can be written there too. It is a function of no arguments, and
@@ -119,61 +147,10 @@ cannot take the name of one of the editor's own.
 A key that is a binding by itself and also starts longer ones (`space`, which
 moves right) waits a second for the rest before acting.
 
-## Panel layouts
+## Panels
 
-How a panel looks is a layout: a function, written in the init file's
-language, that is called each time the panel is drawn and describes it.
-The file tree is the first panel drawn this way. Its layout is
-`crates/med/src/panels/tree.lisp`, and `set-layout` in `init.lisp` replaces
-it:
-
-```lisp
-(set-layout 'tree
-  (fn (panel)
-    (col :width 'full :height 'full :bg 'sidebar
-      (text (get panel :root-name) :bold true :padding-x 12 :height 32)
-      (rows 'entries :grow true
-        (fn (entry)
-          (row :height 24 :align 'center
-               :padding-left (+ 10 (* 14 (get entry :depth)))
-               :bg (when (get entry :selected) 'list-active)
-               :on-click "tree.open"
-            (when (get entry :dir) (text "/ " :color 'muted-foreground))
-            (text (get entry :name))))))))
-```
-
-| Function | Makes |
-| --- | --- |
-| `(row styles... children...)`, `(col ...)` | a row or a column of its children |
-| `(text value styles...)` | text |
-| `(rows list styles... function)` | one of the panel's lists; the function describes a row |
-
-Styles are `:name value` pairs: `width` and `height` (pixels or `'full`),
-`grow`, `shrink`, `padding-x` `padding-y` `padding-left` `padding-right`,
-`gap`, `align` and `justify` (`'start` `'center` `'end`, and `'between`),
-`bg`, `color`, `border-top` `border-right` `border-bottom` `border-left`,
-`border-color`, `bold`, `nowrap`; `hover`, a list of styles for under the
-pointer, as in `(list :bg 'list-hover)`; and `on-click`, a command's name
-or a function. A color is one of the theme's (`'sidebar`,
-`'muted-foreground`, `'list-active`, `'warning`…) or `"#rrggbb"`.
-
-A style given `nil` is left alone and a `nil` child is no child, so what
-depends on the panel is written with `if`, `when` and `cond`. A child can
-also be a string, or a list of children, as `map` makes.
-
-The file tree's `panel` has `:root-name` and `:focused`; an `entry` of its
-list `entries` has `:name`, `:status`, `:depth` and the flags `:selected`,
-`:dir`, `:expanded`, `:added`, `:modified`. A click on a row selects it
-first.
-
-A layout only describes: it cannot bind keys or run commands while it is
-being drawn, though the function it gives `on-click` can when clicked. One
-that fails is drawn as its error message.
-
-## Panels of your own
-
-A program can add panels: sidebars to the left or right of the editor, and
-popups over it.
+A program adds panels: sidebars to the left or right of the editor, popups
+over it, and whole screens in its place.
 
 ```lisp
 (def notes '("call Ada" "ship it"))
@@ -193,25 +170,110 @@ popups over it.
 (bind 'normal "<Space>n" "user.notes")
 ```
 
-`defpanel` takes a name, the options `:at` (`'left`, `'right` or
-`'popup`), `:width` and `:shown` (up from the start), and a layout as
-above. `show-panel`, `hide-panel` and `toggle-panel` put it up and away,
-and `panel-shown?` asks. A popup is as tall as what is in it, and a click
-beside it or escape puts it away.
+`defpanel` takes a name, the options `:at` (`'left`, `'right`, `'popup` or
+`'full`), `:width`, `:shown` (up from the start) and `:contexts` (below),
+and a layout. `show-panel`, `hide-panel` and `toggle-panel` put it up and
+away, and `panel-shown?` asks. A popup is as tall as what is in it, and a
+click beside it or escape puts it away. `set-layout` gives a panel that is
+already defined another layout.
+
+### Layouts
+
+How a panel looks is its layout: a function that is called each time the
+panel is drawn and describes it.
+
+| Function | Makes |
+| --- | --- |
+| `(row styles... children...)`, `(col ...)` | a row or a column of its children |
+| `(text value styles...)` | text |
+| `(rows list styles... function)` | a list that scrolls; the function describes a row |
+| `(input name styles...)` | a line to type in |
+
+Styles are `:name value` pairs: `width` and `height` (pixels or `'full`),
+`grow` (`true`, or a share of the room next to others that grow), `shrink`,
+`padding-x` `padding-y` `padding-left` `padding-right`, `gap`, `align` and
+`justify` (`'start` `'center` `'end`, and `'between`), `bg`, `color`,
+`border` `border-top` `border-right` `border-bottom` `border-left`,
+`border-color`, `rounded`, `size` (of text), `bold`, `mono`, `nowrap`,
+`clip`; `hover`, a list of styles for under the pointer, as in
+`(list :bg 'list-hover)`; and `on-click`, a command's name or a function. A
+color is one of the theme's (`'sidebar`, `'muted-foreground`,
+`'list-active`, `'warning`…) or `"#rrggbb"`.
+
+A style given `nil` is left alone and a `nil` child is no child, so what
+depends on a value is written with `if`, `when` and `cond`. A child can
+also be a string, or a list of children, as `map` makes.
 
 The layout's `panel` has `:name`, `:file` (the file being edited, or
-`nil`) and `:root`. Anything else a panel shows is the program's own: what
-it keeps with `def` and changes with `set!`. Panels are drawn again after
-any program has run, so a click that changes a value shows at once. `rows`
-takes a list of the program's as well as the name of one of the panel's.
+`nil`), `:root` and `:focused`. Anything else a panel shows is the
+program's own: what it keeps with `def` and changes with `set!`. Panels are
+drawn again after any program has run, so a click that changes a value
+shows at once.
+
+`rows` draws only the rows in view, which must all be the same height. Its
+function is called with one of the list's values, and with where in the
+list that is if it takes a second argument. `:reveal` names the row to keep
+in view and `:top` the row to have at the top: the list scrolls when either
+changes.
+
+An `input` keeps its own text. `:placeholder` is shown while it is empty,
+`:on-change` is called with the text whenever something is typed, and
+`:on-submit` on enter. `(input-text panel name)` reads it and `(set-input
+panel name text)` writes it.
+
+A layout only describes: it cannot bind keys or run commands while it is
+being drawn, though the functions it gives `on-click` and an input can when
+they are called. One that fails is drawn as its error message.
+
+### The keyboard
+
+`(focus-panel name)` puts a panel up and gives it the keyboard, which goes
+on to its input if it has one; `(panel-focused? name)` asks, and
+`(focus-editor)` gives the keyboard back. A click on a panel leaves the
+keyboard where it was. A panel that is put away while it has the keyboard
+hands it back to where it came from.
+
+A panel with the keyboard looks its keys up in the table of its own name:
+
+```lisp
+(defcommand "user.close-notes" "Put my notes away" (fn () (hide-panel 'notes)))
+(bind 'notes "q" "user.close-notes")
+```
+
+`:contexts` names other tables, most specific first: a list, or a function
+that gives one, for a panel whose keys depend on what it is showing. The
+git screen's is `(fn () (list (str "git." git-section) "git"))`. A key that
+no table knows goes on to the panel's input.
+
+### What a program can find out
+
+What takes time is given a function to call with the answer, and returns
+at once.
+
+| Function | Gives |
+| --- | --- |
+| `(current-file)`, `(project-root)` | where the editor is |
+| `(open-file path [line [column]])` | the file in a tab, at a place counted from 1 |
+| `(list-dir path)` | what is in a directory: `((:name :path :dir)...)`, without what git ignores |
+| `(path-name p)`, `(path-parent p)`, `(path-join a b...)` | parts of paths |
+| `(walk-files function)` | every file of the project, as paths from its root |
+| `(fuzzy query list limit)` | the texts a few letters mean, best first |
+| `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
+| `(git what arguments... function)` | the repository: see `crates/med/src/host.rs` |
+| `(add-hook name function)` | a call when something happens |
+
+The hooks are `opened` (a window is up, and there is a project),
+`files-changed` (a file was saved, the window came to the front, or
+`workspace.sync` was run) and `locations` (a list of places to choose
+from, such as the references to a name).
 
 ## Scripting language
 
 `med-lisp` is a small Lisp, the language of the init file and of `:eval`.
-A program can change keys and options, define commands, lay out a panel,
-add panels of its own (all above) and say something with `(message ...)`. One
-interpreter serves the whole session, so what `init.lisp` defines can be
-used from `:eval`. A program that never ends is stopped after ten million
+A program can change keys and options, define commands and panels (all
+above), `(load "file")` another program, and say something with
+`(message ...)`. One interpreter serves the whole session, so what
+`init.lisp` defines can be used from `:eval`. A program that never ends is stopped after ten million
 steps rather than left to hang the window.
 
 The language itself can be tried without the editor:
@@ -242,3 +304,5 @@ there are no macros yet.
 | `med-git` | wrapper around the `git` CLI |
 | `med-lisp` | scripting language |
 | `med` | the GPUI application |
+
+`examples/` has the panels that are written in Lisp rather than built in.
