@@ -78,6 +78,18 @@ mode the selection goes there. After an operator the key is `z`, `s` being
 surround's, and what is found goes with its first character: `dzfoa`. The
 command is `motion.flash`; what `s` is in vim, `cl` still is.
 
+The rest of flash.nvim goes by the same marks:
+
+| Key | Action |
+| --- | --- |
+| `f` `F` `t` `T` | look on every line on screen, not only the cursor's. Where else they could go is marked, and while it is the key again goes on to the next, as `;` does, and `F` after `f` back, as `,` does; any other key is itself again |
+| `S` | a label before and after each syntax node around the cursor, the smallest `a`. The label selects its node, `enter` the smallest; `]x` and `[x` go on from there. After an operator the node is what it acts on: `dSs` |
+| `r` after an operator | `s` for the operator to go and work elsewhere: the text and its label, then a motion or text object there, and the cursor comes back to where it was. `yrfoaiw` yanks a word further down |
+
+Those are `motion.flash_find_forward` and the three like it, `select.flash`
+and `motion.flash_remote`. Vim's own `f` and `t`, which stay on their line,
+are `motion.find_forward` and the like, and what `S` was, `cc` still is.
+
 Brackets and quotes close as they are typed, the closing one is stepped
 over, and backspace between the two takes both; `(set-option 'auto-pairs
 false)` turns that off.
@@ -149,7 +161,7 @@ named command, and keys are bound to names in tables:
   each view in `Commands`, and the ones programs define (`tree.*`, `git.*`
   and `picker.*` are the examples').
 - `med/src/defaults.rs`: the editor keys that reach outside the buffer
-  (`gd`, the `space` leader keys), `s` and `z`, the `⌘` shortcuts, and the names ex
+  (`gd`, the `space` leader keys), the keys of flash, the `⌘` shortcuts, and the names ex
   commands go by (`:w` is `workspace.save`).
 
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
