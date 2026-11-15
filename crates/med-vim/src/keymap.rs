@@ -275,9 +275,12 @@ impl MapMode {
     ];
 }
 
-/// The engine's key bindings, one table per [`MapMode`].
+/// The engine's key bindings, one table per [`MapMode`], and the tables
+/// of buffers' own: each by its name, again one per mode, looked up first
+/// in the buffers that say they are in it ([`Vim::tables`](crate::Vim)).
 pub struct Keymap {
     maps: [KeyTrie<Action>; 4],
+    tables: HashMap<String, [KeyTrie<Action>; 4]>,
 }
 
 impl Default for Keymap {
@@ -291,6 +294,7 @@ impl Keymap {
     pub fn empty() -> Self {
         Self {
             maps: std::array::from_fn(|_| KeyTrie::new()),
+            tables: HashMap::new(),
         }
     }
 
@@ -305,8 +309,38 @@ impl Keymap {
         keymap
     }
 
-    fn map(&mut self, mode: MapMode) -> &mut KeyTrie<Action> {
-        &mut self.maps[mode as usize]
+    /// A buffer's table, or with no name the mode's own; made if need be.
+    fn map(&mut self, table: Option<&str>, mode: MapMode) -> &mut KeyTrie<Action> {
+        match table {
+            None => &mut self.maps[mode as usize],
+            Some(name) => {
+                let tables = self.tables.entry(name.to_string()).or_default();
+                &mut tables[mode as usize]
+            }
+        }
+    }
+
+    fn get_map(&self, table: Option<&str>, mode: MapMode) -> Option<&KeyTrie<Action>> {
+        match table {
+            None => Some(&self.maps[mode as usize]),
+            Some(name) => Some(&self.tables.get(name)?[mode as usize]),
+        }
+    }
+
+    /// Have a table for buffers to be in, by `name`, with nothing bound in
+    /// it yet if there was none.
+    pub fn define_table(&mut self, name: &str) {
+        self.tables.entry(name.to_string()).or_default();
+    }
+
+    /// Whether there is a buffers' table called `name`.
+    pub fn has_table(&self, name: &str) -> bool {
+        self.tables.contains_key(name)
+    }
+
+    /// The names of the buffers' tables, in no order.
+    pub fn table_names(&self) -> impl Iterator<Item = &str> {
+        self.tables.keys().map(String::as_str)
     }
 
     /// Bind `keys` (in [`parse_keys`] notation) to a command: one of
@@ -314,23 +348,41 @@ impl Keymap {
     /// then the host's to run and arrives as
     /// [`Effect::Command`](crate::Effect::Command).
     pub fn bind(&mut self, mode: MapMode, keys: &str, command: &str) {
+        self.bind_in(None, mode, keys, command);
+    }
+
+    /// [`Keymap::bind`] in a buffers' table, or with none the mode's own.
+    pub fn bind_in(&mut self, table: Option<&str>, mode: MapMode, keys: &str, command: &str) {
         let action = match command::builtin(command) {
             Some(builtin) => Action::Builtin(builtin),
             None => Action::Host(command.into()),
         };
-        self.map(mode).insert(&parse_keys(keys), action);
+        self.map(table, mode).insert(&parse_keys(keys), action);
     }
 
     /// Bind `keys` to other keys, which are typed in their place and are
     /// themselves subject to the keymap (vim's `:map`, not `:noremap`).
     pub fn bind_keys(&mut self, mode: MapMode, keys: &str, to: &str) {
+        self.bind_keys_in(None, mode, keys, to);
+    }
+
+    /// [`Keymap::bind_keys`] in a buffers' table, or the mode's own.
+    pub fn bind_keys_in(&mut self, table: Option<&str>, mode: MapMode, keys: &str, to: &str) {
         let action = Action::Keys(parse_keys(to).into());
-        self.map(mode).insert(&parse_keys(keys), action);
+        self.map(table, mode).insert(&parse_keys(keys), action);
     }
 
     /// Remove a binding. False if `keys` were not bound.
     pub fn unbind(&mut self, mode: MapMode, keys: &str) -> bool {
-        self.map(mode).remove(&parse_keys(keys)).is_some()
+        self.unbind_in(None, mode, keys)
+    }
+
+    /// [`Keymap::unbind`] in a buffers' table, or the mode's own.
+    pub fn unbind_in(&mut self, table: Option<&str>, mode: MapMode, keys: &str) -> bool {
+        if table.is_some_and(|name| !self.has_table(name)) {
+            return false;
+        }
+        self.map(table, mode).remove(&parse_keys(keys)).is_some()
     }
 
     /// The command `keys` are bound to; `None` for unbound keys and for
@@ -347,6 +399,19 @@ impl Keymap {
     /// then bound to: what there is to show someone who has typed `keys`
     /// and wonders what next.
     pub fn next_keys(&self, mode: MapMode, keys: &str) -> Vec<NextKey<Bound>> {
+        self.next_keys_in(None, mode, keys)
+    }
+
+    /// [`Keymap::next_keys`] in a buffers' table, or the mode's own.
+    pub fn next_keys_in(
+        &self,
+        table: Option<&str>,
+        mode: MapMode,
+        keys: &str,
+    ) -> Vec<NextKey<Bound>> {
+        let Some(map) = self.get_map(table, mode) else {
+            return Vec::new();
+        };
         let bound = |action: &Action| match action {
             Action::Builtin(builtin) => {
                 command::name(*builtin).map(|name| Bound::Command(name.to_string()))
@@ -354,8 +419,7 @@ impl Keymap {
             Action::Host(name) => Some(Bound::Command(name.to_string())),
             Action::Keys(keys) => Some(Bound::Keys(keys.to_vec())),
         };
-        self.maps[mode as usize]
-            .next_keys(&parse_keys(keys))
+        map.next_keys(&parse_keys(keys))
             .into_iter()
             .map(|next| NextKey {
                 key: next.key,
@@ -370,14 +434,46 @@ impl Keymap {
         self.maps[mode as usize].is_empty()
     }
 
-    pub(crate) fn lookup(&self, mode: MapMode, keys: &[Key]) -> Lookup<Action> {
+    /// The tables of `tables` that there are, in `mode`.
+    fn buffer_maps<'a>(
+        &'a self,
+        tables: &'a [String],
+        mode: MapMode,
+    ) -> impl Iterator<Item = &'a KeyTrie<Action>> {
+        tables
+            .iter()
+            .filter_map(move |name| self.tables.get(name))
+            .map(move |maps| &maps[mode as usize])
+    }
+
+    /// What `keys` are in `mode` for a buffer in `tables`: the first of
+    /// them that has anything to say about the keys decides, and then the
+    /// mode's own table.
+    pub(crate) fn lookup(&self, tables: &[String], mode: MapMode, keys: &[Key]) -> Lookup<Action> {
+        let buffer = self.buffer_maps(tables, mode).map(|map| map.lookup(keys));
+        if let Some(found) = buffer.into_iter().find(|found| *found != Lookup::None) {
+            return found;
+        }
         match self.fallback(mode, keys) {
             Some(action) => Lookup::Found(action),
             None => self.maps[mode as usize].lookup(keys),
         }
     }
 
-    pub(crate) fn longest_prefix(&self, mode: MapMode, keys: &[Key]) -> Option<(usize, Action)> {
+    /// The longest leading part of `keys` that is bound, in the first of
+    /// the tables to have one.
+    pub(crate) fn longest_prefix(
+        &self,
+        tables: &[String],
+        mode: MapMode,
+        keys: &[Key],
+    ) -> Option<(usize, Action)> {
+        if let Some(found) = self
+            .buffer_maps(tables, mode)
+            .find_map(|map| map.longest_prefix(keys))
+        {
+            return Some(found);
+        }
         match self.fallback(mode, keys.get(..1).unwrap_or_default()) {
             Some(action) => Some((1, action)),
             None => self.maps[mode as usize].longest_prefix(keys),

@@ -468,6 +468,8 @@ impl Pending {
 pub struct PendingKeys {
     /// The table the next key is looked up in.
     pub mode: MapMode,
+    /// The buffers' tables it is looked up in first, as [`Vim::tables`].
+    pub tables: Vec<String>,
     /// The start of a binding typed so far (`g`, `<Space>`), in key
     /// notation: what [`Keymap::next_keys`](crate::Keymap::next_keys)
     /// takes. Empty after a count or an operator, when any binding of
@@ -538,6 +540,9 @@ struct Expansion {
 
 pub struct Vim {
     pub mode: Mode,
+    /// The buffers' key tables this one is in, most specific first: looked
+    /// up before the mode's own table (see [`Keymap`]).
+    pub tables: Vec<String>,
     /// Char offset of the cursor.
     pub cursor: usize,
     /// The other end of the visual selection.
@@ -613,6 +618,7 @@ impl Vim {
     pub fn new() -> Self {
         Self {
             mode: Mode::Normal,
+            tables: Vec::new(),
             cursor: 0,
             anchor: 0,
             goal_col: None,
@@ -666,6 +672,7 @@ impl Vim {
         let flash = self.pending.flash.as_ref().map(|_| Awaiting::Flash);
         Some(PendingKeys {
             mode: self.map_mode(),
+            tables: self.tables.clone(),
             keys: format_keys(&self.pending.seq),
             typed: self.pending_display(),
             awaiting: flash.or(self.pending.awaiting.map(|awaiting| match awaiting {
@@ -929,7 +936,10 @@ impl Vim {
         let seq = &self.pending.seq;
         !seq.is_empty()
             && (self.mode == Mode::Insert
-                || shared.keymap.longest_prefix(self.map_mode(), seq).is_some())
+                || shared
+                    .keymap
+                    .longest_prefix(&self.tables, self.map_mode(), seq)
+                    .is_some())
     }
 
     /// Stop waiting for a longer binding: run what the keys typed so far
@@ -1122,7 +1132,11 @@ impl Vim {
     /// Add `key` to the sequence being typed and run what that is bound to.
     fn map_key(&mut self, key: Key, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
         self.pending.seq.push(key);
-        match cx.shared.keymap.lookup(self.map_mode(), &self.pending.seq) {
+        match cx
+            .shared
+            .keymap
+            .lookup(&self.tables, self.map_mode(), &self.pending.seq)
+        {
             Lookup::Pending => {}
             Lookup::Found(action) => {
                 let seq = std::mem::take(&mut self.pending.seq);
@@ -1138,7 +1152,11 @@ impl Vim {
     /// `seq` is not a binding, or no key came to make it a longer one: run
     /// the longest leading part that is bound and put the rest back.
     fn resolve_partial(&mut self, seq: Vec<Key>, cx: &mut Ctx<'_>, fx: &mut Vec<Effect>) {
-        match cx.shared.keymap.longest_prefix(self.map_mode(), &seq) {
+        match cx
+            .shared
+            .keymap
+            .longest_prefix(&self.tables, self.map_mode(), &seq)
+        {
             Some((len, action)) => {
                 self.exec(action, &seq[len - 1], cx, fx);
                 self.unread.extend(seq.into_iter().skip(len));

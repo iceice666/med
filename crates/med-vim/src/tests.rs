@@ -530,6 +530,64 @@ fn host_commands() {
 }
 
 #[test]
+fn a_buffers_own_keys() {
+    let mut h = Harness::new("a |b c\nd e");
+    let keymap = &mut h.shared.keymap;
+    keymap.bind_in(Some("list"), MapMode::Normal, "x", "motion.line_end");
+    keymap.bind_in(Some("list"), MapMode::Normal, "gf", "motion.down");
+    keymap.bind_in(Some("list"), MapMode::Insert, "<CR>", "insert.escape");
+    assert!(keymap.has_table("list"));
+
+    // A buffer in no table has the mode's keys only.
+    h.keys("x");
+    assert_eq!(h.state(), "a | c\nd e");
+    h.keys("u");
+
+    // In one, its keys come first; what it does not know is the mode's.
+    h.vim.tables = vec!["list".into()];
+    h.keys("x");
+    assert_eq!(h.state(), "a b |c\nd e");
+    h.keys("gf");
+    assert_eq!(h.state(), "a b c\nd |e");
+    h.keys("gg");
+    assert_eq!(h.state(), "|a b c\nd e");
+    h.keys("dw");
+    assert_eq!(h.state(), "|b c\nd e");
+    h.keys("i<CR>");
+    assert_eq!(h.vim.mode, Mode::Normal);
+    assert_eq!(h.state(), "|b c\nd e");
+
+    // An earlier table has the say over a later one.
+    let keymap = &mut h.shared.keymap;
+    keymap.bind_in(Some("deep"), MapMode::Normal, "x", "edit.delete_char");
+    h.vim.tables = vec!["deep".into(), "list".into()];
+    h.keys("x");
+    assert_eq!(h.state(), "| c\nd e");
+
+    // A half-typed binding says which tables it is looked up in.
+    h.keys("g");
+    let pending = h.vim.pending_keys().unwrap();
+    assert_eq!(pending.tables, ["deep", "list"]);
+    h.keys("<esc>");
+
+    assert!(
+        h.shared
+            .keymap
+            .unbind_in(Some("list"), MapMode::Normal, "x")
+    );
+    assert!(
+        !h.shared
+            .keymap
+            .unbind_in(Some("nope"), MapMode::Normal, "x")
+    );
+    let next = h
+        .shared
+        .keymap
+        .next_keys_in(Some("list"), MapMode::Normal, "g");
+    assert_eq!(next.len(), 1);
+}
+
+#[test]
 fn rebinding() {
     // Any key can be an operator; doubling it still means "this line".
     let mut h = Harness::new("a |b c\nd");
