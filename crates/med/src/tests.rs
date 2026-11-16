@@ -692,7 +692,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides sticky-scroll undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1421,6 +1421,116 @@ fn the_indent_guides_option(cx: &mut TestAppContext) {
     assert!(!on(&ws, cx));
     cx.simulate_keystrokes(": e space b . t x t enter");
     assert!(on(&ws, cx));
+}
+
+#[test]
+fn sticky_scroll_gives_each_row_the_next_scope_in() {
+    use crate::editor::sticky_scopes;
+    //   0 mod m {
+    //   1     fn f() {
+    //   2         a();
+    //   3         b();
+    //   4     }
+    //   5     fn g() {
+    //   6         c();
+    //   7     }
+    //   8 }
+    let (m, f, g) = ((0, 8), (1, 4), (5, 7));
+    let scopes = |line: usize| match line {
+        1 | 5 | 8 => vec![m],
+        2..=4 => vec![m, f],
+        6 | 7 => vec![m, g],
+        _ => vec![],
+    };
+    // The view from `top` on, a line to a row.
+    let view = |top: usize| move |row: usize| Some((top + row, top + row)).filter(|l| l.0 < 9);
+    let far = 100;
+    assert_eq!(sticky_scopes(5, far, view(0), scopes), []);
+    // `f`'s first line, gone under `m`'s, stands in the row after it.
+    assert_eq!(sticky_scopes(5, far, view(1), scopes), [m, f]);
+    assert_eq!(sticky_scopes(5, far, view(2), scopes), [m, f]);
+    // `f`'s stands over its last line too; then under the second row
+    // `f` has ended and `g` not begun: `m` alone.
+    assert_eq!(sticky_scopes(5, far, view(3), scopes), [m, f]);
+    assert_eq!(sticky_scopes(5, far, view(4), scopes), [m]);
+    assert_eq!(sticky_scopes(5, far, view(6), scopes), [m, g]);
+    assert_eq!(sticky_scopes(5, far, view(9), scopes), []);
+    // No more than so many.
+    assert_eq!(sticky_scopes(1, far, view(2), scopes), [m]);
+    // Never over the cursor's line, though part of a row be over it.
+    assert_eq!(sticky_scopes(5, 3, view(2), scopes), [m]);
+    assert_eq!(sticky_scopes(5, 2, view(2), scopes), []);
+    let part = |row: usize| Some((2 + row, 3 + row));
+    assert_eq!(sticky_scopes(5, 4, part, scopes), [m]);
+}
+
+#[gpui::test]
+fn sticky_scroll_shows_where_the_view_is(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollEvent};
+    let mut text = String::from("fn first() {}\nmod m {\nimpl X {\n    fn f() {\n");
+    for n in 0..60 {
+        text += &format!("        let x{n} = {n};\n");
+    }
+    text += "    }\n}\n}\n";
+    let project = Project::new(&[("a.rs", &text)]);
+    let (ws, cx) = open(&project, &["a.rs"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let sticky = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.sticky_lines());
+    let lines = |cx: &mut VisualTestContext| -> Vec<usize> {
+        sticky(cx).into_iter().map(|(line, _)| line).collect()
+    };
+    let (_, visible) = editor.read_with(cx, |e, _| e.view());
+    assert!(visible >= 12, "{visible} rows");
+
+    // Off, nothing stands at the top.
+    cx.simulate_keystrokes("4 0 G z z l h");
+    assert_eq!(lines(cx), Vec::<usize>::new());
+
+    // On: the module, the impl and the function the view is down in.
+    assert_eq!(lisp("(set-option 'sticky-scroll true)", cx), "nil");
+    cx.simulate_keystrokes("l h");
+    assert_eq!(lines(cx), [1, 2, 3]);
+
+    // A click on the function's goes to it, where it stood; but for the
+    // scroll-off, which is kept as ever.
+    assert_eq!(lisp("(set-option 'scroll-off 0)", cx), "nil");
+    let (_, bounds) = sticky(cx)[2];
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    let at = editor.read_with(cx, |e, _| e.buf.line_start(3) + 4);
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), at);
+    assert_eq!(editor.read_with(cx, |e, _| e.visible_lines().0), 1);
+    // Its lines are in sight now: none stands over them.
+    cx.simulate_keystrokes("l h");
+    assert_eq!(lines(cx), Vec::<usize>::new());
+
+    // As the line after a scope comes up, its line is pushed up under the
+    // one before: `f` ends with line 64, here under the third row.
+    cx.simulate_keystrokes("6 3 G z t 4 j");
+    assert_eq!(lines(cx), [1, 2, 3]);
+    let row = sticky(cx)[2].1;
+    let height = row.size.height;
+    cx.simulate_event(ScrollEvent {
+        position: point(row.center().x, row.top() + height * 6.),
+        delta: ScrollDelta::Pixels(point(px(0.), -height / 2.)),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let pushed = sticky(cx)[2].1;
+    assert_eq!(pushed.top(), row.top() - height / 2.);
+
+    // Where lines wrap as well.
+    assert_eq!(lisp("(set-option 'wrap true)", cx), "nil");
+    cx.simulate_keystrokes("4 0 G z z l h");
+    assert_eq!(lines(cx), [1, 2, 3]);
+    let (_, bounds) = sticky(cx)[2];
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), at);
+    assert_eq!(editor.read_with(cx, |e, _| e.visible_lines().0), 1);
+
+    // A tab can have its own.
+    eval_in(&ws, "(set-buffer-option 'sticky-scroll false)", cx);
+    cx.simulate_keystrokes("4 0 G z z l h");
+    assert_eq!(lines(cx), Vec::<usize>::new());
 }
 
 #[gpui::test]

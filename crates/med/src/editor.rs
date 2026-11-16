@@ -26,6 +26,9 @@ const COMPLETION_ROWS: usize = 10;
 /// indent, and for the block the cursor is in.
 const GUIDE_REACH: usize = 100;
 
+/// The most first lines of scopes sticky scroll stands at the top.
+const STICKY_MAX: usize = 5;
+
 /// How long writing a file waits for the language server to format it.
 const FORMAT_TIMEOUT: Duration = Duration::from_millis(800);
 
@@ -128,6 +131,15 @@ struct Metrics {
     char_width: Pixels,
     font_size: Pixels,
     font: Font,
+}
+
+/// A scope's first line standing at the top of the view.
+struct StickyHeader {
+    line: usize,
+    /// The row of the view it stands for.
+    row: usize,
+    /// Where it was drawn, in window coordinates.
+    bounds: Bounds<Pixels>,
 }
 
 struct CompletionMenu {
@@ -274,6 +286,9 @@ pub struct Editor {
     scroll_left: Pixels,
     visible_lines: usize,
     metrics: Option<Metrics>,
+    /// The first lines of scopes standing at the top of the view, as it
+    /// was last laid out, the outermost first: a click on one goes to it.
+    sticky: Vec<StickyHeader>,
     /// IME composition in progress, as a char range of the buffer.
     marked: Option<Range<usize>>,
     /// IME composition on the `:` line, not yet given to it: it goes in at
@@ -392,6 +407,7 @@ pub struct BufferOptions {
     pub wrap: Option<bool>,
     pub inlay_hints: Option<bool>,
     pub indent_guides: Option<bool>,
+    pub sticky_scroll: Option<bool>,
 }
 
 /// The cells of a line's leading blanks, a tab to its stop; `None` for a
@@ -454,6 +470,36 @@ pub(crate) fn block_guide(
         .last()
         .unwrap_or(at);
     Some((column, first, last))
+}
+
+/// The scopes whose first lines stand at the top of the view, a row of it
+/// each, the outermost first. `under(row)` is the first and the last line
+/// that row of the view is over (two where the view starts part of a line
+/// down), or `None` past the text; `scopes(line)` those a line is in, as
+/// [`Syntax::scopes`]. A row's is the next scope in of the line under it,
+/// and no row is put over the cursor's line.
+pub(crate) fn sticky_scopes(
+    max: usize,
+    cursor_line: usize,
+    under: impl Fn(usize) -> Option<(usize, usize)>,
+    mut scopes: impl FnMut(usize) -> Vec<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    let mut sticky: Vec<(usize, usize)> = Vec::new();
+    while sticky.len() < max {
+        let row = sticky.len();
+        let Some((first, last)) = under(row) else {
+            break;
+        };
+        if (first..=last).contains(&cursor_line) {
+            break;
+        }
+        let around = scopes(first);
+        match around.get(row) {
+            Some(&scope) if around[..row] == sticky[..] => sticky.push(scope),
+            _ => break,
+        }
+    }
+    sticky
 }
 
 /// Where the `color-column` columns are drawn: each a cell wide, down the
@@ -743,6 +789,7 @@ impl Editor {
             scroll_left: px(0.),
             visible_lines: 0,
             metrics: None,
+            sticky: Vec::new(),
             marked: None,
             cmdline_preedit: None,
             cmdline_caret: None,
@@ -1199,6 +1246,12 @@ impl Editor {
         self.options
             .indent_guides
             .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.indent_guides))
+    }
+
+    pub(crate) fn sticky_scroll(&self, cx: &App) -> bool {
+        self.options
+            .sticky_scroll
+            .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.sticky_scroll))
     }
 
     pub(crate) fn wrap(&self, cx: &App) -> bool {
@@ -2046,6 +2099,15 @@ impl Editor {
         (first, last.min(self.buf.last_line()))
     }
 
+    /// The lines standing at the top of the view as it was last laid out,
+    /// the outermost scope's first, and where each was drawn.
+    pub fn sticky_lines(&self) -> Vec<(usize, Bounds<Pixels>)> {
+        self.sticky
+            .iter()
+            .map(|header| (header.line, header.bounds))
+            .collect()
+    }
+
     /// Move the cursor, keeping it on screen.
     pub fn move_cursor(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.vim.place_cursor(offset, &self.buf);
@@ -2627,6 +2689,29 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window, cx);
+        // On a scope's first line standing at the top: to that line, put
+        // where it stood.
+        let header = self
+            .sticky
+            .iter()
+            .find(|header| header.bounds.contains(&event.position))
+            .map(|header| (header.line, header.row));
+        if let Some((line, row)) = header {
+            self.hover = None;
+            self.completion = None;
+            self.menu = None;
+            let blanks = self
+                .buf
+                .line(line)
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .count();
+            let offset = self.buf.line_start(line) + blanks.min(self.buf.line_len(line));
+            self.vim.set_cursor(offset, &self.buf);
+            self.set_top(self.rows_back((line, 0), row));
+            self.after_change(cx);
+            return;
+        }
         let Some(offset) = self.offset_at(event.position, window) else {
             return;
         };
@@ -2729,6 +2814,8 @@ impl Editor {
         let color_column_bg = fg.opacity(0.07);
         let (guide_color, block_guide_color) = (fg.opacity(0.12), fg.opacity(0.35));
         let indent_guides = self.indent_guides(cx);
+        let sticky_scroll = self.sticky_scroll(cx);
+        let sticky_edge_color = theme.border;
         let diag_colors = [theme.danger, theme.warning, theme.info, muted];
         let search_bg = theme.warning.opacity(0.35);
         // What `motion.flash` found: the place `enter` goes to stands out
@@ -2873,6 +2960,9 @@ impl Editor {
             gutter: Vec::new(),
             front: Vec::new(),
             labels: Vec::new(),
+            sticky: Vec::new(),
+            sticky_edge: None,
+            scrollbar: None,
         };
         for band in column_bands(&color_columns, text_bounds, char_width, scroll_left) {
             frame.text_back.push(fill(band, color_column_bg));
@@ -2893,6 +2983,8 @@ impl Editor {
             (from, indents, block)
         });
 
+        // Each line drawn: where its first row is, and how many it has.
+        let mut drawn: Vec<(usize, Pixels, usize)> = Vec::new();
         let mut y = y0;
         for line in first..last {
             if y >= bounds.bottom() {
@@ -3288,7 +3380,100 @@ impl Editor {
                     .gutter
                     .push((point(bounds.left() + char_width * 0.5, y), shaped));
             }
+            drawn.push((line, y, fold.rows()));
             y += line_height * fold.rows() as f32;
+        }
+
+        // Sticky scroll: the first lines of the scopes the top of the
+        // view is in, standing over it.
+        let mut sticky = Vec::new();
+        if let Some(syntax) = self.syntax.as_ref().filter(|_| sticky_scroll) {
+            let line_under = |y: Pixels| {
+                drawn
+                    .iter()
+                    .find(|(_, top, rows)| y >= *top && y < *top + line_height * *rows as f32)
+                    .map(|(line, ..)| *line)
+            };
+            let under = |row: usize| {
+                let top = bounds.top() + line_height * row as f32;
+                let first = line_under(top)?;
+                let last = line_under(top + line_height - px(1.)).unwrap_or(first);
+                Some((first, last))
+            };
+            let max = STICKY_MAX.min(visible / 3);
+            let scopes = sticky_scopes(max, cursor_line, under, |line| syntax.scopes(buf, line));
+            for (row, &(start, end)) in scopes.iter().enumerate() {
+                // The tree can be a change behind the text for a paint.
+                let line = start.min(buf.last_line());
+                // As the line after its scope comes up, pushed up by it,
+                // under the one before.
+                let mut top = bounds.top() + line_height * row as f32;
+                if let Some((_, y, rows)) = drawn.iter().find(|(l, ..)| *l == end) {
+                    top = top.min(*y + line_height * (*rows as f32 - 1.));
+                }
+                let text = buf.line_string(line);
+                let (display, offsets, hint_bytes) = self.display_line(line);
+                let nchars = offsets.len() - 1;
+                let line_byte = buf.char_to_byte(buf.line_start(line));
+                let mut capture_at = vec![u32::MAX; text.len()];
+                for capture in syntax.captures(buf, line_byte..line_byte + text.len()) {
+                    let s = capture.range.start.max(line_byte);
+                    let e = capture.range.end.min(line_byte + text.len());
+                    if s < e {
+                        capture_at[s - line_byte..e - line_byte].fill(capture.index);
+                    }
+                }
+                let mut runs: Vec<TextRun> = Vec::new();
+                for (i, (byte, _)) in text.char_indices().enumerate() {
+                    if hint_bytes[i] > 0 {
+                        runs.push(plain(hint_bytes[i] as usize, muted));
+                    }
+                    let len = (offsets[i + 1] - offsets[i] - hint_bytes[i + 1]) as usize;
+                    let style = styles.get(capture_at[byte] as usize).copied().flatten();
+                    let mut run = plain(len, style.and_then(|s| s.color).unwrap_or(fg));
+                    if let Some(style) = style {
+                        if let Some(weight) = style.font_weight {
+                            run.font.weight = weight;
+                        }
+                        if let Some(font_style) = style.font_style {
+                            run.font.style = font_style;
+                        }
+                    }
+                    runs.push(run);
+                }
+                if hint_bytes[nchars] > 0 {
+                    runs.push(plain(hint_bytes[nchars] as usize, muted));
+                }
+                let shaped = text_system.shape_line(display.into(), font_size, &runs, None);
+                let number = line_number(line, cursor_line, relative_number, digits);
+                let run = plain(number.len(), line_number_color);
+                let number = text_system.shape_line(number.into(), font_size, &[run], None);
+                let row_bounds = Bounds::new(
+                    point(bounds.left(), top),
+                    size(bounds.size.width, line_height),
+                );
+                frame.sticky.push(StickyRow {
+                    bounds: row_bounds,
+                    number: (point(bounds.left() + char_width * 1.5, top), number),
+                    text: (point(text_origin.x - scroll_left, top), shaped),
+                });
+                sticky.push(StickyHeader {
+                    line,
+                    row,
+                    bounds: row_bounds,
+                });
+            }
+            // Each over the one after it, and a line under them.
+            frame.sticky.reverse();
+            if let Some(bottom) = frame.sticky.iter().map(|row| row.bounds.bottom()).max() {
+                frame.sticky_edge = Some(fill(
+                    Bounds::new(
+                        point(bounds.left(), bottom - px(1.)),
+                        size(bounds.size.width, px(1.)),
+                    ),
+                    sticky_edge_color,
+                ));
+            }
         }
 
         // A plain scroll position indicator.
@@ -3296,7 +3481,7 @@ impl Editor {
             let height = bounds.size.height;
             let thumb = (height * (visible as f32 / line_count as f32)).max(px(24.));
             let top = (height - thumb) * (self.scroll_top / (line_count - 1) as f32);
-            frame.front.push(fill(
+            frame.scrollbar = Some(fill(
                 Bounds::new(
                     point(bounds.right() - px(6.), bounds.top() + top),
                     size(px(4.), thumb),
@@ -3304,6 +3489,7 @@ impl Editor {
                 scrollbar_color,
             ));
         }
+        self.sticky = sticky;
         frame
     }
 
@@ -3540,6 +3726,19 @@ struct Frame {
     front: Vec<PaintQuad>,
     /// The labels of `motion.flash`, over all of it.
     labels: Vec<(Point<Pixels>, ShapedLine)>,
+    /// Sticky scroll's lines, over the text and the gutter: the innermost
+    /// scope's first, as each is over the one after it.
+    sticky: Vec<StickyRow>,
+    sticky_edge: Option<PaintQuad>,
+    /// The scroll position indicator, over everything.
+    scrollbar: Option<PaintQuad>,
+}
+
+/// A line of sticky scroll's, the whole width of the view.
+struct StickyRow {
+    bounds: Bounds<Pixels>,
+    number: (Point<Pixels>, ShapedLine),
+    text: (Point<Pixels>, ShapedLine),
 }
 
 impl Frame {
@@ -3592,6 +3791,19 @@ impl Frame {
                 );
                 for (origin, line) in &self.gutter {
                     let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+                }
+                for row in &self.sticky {
+                    window.paint_quad(fill(row.bounds, self.background));
+                    let (origin, number) = &row.number;
+                    let _ = number.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+                    let clip = self.text_bounds.intersect(&row.bounds);
+                    window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+                        let (origin, text) = &row.text;
+                        let _ = text.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+                    });
+                }
+                for quad in self.sticky_edge.into_iter().chain(self.scrollbar) {
+                    window.paint_quad(quad);
                 }
             },
         );

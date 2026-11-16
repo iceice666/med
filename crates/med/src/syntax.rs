@@ -292,6 +292,29 @@ const TYPES: &[&str] = &[
     "module",
 ];
 
+/// What else a sticky header stands for: what holds functions and types,
+/// and a markdown heading's section.
+const SCOPES: &[&str] = &["mod_item", "namespace_definition", "section"];
+
+/// Functions with no name of their own, a closure in a call most of all:
+/// a header of one would say little, and a chain of them would fill the
+/// headers.
+const ANONYMOUS: &[&str] = &[
+    "closure_expression",
+    "function_expression",
+    "arrow_function",
+    "lambda",
+    "lambda_expression",
+    "func_literal",
+    "anonymous_function",
+];
+
+fn is_scope(node: Node) -> bool {
+    node.is_named()
+        && !ANONYMOUS.contains(&node.kind())
+        && (is_function(node) || is_type(node) || SCOPES.contains(&node.kind()))
+}
+
 fn is_function(node: Node) -> bool {
     node.is_named() && FUNCTIONS.contains(&node.kind())
 }
@@ -411,6 +434,45 @@ impl Syntax {
             .into_iter()
             .map(|(range, _, index)| Capture { range, index })
             .collect()
+    }
+
+    /// The functions, types and the like the line `line` is in that start
+    /// on a line before it: the first line of each and its last, the
+    /// outermost first. Of those that start on the same line, the
+    /// outermost. What sticky scroll shows at the top of the view.
+    pub fn scopes(&self, buf: &Buffer, line: usize) -> Vec<(usize, usize)> {
+        let Some(tree) = &self.tree else {
+            return Vec::new();
+        };
+        if line > buf.last_line() {
+            return Vec::new();
+        }
+        // The line's first char that is not a blank: where it is indented
+        // the blanks may be no node's.
+        let text = buf.line_string(line);
+        let blanks = text.len() - text.trim_start_matches([' ', '\t']).len();
+        // The tree can be a change behind the text for a paint.
+        let len = buf.len_bytes();
+        let at = (buf.char_to_byte(buf.line_start(line)) + blanks).min(len);
+        let line_at = |byte: usize| buf.line_of(buf.byte_to_char(byte.min(len)));
+        let mut node = tree.root_node().descendant_for_byte_range(at, at);
+        let mut scopes = Vec::new();
+        // Not the root: Python's is a `module`, a type's name in Ruby.
+        while let Some(n) = node.filter(|n| n.parent().is_some()) {
+            if is_scope(n) {
+                let start = line_at(n.start_byte());
+                // Its last byte: a body can take in the line break after
+                // it, and a section the blank lines up to the next one.
+                let end = line_at(n.end_byte().saturating_sub(1).max(n.start_byte()));
+                if start < line && line <= end {
+                    scopes.push((start, end));
+                }
+            }
+            node = n.parent();
+        }
+        scopes.reverse();
+        scopes.dedup_by_key(|&mut (start, _)| start);
+        scopes
     }
 }
 
@@ -866,5 +928,57 @@ fn add(left: i32, right: i32) -> i32 {
         let edits = buf.take_edits();
         syntax.update(&buf, &edits);
         assert_eq!(syntax.object(&buf, 4, 'f', true), Some((1, 14)));
+    }
+
+    fn scopes_of(lang: &str, text: &str) -> Vec<Vec<(usize, usize)>> {
+        let buf = Buffer::new(text);
+        let syntax = Syntax::new(lang_named(lang).unwrap(), &buf).unwrap();
+        (0..buf.line_count())
+            .map(|line| syntax.scopes(&buf, line))
+            .collect()
+    }
+
+    #[test]
+    fn finds_the_scopes_a_line_is_in() {
+        let scopes = scopes_of(
+            "rust",
+            "mod m {\n\
+             impl X {\n\
+             \x20   fn f() {\n\
+             \x20       let g = |x| {\n\
+             \x20           x\n\
+             \x20       };\n\
+             \n\
+             \x20   }\n\
+             }\n\
+             }\n",
+        );
+        let (m, x, f) = ((0, 9), (1, 8), (2, 7));
+        assert_eq!(scopes[0], []);
+        assert_eq!(scopes[1], [m]);
+        assert_eq!(scopes[2], [m, x]);
+        // In a closure: not one of them.
+        assert_eq!(scopes[4], [m, x, f]);
+        // A blank line, and the line that closes it, are in it.
+        assert_eq!(scopes[6], [m, x, f]);
+        assert_eq!(scopes[7], [m, x, f]);
+        assert_eq!(scopes[9], [m]);
+    }
+
+    #[test]
+    fn a_scope_ends_with_its_last_line_not_the_break_after() {
+        let scopes = scopes_of(
+            "python",
+            "class A:\n    def f(self):\n        return 1\n\n    x = 2\ny = 3\n",
+        );
+        assert_eq!(scopes[2], [(0, 4), (1, 2)]);
+        assert_eq!(scopes[3], [(0, 4)]);
+        assert_eq!(scopes[4], [(0, 4)]);
+        assert_eq!(scopes[5], []);
+
+        let scopes = scopes_of("markdown", "# A\n\ntext\n\n## B\n\nmore\n\n# C\n\nend\n");
+        assert_eq!(scopes[2], [(0, 7)]);
+        assert_eq!(scopes[6], [(0, 7), (4, 7)]);
+        assert_eq!(scopes[10], [(8, 10)]);
     }
 }

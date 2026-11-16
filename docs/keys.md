@@ -125,6 +125,15 @@ indent-blankline; a blank line has the indent of the lines around it,
 so that a block's lines go on through it. The line of the block the
 cursor is in is the stronger, down the block. A tab can have its own.
 
+`(set-option 'sticky-scroll true)` keeps the first lines of the
+functions, types and modules the top of the view is in standing at its
+top, one under the other, as VS Code's sticky scroll; in markdown, the
+headings of the sections. They go by the syntax tree, so a file with no
+grammar has none; a closure is not one. As a scope's end comes up the
+view, its line is pushed up out of it. They take no more than a third
+of the view, five at most, and never stand over the cursor's line. A
+click on one goes to it. A tab can have its own.
+
 `(set-option 'inlay-hints true)` shows what the language server says
 inline of the text, dimmed, in the line where it goes: a variable's
 type, the name of a parameter an argument is given for. They are asked
@@ -210,8 +219,8 @@ run at startup, or from the command line with `:eval`:
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
                                               ; color-column, wrap, inlay-hints,
-                                              ; indent-guides, undo-file, theme,
-                                              ; project-env
+                                              ; indent-guides, sticky-scroll,
+                                              ; undo-file, theme, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -238,8 +247,8 @@ again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
 `relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
-`cursor-line`, `color-column`, `wrap`, `inlay-hints` and `indent-guides`
-(the others are the window's or the application's). Its own value goes before the one `set-option` gives
+`cursor-line`, `color-column`, `wrap`, `inlay-hints`, `indent-guides`
+and `sticky-scroll` (the others are the window's or the application's). Its own value goes before the one `set-option` gives
 every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:

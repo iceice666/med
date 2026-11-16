@@ -69,6 +69,9 @@ pub struct Settings {
     /// Draw a line down each step of the lines' indents, vim's
     /// indent-blankline.
     pub indent_guides: bool,
+    /// Keep the first lines of the functions and types the top of the
+    /// view is in standing at its top, VS Code's sticky scroll.
+    pub sticky_scroll: bool,
     /// The colors: `theme.rs`.
     pub theme: theme::ThemeChoice,
     /// Keep each file's undo history when it is saved, and take it up
@@ -233,6 +236,7 @@ pub fn init(cx: &mut App) {
         wrap: false,
         inlay_hints: false,
         indent_guides: false,
+        sticky_scroll: false,
         theme: theme::ThemeChoice::System,
         undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.
