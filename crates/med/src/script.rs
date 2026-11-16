@@ -25,7 +25,7 @@
 //!                                      ; tab-width, relative-number,
 //!                                      ; scroll-off, cursor-line,
 //!                                      ; color-column, wrap, undo-file,
-//!                                      ; project-env
+//!                                      ; theme, project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -1119,6 +1119,23 @@ fn define_functions(interp: &mut Interp) {
             "cursor-line" => settings.cursor_line = flag(value)?,
             "color-column" => settings.color_columns = columns(value)?,
             "wrap" => settings.wrap = flag(value)?,
+            // A theme's name, a light one's and a dark one's, or nil.
+            "theme" => {
+                let choice = match value {
+                    Value::Nil => crate::theme::ThemeChoice::System,
+                    Value::Pair(_) => match value.to_vec()?.as_slice() {
+                        [light, dark] => crate::theme::ThemeChoice::Pair(
+                            light.as_str()?.to_string().into(),
+                            dark.as_str()?.to_string().into(),
+                        ),
+                        _ => return Err(failed("theme: a name, or a light one's and a dark one's")),
+                    },
+                    name => crate::theme::ThemeChoice::One(name.as_str()?.to_string().into()),
+                };
+                crate::theme::check(&choice, cx).map_err(failed)?;
+                cx.global_mut::<Settings>().theme = choice;
+                crate::theme::apply(None, cx);
+            }
             // Read as files are opened and saved.
             "undo-file" => settings.undo_file = flag(value)?,
             // Read when a window opens, as `lsp` is.
@@ -1131,7 +1148,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file theme project-env)"
                 )));
             }
         }

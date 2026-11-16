@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1184,6 +1184,91 @@ fn wrapped_lines_scroll_and_click_by_rows(cx: &mut TestAppContext) {
         ws.active_editor().unwrap().read(cx).wrapped_view()
     });
     assert_eq!(other.0, Some(cells));
+}
+
+#[gpui::test]
+fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
+    use gpui::component::{ActiveTheme as _, Theme};
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let (_ws, cx) = open(&project, &["a.txt"], cx);
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/themes");
+    cx.update(|_, cx| crate::theme::load_dir(&examples, cx));
+    // A color as `#rrggbb`.
+    let hex = |color: gpui::Hsla| {
+        let rgba = gpui::Rgba::from(color);
+        let byte = |v: f32| (v * 255.).round() as u8;
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            byte(rgba.r),
+            byte(rgba.g),
+            byte(rgba.b)
+        )
+    };
+    let colors = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let theme = cx.theme();
+            let keyword = theme.highlight_theme.style("keyword").and_then(|s| s.color);
+            (
+                theme.mode.is_dark(),
+                hex(theme.background),
+                keyword.map(hex),
+            )
+        })
+    };
+    let system_is_dark = cx.update(|window, _| {
+        matches!(
+            window.appearance(),
+            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
+        )
+    });
+
+    // One theme: its colors, the editor's and the syntax's, exactly.
+    assert_eq!(lisp("(set-option 'theme \"Catppuccin Mocha\")", cx), "nil");
+    let mocha = (true, "#1e1e2e".to_string(), Some("#cba6f7".to_string()));
+    assert_eq!(colors(cx), mocha);
+    // And it stays, whatever the system's appearance comes to.
+    cx.update(|window, cx| crate::theme::apply(Some(window), cx));
+    assert_eq!(colors(cx), mocha);
+
+    // A light one and a dark one: as the system is.
+    let pair = r#"(set-option 'theme '("Catppuccin Latte" "Catppuccin Mocha"))"#;
+    assert_eq!(lisp(pair, cx), "nil");
+    let latte = (false, "#eff1f5".to_string(), Some("#8839ef".to_string()));
+    assert_eq!(
+        colors(cx),
+        if system_is_dark { mocha.clone() } else { latte }
+    );
+
+    // None: gpui-component's own, as the system is.
+    assert_eq!(lisp("(set-option 'theme nil)", cx), "nil");
+    let (dark, background, _) = colors(cx);
+    assert_eq!(dark, system_is_dark);
+    assert!(
+        background != "#1e1e2e" && background != "#eff1f5",
+        "{background}"
+    );
+    let name = cx.update(|_, cx| Theme::global(cx).theme_name().clone());
+    assert!(name.starts_with("Default"), "{name}");
+
+    // Names that are not there, or a pair the wrong way round.
+    for (bad, said) in [
+        (
+            "(set-option 'theme \"Mocha\")",
+            "there is no theme \"Mocha\" (Catppuccin Latte, Catppuccin Mocha",
+        ),
+        (
+            r#"(set-option 'theme '("Catppuccin Mocha" "Catppuccin Latte"))"#,
+            "is a dark theme, not a light one",
+        ),
+        (
+            r#"(set-option 'theme '("Catppuccin Latte"))"#,
+            "a light one's and a dark one's",
+        ),
+    ] {
+        let error = cx.update(|_, cx| crate::script::eval(bad, cx)).unwrap_err();
+        assert!(error.to_string().contains(said), "{bad}: {error}");
+    }
+    assert_eq!(colors(cx).1, background);
 }
 
 #[gpui::test]

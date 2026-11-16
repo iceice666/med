@@ -19,6 +19,7 @@ pub mod syntax;
 pub mod terminal;
 #[cfg(test)]
 mod tests;
+pub mod theme;
 pub mod undo_file;
 pub mod user_panel;
 pub mod workspace;
@@ -60,6 +61,8 @@ pub struct Settings {
     /// Lines longer than the view go on to the next row of it, at any
     /// character, rather than off its right edge: vim's `wrap`.
     pub wrap: bool,
+    /// The colors: `theme.rs`.
+    pub theme: theme::ThemeChoice,
     /// Keep each file's undo history when it is saved, and take it up
     /// when it is opened again: vim's `undofile`.
     pub undo_file: bool,
@@ -201,7 +204,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-tab", NoAction, Some("Root")),
     ]);
     // gpui-component starts out light; follow the system instead.
-    gpui::component::Theme::sync_system_appearance(None, cx);
+    theme::apply(None, cx);
     cx.set_global(Settings {
         font_family: std::env::var("MED_FONT").ok().map(SharedString::from),
         font_size: std::env::var("MED_FONT_SIZE")
@@ -217,6 +220,7 @@ pub fn init(cx: &mut App) {
         cursor_line: true,
         color_columns: Vec::new(),
         wrap: false,
+        theme: theme::ThemeChoice::System,
         undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
@@ -248,6 +252,16 @@ pub fn run() {
                 .flatten()
                 .map(|dir| dir.join("sessions"));
             settings.undo_dir = state_dir().map(|dir| dir.join("undo"));
+            // The theme files, for the init file to name, and then watched:
+            // a theme changed there is changed here. A directory that is not
+            // there is not made.
+            if let Some(themes) = config_dir().map(|dir| dir.join("themes"))
+                && themes.is_dir()
+            {
+                theme::load_dir(&themes, cx);
+                gpui::component::ThemeRegistry::watch_dir(themes, cx, |cx| theme::apply(None, cx))
+                    .ok();
+            }
             // Not in `init`: tests must not depend on what is in $HOME.
             script::load_init(cx);
             cx.activate(true);

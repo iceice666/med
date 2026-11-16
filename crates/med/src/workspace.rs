@@ -267,7 +267,7 @@ impl Workspace {
                 },
             ),
             cx.observe_window_appearance(window, |_, window, cx| {
-                gpui::component::Theme::sync_system_appearance(Some(window), cx);
+                crate::theme::apply(Some(window), cx);
             }),
             // Pick up files changed behind our back when coming to the front.
             cx.observe_window_activation(window, |this, window, cx| {

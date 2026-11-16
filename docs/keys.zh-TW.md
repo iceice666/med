@@ -59,6 +59,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 游標所在行會被標示出來，如同 vim 的 `cursorline`；`(set-option 'cursor-line false)` 讓它和其他行一樣。`(set-option 'color-column 80)` 會在畫面中標示第 80 欄，如同 vim 的 `colorcolumn`；給一個清單如 `'(80 120)` 會標示每一欄，設為 `nil` 則不標示，這也是預設值。
 
+`(set-option 'theme "Catppuccin Mocha")` 讓視窗使用該主題的顏色（包括文字與語法上色），不論系統外觀為何；`'("Catppuccin Latte" "Catppuccin Mocha")` 指定一個淺色與一個深色主題，依系統外觀切換；設為 `nil` 則回到 med 內建的淺色與深色主題。主題來自設定目錄下 `themes/` 中的檔案，採用 gpui-component 的主題格式，在啟動時讀取，檔案變更時也會重新讀取。`examples/themes/catppuccin.json` 包含 Catppuccin 的 Latte 與 Mocha，依其調色盤製作（<https://github.com/catppuccin/palette>，MIT 授權），`:install_default_config` 會把它寫到該處。
+
 `(set-option 'undo-file true)` 會在存檔時保留每個檔案的復原紀錄，如同 vim 的 `undofile`；之後再開啟該檔案（不論在這次或之後的執行中）都會接續這份紀錄：`u` 可以越過存檔點往回復原，最多到最近的 1000 個變更。紀錄存放在 med 的狀態目錄（`$MED_STATE_DIR`，否則為 `$XDG_STATE_HOME/med`，再否則為 `~/.local/state/med`）下的 `undo/`。檔案若在之後被其他程式修改過，開啟時就沒有紀錄。這個選項適用於所有分頁，在開啟與儲存檔案時讀取。
 
 `(set-option 'wrap true)` 讓比畫面寬的行接續到下一列顯示，而不是超出右邊緣，如同 vim 的 `wrap`：可以在任何字元處換列，寬字元或 tab 則整個移到下一列。只有第一列會顯示行號。畫面以列為單位捲動，`scroll-off` 也以列計算，點擊任何一列都會落在該處的字元上。`j` 和 `k` 仍然一次移動一行，`gj` 和 `gk`（`motion.row_down`、`motion.row_up`）則一次移動一列，並停在列中相同的格位；沒有換列時它們就等於 `j` 和 `k`。行尾之後的文字（診斷訊息或程式加上的文字）會在右邊緣被截斷，`color-column` 則標示畫面上的欄位，每一列都會標示。搭配 `set-buffer-option` 與 `buffer-language` 可以只對部分檔案開啟：在語言為 `"markdown"` 時使用 `(set-buffer-option 'wrap true)`。
@@ -101,7 +103,7 @@ flash.nvim 的其他功能也使用同樣的標記：
                                               ; auto-pairs、format-on-save、tab-width、
                                               ; relative-number、scroll-off、cursor-line、
                                               ; color-column、wrap、undo-file、
-                                              ; project-env
+                                              ; theme、project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。

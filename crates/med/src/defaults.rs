@@ -64,7 +64,8 @@ pub const EX_ARGS: &[(&str, ExArg)] = &[
 ];
 
 /// The configuration `:install_default_config` writes: every file of
-/// `examples/`, by its name there, `init.mlisp` loading the others.
+/// `examples/`, by its name there, `init.mlisp` loading the others, and
+/// the theme files of `examples/themes/`.
 pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
     ("init.mlisp", include_str!("../../../examples/init.mlisp")),
     ("vim.mlisp", include_str!("../../../examples/vim.mlisp")),
@@ -91,6 +92,10 @@ pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
         include_str!("../../../examples/titlebar.mlisp"),
     ),
     ("rss.mlisp", include_str!("../../../examples/rss.mlisp")),
+    (
+        "themes/catppuccin.json",
+        include_str!("../../../examples/themes/catppuccin.json"),
+    ),
 ];
 
 /// Why the default configuration was not written.
@@ -122,6 +127,10 @@ pub fn install_default_config(dir: &Path, overwrite: bool) -> Result<(), Install
     std::fs::create_dir_all(dir).map_err(|error| InstallError::Io(dir.to_path_buf(), error))?;
     for (name, text) in DEFAULT_CONFIG {
         let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| InstallError::Io(parent.to_path_buf(), error))?;
+        }
         std::fs::write(&path, text).map_err(|error| InstallError::Io(path, error))?;
     }
     Ok(())
@@ -200,11 +209,16 @@ mod tests {
     #[gpui::test]
     fn installs_the_examples(cx: &mut gpui::TestAppContext) {
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let mut names: Vec<String> = std::fs::read_dir(&examples)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".mlisp"))
-            .collect();
+        let files = |dir: &str, ext: &str| -> Vec<String> {
+            std::fs::read_dir(examples.join(dir))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(ext))
+                .map(|name| Path::new(dir).join(name).to_string_lossy().into_owned())
+                .collect()
+        };
+        let mut names = files("", ".mlisp");
+        names.extend(files("themes", ".json"));
         names.sort();
         let mut installed: Vec<&str> = DEFAULT_CONFIG.iter().map(|(name, _)| *name).collect();
         installed.sort();

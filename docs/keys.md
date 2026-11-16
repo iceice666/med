@@ -117,6 +117,17 @@ diagnostic or a program's text, is cut off at the right edge, and
 `set-buffer-option` and `buffer-language` it can be for some files only:
 `(set-buffer-option 'wrap true)` where the language is `"markdown"`.
 
+`(set-option 'theme "Catppuccin Mocha")` gives the window that theme's
+colors, the text's and the syntax's, whatever the system's appearance;
+`'("Catppuccin Latte" "Catppuccin Mocha")`, a light theme and a dark
+one, goes by the appearance, and `nil` goes back to the light and dark
+themes med has of itself. Themes are the files of `themes/` in the
+configuration directory, in gpui-component's theme format, read at
+startup and again as they change. `examples/themes/catppuccin.json` has
+Catppuccin's Latte and Mocha, made from its palette
+(<https://github.com/catppuccin/palette>, MIT licence), and
+`:install_default_config` writes it there.
+
 `(set-option 'undo-file true)` keeps each file's undo history when it is
 saved, as vim's `undofile`, and opening the file again, in this run or
 another, takes it up: `u` goes back past the save, through the last 1000
@@ -183,7 +194,7 @@ run at startup, or from the command line with `:eval`:
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
                                               ; color-column, wrap, undo-file,
-                                              ; project-env
+                                              ; theme, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
