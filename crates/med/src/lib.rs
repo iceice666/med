@@ -281,6 +281,7 @@ pub fn run() {
                 .flatten()
                 .map(|dir| dir.join("sessions"));
             settings.undo_dir = state_dir().map(|dir| dir.join("undo"));
+            settings.projects_file = state_dir().map(|dir| dir.join("projects"));
             // The theme files, for the init file to name, and then watched:
             // a theme changed there is changed here. A directory that is not
             // there is not made.
