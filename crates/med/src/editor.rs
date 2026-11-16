@@ -1532,6 +1532,46 @@ impl Editor {
         cx.notify();
     }
 
+    /// Go to the first line of the next change from HEAD, or the
+    /// previous, around the ends of the file; there, to its first
+    /// character that is not a blank. Says which of how many it is.
+    fn jump_to_hunk(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let hunks: &[Hunk] = match self.git_gutter(cx) {
+            true => &self.git_hunks,
+            false => &[],
+        };
+        let line = self.buf.line_of(self.vim.cursor);
+        let index = if forward {
+            hunks
+                .iter()
+                .position(|h| h.lines.start > line)
+                .or((!hunks.is_empty()).then_some(0))
+        } else {
+            hunks
+                .iter()
+                .rposition(|h| h.lines.start < line)
+                .or(hunks.len().checked_sub(1))
+        };
+        let Some(index) = index else {
+            cx.emit(EditorEvent::Message("No changes from HEAD".into()));
+            return;
+        };
+        // Lines taken out after the last are marked on the last.
+        let to = hunks[index].lines.start.min(self.buf.last_line());
+        let count = hunks.len();
+        let indent = self
+            .buf
+            .line_string(to)
+            .chars()
+            .take_while(|c| c.is_whitespace() && *c != '\n')
+            .count();
+        let offset = self.offset_at_place(to, indent);
+        self.vim.set_cursor(offset, &self.buf);
+        let message = format!("Change {} of {count}", index + 1);
+        cx.emit(EditorEvent::Message(message));
+        cx.notify();
+    }
+
     /// The lines changed from HEAD as last worked out, for programs and
     /// tests.
     pub fn git_hunks(&self) -> &[Hunk] {
@@ -4376,6 +4416,16 @@ pub(crate) fn register(commands: &mut Commands) {
         "editor.prev_diagnostic",
         "Go to the previous diagnostic",
         E(|editor, _, cx| editor.jump_to_diagnostic(false, cx)),
+    );
+    commands.register(
+        "editor.next_hunk",
+        "Go to the next change from HEAD that the gutter marks",
+        E(|editor, _, cx| editor.jump_to_hunk(true, cx)),
+    );
+    commands.register(
+        "editor.prev_hunk",
+        "Go to the previous change from HEAD that the gutter marks",
+        E(|editor, _, cx| editor.jump_to_hunk(false, cx)),
     );
     commands.register(
         "editor.complete",

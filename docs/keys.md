@@ -38,6 +38,7 @@ any case.
 | --- | --- |
 | `gd` / `gr` / `K` | definition / references / hover |
 | `]d` / `[d` | next / previous diagnostic |
+| `]h` / `[h` | next / previous change from HEAD that the gutter marks |
 | `space r` | rename: the new name is typed after `:rename` |
 | `space a` | code actions, for the cursor or the selection: `j` `k`, `enter` or a number |
 | `space =`, `:format` | format the file |
@@ -141,8 +142,11 @@ as it is typed, a moment after. What is staged is still a change from
 HEAD, and keeps its mark until it is committed. HEAD is read again when
 the window comes to the front and after `workspace.sync`, which the git
 screen runs after each thing it does. A file git does not have, or a
-file in no repository, has no marks. `(set-option 'git-gutter false)`
-turns them off; a tab can have its own.
+file in no repository, has no marks. `]h` and `[h`
+(`editor.next_hunk`, `editor.prev_hunk`) go to the first line of the
+next and the previous change, around the ends of the file, and say
+which of how many it is. `(set-option 'git-gutter false)` turns the
+marks off; a tab can have its own.
 
 `(set-option 'inlay-hints true)` shows what the language server says
 inline of the text, dimmed, in the line where it goes: a variable's

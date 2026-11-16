@@ -17,6 +17,10 @@
 (bind '(normal visual) "K" "editor.hover")
 (bind '(normal visual) "]d" "editor.next_diagnostic")
 (bind '(normal visual) "[d" "editor.prev_diagnostic")
+
+; The lines changed from HEAD, as the gutter marks them.
+(bind '(normal visual) "]h" "editor.next_hunk")
+(bind '(normal visual) "[h" "editor.prev_hunk")
 (bind 'insert "<C-n>" "editor.complete")
 (bind 'insert "<C-p>" "editor.complete")
 (bind 'insert "<C-Space>" "editor.complete")

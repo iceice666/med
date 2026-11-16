@@ -6324,6 +6324,18 @@ fn the_gutter_marks_what_changed_from_head(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     assert_eq!(hunks(&ws, cx), [(Modified, 1..2), (Added, 3..4)]);
 
+    // ]h and [h go from one to the next, around the ends.
+    cx.simulate_keystrokes("g g ] h");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("] h");
+    assert_eq!(cursor(&ws, cx), (4, 1));
+    cx.simulate_keystrokes("] h");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("[ h");
+    assert_eq!(cursor(&ws, cx), (4, 1));
+    cx.simulate_keystrokes("[ h");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+
     // Committed, the text is as at HEAD once that is read again.
     cx.simulate_keystrokes("space w");
     project.git(&["commit", "-q", "-am", "second"]);
@@ -6337,6 +6349,28 @@ fn the_gutter_marks_what_changed_from_head(cx: &mut TestAppContext) {
     assert_eq!(hunks(&ws, cx), []);
     eval_in(&ws, "(reset-buffer-option 'git-gutter)", cx);
     assert_eq!(hunks(&ws, cx), [(Deleted, 0..0)]);
+}
+
+#[gpui::test]
+fn hunk_jumps_land_on_the_text_and_say_where(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.rs", "fn f() {\n    one();\n}\n// end\n")]);
+    project.git_init();
+    project.git(&["add", "-A"]);
+    project.git(&["commit", "-q", "-m", "first"]);
+    let (ws, cx) = open_with(&["(set-option 'git-gutter true)"], &project, &["a.rs"], cx);
+    cx.simulate_keystrokes("j c c");
+    // cc keeps the indent.
+    cx.simulate_input("two();");
+    cx.simulate_keystrokes("escape G d d g g");
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("] h");
+    assert_eq!(cursor(&ws, cx), (2, 5));
+    cx.simulate_keystrokes("] h");
+    // The last line taken out: marked, and gone to, on the last there is.
+    assert_eq!(cursor(&ws, cx), (3, 1));
+    assert_eq!(message(&ws, cx), "Change 2 of 2");
 }
 
 #[gpui::test]
