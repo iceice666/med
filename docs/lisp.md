@@ -180,6 +180,8 @@ at once.
 | Function | Gives |
 | --- | --- |
 | `(current-file)`, `(project-root)` | where the editor is |
+| `(recent-projects)` | the directories windows were opened on, the last first, those still there |
+| `(open-project dir)` | brings up the window on a directory: the one open on it, or a new one |
 | `(buffer-language)` | the language of the tab up, as the status bar names it: `"rust"`, `"text"` for none |
 | `(open-file path [line [column]])` | the file in a tab, at a place counted from 1 |
 | `(list-dir path [all])` | what is in a directory: `((:name :path :dir)...)`, without what git ignores unless `all` |
@@ -210,6 +212,19 @@ is the project's:
 | `(make-file path)` | an empty file, never in the place of anything that is there |
 | `(make-link target path [hard])` | a symbolic link at `path` to `target`, as written, or a hard one |
 | `(set-file-mode path mode)` | permissions, as chmod: `493` or `"755"` |
+
+Each window is one project. `:project dir` (`workspace.open_project`)
+opens another in a window of its own, or brings up the window already on
+it; `:q` on the last tab and closing a window close only that one, and
+`:qa` quits every window, keeping each one's session. Which panels are
+up is each window's own; one the init file puts up is up in every window.
+The projects
+opened are listed in `projects` under `MED_STATE_DIR`. All windows share
+one interpreter, so a program's names are the same in each: a program
+that keeps something of a project's should keep it by `(project-root)`,
+as `tree.mlisp` and `picker.mlisp` do. A command, a hook or a click runs
+for the window it came from; a layout is told its window's project as
+`:root`.
 
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or

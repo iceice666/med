@@ -13,6 +13,7 @@ pub mod lsp;
 pub mod lsp_config;
 mod pane;
 pub mod panel;
+mod projects;
 pub mod script;
 pub mod search;
 mod session;
@@ -81,6 +82,9 @@ pub struct Settings {
     /// Where each project's session is kept: the panes and files it had
     /// open, written when med quits. `None` to keep none.
     pub session_dir: Option<PathBuf>,
+    /// Where the projects opened are listed, the last first, for
+    /// `(recent-projects)`. `None` to list none.
+    pub projects_file: Option<PathBuf>,
 }
 
 impl Settings {
@@ -235,6 +239,7 @@ pub fn init(cx: &mut App) {
         project_env: false,
         // Turned on by `run` too: tests must not write to $HOME.
         session_dir: None,
+        projects_file: None,
         undo_dir: None,
     });
     init_globals(cx);
@@ -274,22 +279,55 @@ pub fn run() {
             // Not in `init`: tests must not depend on what is in $HOME.
             script::load_init(cx);
             cx.activate(true);
-
-            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-            gpui::open_window(
-                // The title bar is drawn by the workspace, which a program
-                // can give a layout of its own (`defpanel :at 'title`).
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("med".into()),
-                        ..TitleBar::title_bar_options()
-                    }),
-                    ..TitleBar::window_options()
-                },
-                cx,
-                |window, cx| cx.new(|cx| Workspace::new(root, files, window, cx)),
-            )
-            .expect("failed to open window");
+            // There is nothing to do with no window: the last one closed,
+            // med quits.
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            open_workspace(root, files, cx);
         });
+}
+
+/// Open a window on the project at `root`, with `files` open in it, or
+/// with its session if there are none.
+pub fn open_workspace(root: PathBuf, files: Vec<PathBuf>, cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+    gpui::open_window(
+        // The title bar is drawn by the workspace, which a program can give
+        // a layout of its own (`defpanel :at 'title`).
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some("med".into()),
+                ..TitleBar::title_bar_options()
+            }),
+            ..TitleBar::window_options()
+        },
+        cx,
+        |window, cx| cx.new(|cx| Workspace::new(root, files, window, cx)),
+    )
+    .expect("failed to open window");
+}
+
+/// Bring up the window on the project at `root`: the one there is, or a
+/// new one. Done once whatever is being done now is done, as it looks at
+/// every workspace.
+pub fn open_project(root: PathBuf, cx: &mut App) {
+    cx.defer(move |cx| {
+        let open = workspace::all(cx).into_iter().find(|(_, workspace)| {
+            let read = |workspace: &Workspace, _: &App| workspace.root() == root;
+            workspace.read_with(cx, read).unwrap_or(false)
+        });
+        match open {
+            Some((window, _)) => {
+                window
+                    .update(cx, |_, window, _| window.activate_window())
+                    .ok();
+            }
+            None => open_workspace(root, Vec::new(), cx),
+        }
+    });
 }

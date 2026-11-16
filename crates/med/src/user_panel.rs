@@ -94,7 +94,11 @@ pub struct UserPanel {
 pub struct UserPanels {
     /// In the order they were defined, which is the order they are drawn.
     panels: Vec<UserPanel>,
+    /// The panels up in a window that has put none up or away of its own,
+    /// as a new window: what `defpanel :shown` and the init file put up.
     shown: HashSet<SharedString>,
+    /// The panels up in each window that has, by its workspace.
+    windows: HashMap<EntityId, HashSet<SharedString>>,
     /// Every name that has been defined, so that `:shown true` puts a
     /// panel up when it is first defined and not each time the init file
     /// is run again.
@@ -111,11 +115,26 @@ impl UserPanels {
         self.panels.iter().map(|panel| panel.name.as_ref())
     }
 
-    /// The panels to draw now.
-    pub fn shown(&self) -> impl Iterator<Item = &UserPanel> {
+    /// The names of the panels up in the window of the workspace `ws`, or
+    /// in a new window for `None`.
+    fn up(&self, ws: Option<EntityId>) -> &HashSet<SharedString> {
+        ws.and_then(|ws| self.windows.get(&ws))
+            .unwrap_or(&self.shown)
+    }
+
+    /// The panels up in the window of `ws`, which can change them, and no
+    /// other window.
+    fn up_mut(&mut self, ws: EntityId) -> &mut HashSet<SharedString> {
+        let new = &self.shown;
+        self.windows.entry(ws).or_insert_with(|| new.clone())
+    }
+
+    /// The panels to draw now in the window of `ws`.
+    pub fn shown(&self, ws: Option<EntityId>) -> impl Iterator<Item = &UserPanel> {
+        let up = self.up(ws);
         self.panels
             .iter()
-            .filter(|panel| self.shown.contains(&panel.name))
+            .filter(move |panel| up.contains(&panel.name))
     }
 
     /// Where the panel `name` is drawn, if it is defined.
@@ -128,8 +147,8 @@ impl UserPanels {
 
     /// The panel to draw in place of a bar of the window: the last one put
     /// up there, unless its layout failed.
-    pub fn bar(&self, at: At) -> Option<&SharedString> {
-        self.shown()
+    pub fn bar(&self, at: At, ws: Option<EntityId>) -> Option<&SharedString> {
+        self.shown(ws)
             .filter(|panel| panel.at == at)
             .last()
             .map(|panel| &panel.name)
@@ -146,29 +165,58 @@ impl UserPanels {
         self.failed.remove(name);
     }
 
-    pub fn is_shown(&self, name: &str) -> bool {
-        self.shown.contains(name)
+    pub fn is_shown(&self, name: &str, ws: Option<EntityId>) -> bool {
+        self.up(ws).contains(name)
     }
 
-    pub fn show(&mut self, name: &SharedString) {
-        self.shown.insert(name.clone());
+    /// Put a panel up in the window of `ws`; with `None`, in every window
+    /// and every new one.
+    pub fn show(&mut self, name: &SharedString, ws: Option<EntityId>) {
+        match ws {
+            Some(ws) => {
+                self.up_mut(ws).insert(name.clone());
+            }
+            None => {
+                self.shown.insert(name.clone());
+                for up in self.windows.values_mut() {
+                    up.insert(name.clone());
+                }
+            }
+        }
     }
 
-    pub fn hide(&mut self, name: &str) {
-        self.shown.remove(name);
+    /// Put a panel away, as [`Self::show`] puts it up.
+    pub fn hide(&mut self, name: &str, ws: Option<EntityId>) {
+        match ws {
+            Some(ws) => {
+                self.up_mut(ws).remove(name);
+            }
+            None => {
+                self.shown.remove(name);
+                for up in self.windows.values_mut() {
+                    up.remove(name);
+                }
+            }
+        }
     }
 
-    /// Put every popup away. False if none was up.
-    pub fn hide_popups(&mut self) -> bool {
-        let popups: Vec<&SharedString> = self
+    /// Put every popup in the window of `ws` away. False if none was up.
+    pub fn hide_popups(&mut self, ws: EntityId) -> bool {
+        let popups: Vec<SharedString> = self
             .panels
             .iter()
             .filter(|panel| panel.at == At::Popup)
-            .map(|panel| &panel.name)
+            .map(|panel| panel.name.clone())
             .collect();
-        let before = self.shown.len();
-        self.shown.retain(|name| !popups.contains(&name));
-        self.shown.len() != before
+        let up = self.up_mut(ws);
+        let before = up.len();
+        up.retain(|name| !popups.contains(name));
+        up.len() != before
+    }
+
+    /// The window of `ws` is gone.
+    pub(crate) fn forget_window(&mut self, ws: EntityId) {
+        self.windows.remove(&ws);
     }
 
     /// Whether `context` is a key table of one of the panels: its name, or
@@ -223,12 +271,13 @@ fn set_shown(
 ) -> Result<Value, Error> {
     let cx = script::app(call)?;
     let name = defined(name, cx)?;
+    let ws = script::origin_id(cx);
     let panels = cx.global_mut::<UserPanels>();
-    let show = shown(panels.is_shown(&name));
+    let show = shown(panels.is_shown(&name, ws));
     if show {
-        panels.show(&name);
+        panels.show(&name, ws);
     } else {
-        panels.hide(&name);
+        panels.hide(&name, ws);
     }
     // A panel that went away with the keyboard gives it back.
     script::in_workspace(cx, |workspace, window, cx| {
@@ -326,7 +375,7 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         }
         // A bar is up once it is defined, unless it is put away.
         if panels.known.insert(name.clone()) && (shown || at.is_bar()) {
-            panels.show(&name);
+            panels.show(&name, None);
         }
         panels.layout_changed(&name);
         cx.global_mut::<Layouts>().set(&name, function.clone());
@@ -353,7 +402,8 @@ pub(crate) fn define_functions(interp: &mut Interp) {
     interp.define_native("focus-panel", 1, |call, args| {
         let cx = script::app(call)?;
         let name = defined(&args[0], cx)?;
-        cx.global_mut::<UserPanels>().show(&name);
+        let ws = script::origin_id(cx);
+        cx.global_mut::<UserPanels>().show(&name, ws);
         let focused = script::in_workspace(cx, |workspace, window, cx| {
             let view = workspace.panel_view(&name, cx);
             view.update(cx, |view, cx| view.take_focus(window, cx));

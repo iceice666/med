@@ -1,17 +1,23 @@
 ; The picker: a popup to find a file by a few letters of its name, to
-; search the project, or to choose among the references to a name.
+; search the project, to choose among the references to a name, or to
+; open another project.
 ;
 ;   (load "picker.mlisp")
 ;
 ; space f, or ⌘P, finds a file; space /, or ⌘⇧F, searches the project
-; (a regular expression, if what is typed is one). In the picker: typing
-; narrows the list, ctrl-n and ctrl-p (or the arrows) move, enter opens,
-; escape puts it away. `gr` on a name lists its references here.
+; (a regular expression, if what is typed is one); space p, or ⌘⌥O, lists
+; the projects opened before, to open one in a window of its own. In the
+; picker: typing narrows the list, ctrl-n and ctrl-p (or the arrows) move,
+; enter opens, escape puts it away. `gr` on a name lists its references
+; here.
 
-(def picker-mode 'files)   ; what is picked from: 'files, 'grep or 'list
+(def picker-mode 'files)   ; what is picked from: 'files, 'grep, 'list or 'projects
 (def picker-query "")      ; what has been typed
 (def picker-files nil)     ; 'files: every file, as a path from the root
+(def picker-files-root nil) ; and the root they are of
+(def picker-root nil)      ; the root of the window the picker was last opened in
 (def picker-places nil)    ; 'list: the places to choose among
+(def picker-projects nil)  ; 'projects: their directories, the last opened first
 (def picker-items nil)     ; the rows, each (:label :detail :path :line :col)
 (def picker-selected 0)    ; which row
 (def picker-busy false)    ; still looking
@@ -42,6 +48,12 @@
         :line (get place :line)
         :col (get place :col)))
 
+; A project: its name, then where it is.
+(defn picker-project-item (dir)
+  (list :label (path-name dir)
+        :detail dir
+        :project dir))
+
 (defn picker-matches? (item needle)
   (or (contains? (lowercase (get item :label)) needle)
       (contains? (lowercase (get item :detail)) needle)))
@@ -56,6 +68,9 @@
       ((= picker-mode 'list)
        (picker-show (filter (fn (item) (picker-matches? item (lowercase query)))
                             (map picker-place-item picker-places))))
+      ((= picker-mode 'projects)
+       (picker-show (filter (fn (item) (picker-matches? item (lowercase query)))
+                            (map picker-project-item picker-projects))))
       ((< (length query) 2)
        (picker-show nil))
       (true
@@ -67,18 +82,30 @@
              (picker-show (map picker-place-item places)))))))))
 
 (defn picker-open (mode)
-  (set! picker-mode mode)
-  (set! picker-query "")
-  (set-input 'picker 'query "")
-  (picker-update)
-  (focus-panel 'picker)
-  ; The files may not be the ones there were last time.
-  (when (= mode 'files)
-    (set! picker-busy true)
-    (walk-files
-      (fn (files)
-        (set! picker-files files)
-        (when (= picker-mode 'files) (picker-update))))))
+  (let ((root (project-root)))
+    (set! picker-root root)
+    (set! picker-mode mode)
+    (set! picker-query "")
+    (set-input 'picker 'query "")
+    ; Another window's files are no use here, even for a moment.
+    (unless (= root picker-files-root)
+      (set! picker-files nil))
+    ; Every project but this window's.
+    (when (= mode 'projects)
+      (set! picker-projects
+            (filter (fn (dir) (not (= dir root))) (recent-projects))))
+    (picker-update)
+    (focus-panel 'picker)
+    ; The files may not be the ones there were last time.
+    (when (= mode 'files)
+      (set! picker-busy true)
+      (walk-files
+        (fn (files)
+          ; Unless the picker was opened in another window meanwhile.
+          (when (= root picker-root)
+            (set! picker-files files)
+            (set! picker-files-root root)
+            (when (= picker-mode 'files) (picker-update))))))))
 
 (defn picker-move (delta)
   (let ((count (length picker-items)))
@@ -90,7 +117,9 @@
   (let ((item (nth picker-selected picker-items)))
     (when item
       (hide-panel 'picker)
-      (open-file (get item :path) (get item :line) (get item :col)))))
+      (if (get item :project)
+          (open-project (get item :project))
+          (open-file (get item :path) (get item :line) (get item :col))))))
 
 ; ---- how it looks
 
@@ -107,6 +136,7 @@
         (input 'query :grow true
                :placeholder (cond ((= picker-mode 'files) "Find file…")
                                   ((= picker-mode 'grep) "Search in project…")
+                                  ((= picker-mode 'projects) "Open project…")
                                   (true "Filter…"))
                :on-change (fn (text)
                             (set! picker-query text)
@@ -126,7 +156,7 @@
                :on-click (fn ()
                            (set! picker-selected index)
                            (picker-confirm))
-            (if (= picker-mode 'files)
+            (if (member? picker-mode '(files projects))
                 ; The name first, then where it is.
                 (list (text (get item :label) :shrink false)
                       (picker-detail item :grow true))
@@ -140,6 +170,8 @@
   (fn () (picker-open 'files)))
 (defcommand "picker.search" "Search the project"
   (fn () (picker-open 'grep)))
+(defcommand "picker.projects" "Open a project opened before, in a window of its own"
+  (fn () (picker-open 'projects)))
 (defcommand "picker.down" "Select the next row" (fn () (picker-move 1)))
 (defcommand "picker.up" "Select the previous row" (fn () (picker-move -1)))
 (defcommand "picker.confirm" "Go to what is selected" picker-confirm)
@@ -166,5 +198,7 @@
 (bind 'normal "<Space>f" "picker.files")
 (bind 'normal "<Space><Space>" "picker.files")
 (bind 'normal "<Space>/" "picker.search")
+(bind 'normal "<Space>p" "picker.projects")
 (bind 'app "cmd-p" "picker.files")
 (bind 'app "cmd-shift-f" "picker.search")
+(bind 'app "cmd-alt-o" "picker.projects")

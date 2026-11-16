@@ -18,6 +18,47 @@
 (def tree-selected 0)    ; which row
 (def tree-marks nil)     ; git's letter for a path: (path letter path letter...)
 
+; ---- a window to a project
+
+; The names above are the tree of one project, the one last worked in.
+; With windows on other projects, their trees wait here, by directory,
+; each (:open :entries :selected :marks), until their windows are worked
+; in again.
+(def tree-states nil)
+
+(defn tree-assoc (pairs key value)
+  (cond ((nil? pairs) (list key value))
+        ((= (first pairs) key) (cons key (cons value (rest (rest pairs)))))
+        (true (cons (first pairs)
+                    (cons (nth 1 pairs) (tree-assoc (rest (rest pairs)) key value))))))
+
+(defn tree-state ()
+  (list :open tree-open :entries tree-entries
+        :selected tree-selected :marks tree-marks))
+
+; Make the names above the tree of the project being worked in: first in
+; whatever a window does with the tree.
+(defn tree-here ()
+  (let ((root (project-root)))
+    (when (and root (not (= root tree-root)))
+      (when tree-root
+        (set! tree-states (tree-assoc tree-states tree-root (tree-state))))
+      (let ((state (get tree-states root)))
+        (set! tree-root root)
+        (set! tree-open (get state :open))
+        (set! tree-entries (get state :entries))
+        (set! tree-selected (or (get state :selected) 0))
+        (set! tree-marks (get state :marks))))))
+
+; The tree a window on `root` is to draw.
+(defn tree-of (root)
+  (if (= root tree-root) (tree-state) (get tree-states root)))
+
+; A command of the tree's, for whichever window it is run in.
+(defn tree-command (name doc function)
+  (defcommand name doc
+    (fn () (tree-here) (function))))
+
 ; ---- what is on show
 
 ; The rows for a directory: what is in it, and under each unfolded
@@ -59,12 +100,14 @@
 ; Read the directories again, keeping the selection on the path it is on,
 ; and ask git what has changed.
 (defn tree-refresh ()
+  (tree-here)
   (when tree-root
     (let ((path (get (tree-entry) :path)))
       (set! tree-entries (tree-rows tree-root 0))
       (tree-select (or (tree-index-of path) tree-selected)))
     (git 'status
       (fn (files problem)
+        (tree-here)
         (set! tree-marks (reduce tree-mark nil files))))))
 
 (defn tree-toggle (entry)
@@ -96,53 +139,60 @@
 
 ; ---- how it looks
 
+; A project's tree, as it is kept: see `tree-state`.
+(defn tree-draw (panel open entries selected marks)
+  (col :width 'full :height 'full
+       :bg 'sidebar :color 'sidebar-foreground
+    (row :height 32 :shrink false :padding-x 12 :align 'center
+         :border-bottom 1 :border-color 'sidebar-border
+         :bold true
+         :color (if (get panel :focused) 'sidebar-foreground 'muted-foreground)
+      (text (path-name (get panel :root))))
+    (rows entries :grow true :reveal selected
+      (fn (entry index)
+        (let ((mark (get marks (get entry :path))))
+          (row :height 24 :width 'full :align 'center
+               :padding-left (+ 10 (* 14 (get entry :depth)))
+               :padding-right 8
+               :nowrap true
+               :color (cond ((member? mark '("?" "A")) 'success)
+                            (mark 'warning))
+               :bg (when (= index selected)
+                     (if (get panel :focused) 'list-active 'list-hover))
+               :hover (list :bg 'list-hover)
+               :on-click (fn ()
+                           (tree-here)
+                           (focus-panel 'tree)
+                           (tree-select index)
+                           (tree-activate))
+            (text (cond ((not (get entry :dir)) "  ")
+                        ((member? (get entry :path) open) "▾ ")
+                        (true "▸ "))
+                  :color 'muted-foreground)
+            (text (get entry :name))))))))
+
 (defpanel 'tree :at 'left :width 260
   (fn (panel)
-    (col :width 'full :height 'full
-         :bg 'sidebar :color 'sidebar-foreground
-      (row :height 32 :shrink false :padding-x 12 :align 'center
-           :border-bottom 1 :border-color 'sidebar-border
-           :bold true
-           :color (if (get panel :focused) 'sidebar-foreground 'muted-foreground)
-        (text (path-name (get panel :root))))
-      (rows tree-entries :grow true :reveal tree-selected
-        (fn (entry index)
-          (let ((mark (get tree-marks (get entry :path))))
-            (row :height 24 :width 'full :align 'center
-                 :padding-left (+ 10 (* 14 (get entry :depth)))
-                 :padding-right 8
-                 :nowrap true
-                 :color (cond ((member? mark '("?" "A")) 'success)
-                              (mark 'warning))
-                 :bg (when (= index tree-selected)
-                       (if (get panel :focused) 'list-active 'list-hover))
-                 :hover (list :bg 'list-hover)
-                 :on-click (fn ()
-                             (focus-panel 'tree)
-                             (tree-select index)
-                             (tree-activate))
-              (text (cond ((not (get entry :dir)) "  ")
-                          ((member? (get entry :path) tree-open) "▾ ")
-                          (true "▸ "))
-                    :color 'muted-foreground)
-              (text (get entry :name)))))))))
+    (let ((tree (tree-of (get panel :root))))
+      (tree-draw panel (get tree :open) (get tree :entries)
+                 (or (get tree :selected) 0) (get tree :marks)))))
 
 ; ---- what it does
 
 (defn tree-move (delta)
   (tree-select (+ tree-selected delta)))
 
-(defcommand "tree.down" "Select the next entry" (fn () (tree-move 1)))
-(defcommand "tree.up" "Select the previous entry" (fn () (tree-move -1)))
-(defcommand "tree.page_down" "Move the selection down ten entries"
+(tree-command "tree.down" "Select the next entry" (fn () (tree-move 1)))
+(tree-command "tree.up" "Select the previous entry" (fn () (tree-move -1)))
+(tree-command "tree.page_down" "Move the selection down ten entries"
   (fn () (tree-move 10)))
-(defcommand "tree.page_up" "Move the selection up ten entries"
+(tree-command "tree.page_up" "Move the selection up ten entries"
   (fn () (tree-move -10)))
-(defcommand "tree.first" "Select the first entry" (fn () (tree-select 0)))
-(defcommand "tree.last" "Select the last entry"
+(tree-command "tree.first" "Select the first entry" (fn () (tree-select 0)))
+(tree-command "tree.last" "Select the last entry"
   (fn () (tree-select (length tree-entries))))
 
-(defcommand "tree.collapse" "Fold the directory, or go to its parent"
+(tree-command "tree.collapse" "Fold the directory, or go to its parent"
   (fn ()
     (let ((entry (tree-entry)))
       (if (and (get entry :dir) (member? (get entry :path) tree-open))
@@ -150,27 +200,27 @@
           (let ((parent (tree-index-of (path-parent (get entry :path "")))))
             (when parent (tree-select parent)))))))
 
-(defcommand "tree.expand" "Unfold the directory, or open the file"
+(tree-command "tree.expand" "Unfold the directory, or open the file"
   (fn ()
     (let ((entry (tree-entry)))
       (unless (and (get entry :dir) (member? (get entry :path) tree-open))
         (tree-activate)))))
 
-(defcommand "tree.open" "Open the file, or fold or unfold the directory"
+(tree-command "tree.open" "Open the file, or fold or unfold the directory"
   tree-activate)
-(defcommand "tree.refresh" "Read the directories again" tree-refresh)
-(defcommand "tree.close" "Put the file tree away, back to the editor"
+(tree-command "tree.refresh" "Read the directories again" tree-refresh)
+(tree-command "tree.close" "Put the file tree away, back to the editor"
   (fn () (hide-panel 'tree)))
 
 ; From the tree, put it away: the keyboard goes back to the editor.
-(defcommand "tree.focus" "Go to the file tree, or put it away"
+(tree-command "tree.focus" "Go to the file tree, or put it away"
   (fn ()
     (if (panel-focused? 'tree)
         (hide-panel 'tree)
         (do (tree-reveal (current-file))
             (focus-panel 'tree)))))
 
-(defcommand "tree.toggle" "Show or hide the file tree"
+(tree-command "tree.toggle" "Show or hide the file tree"
   (fn () (toggle-panel 'tree)))
 
 ; ---- its keys
@@ -198,7 +248,6 @@
 ; ---- when to read the disk
 
 (defn tree-start ()
-  (set! tree-root (project-root))
   (tree-refresh))
 
 (add-hook 'opened tree-start)

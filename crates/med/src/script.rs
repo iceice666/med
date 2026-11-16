@@ -36,6 +36,7 @@
 //!     (run "workspace.close_tab")))
 //! (run "workspace.edit" "notes.md")    ; a command, with its argument
 //! (current-file)  (project-root)
+//! (recent-projects) (open-project dir) ; projects, a window to each
 //! (open-file "src/main.rs" 12 1)       ; in a tab, at a line and column
 //! (open-scratch "notes" "text" save)   ; a tab of text that is no file
 //! (scratch-name)                       ; which, if it is the one up
@@ -367,6 +368,11 @@ pub(crate) fn call_back(origin: Option<Origin>, callback: Value, args: Vec<Value
 /// The workspace the running program was started from.
 pub(crate) fn origin(cx: &App) -> Option<Origin> {
     cx.global::<Script>().origin.clone()
+}
+
+/// The workspace the running program was started from, by its id.
+pub(crate) fn origin_id(cx: &App) -> Option<gpui::EntityId> {
+    origin(cx).map(|origin| origin.workspace.entity_id())
 }
 
 /// Do something in the workspace the running program was started from.
@@ -1339,6 +1345,34 @@ fn define_functions(interp: &mut Interp) {
     interp.define_native("project-root", 0, |call, _| {
         let root = project_root(app(call)?);
         Ok(root.map_or(Value::Nil, |root| Value::from(root.display().to_string())))
+    });
+
+    // (recent-projects): the directories windows were opened on, the last
+    // first, as long as they are still there.
+    interp.define_native("recent-projects", 0, |call, _| {
+        let cx = app(call)?;
+        let file = cx.global::<Settings>().projects_file.clone();
+        let projects = file.map(|file| crate::projects::read(&file));
+        let projects = projects.unwrap_or_default().into_iter();
+        let projects = projects.filter(|project| project.is_dir());
+        Ok(Value::list(
+            projects.map(|project| Value::from(project.display().to_string())),
+        ))
+    });
+
+    // (open-project dir): bring up the window on the directory, a new one
+    // if none is open on it yet.
+    interp.define_native("open-project", 1, |call, args| {
+        let path = Path::new(args[0].as_str()?);
+        let dir = match path.canonicalize() {
+            Ok(dir) if dir.is_dir() => dir,
+            _ => {
+                let problem = format!("open-project: {} is no directory", path.display());
+                return Err(failed(problem));
+            }
+        };
+        crate::open_project(dir, app(call)?);
+        Ok(Value::Nil)
     });
 
     // (open-file path [line [column]]): open the file in a tab, or go to

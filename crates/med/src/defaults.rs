@@ -25,6 +25,7 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["wa", "wall"], "workspace.save_all"),
     (&["qa", "qall"], "workspace.quit_all"),
     (&["mks", "mksession"], "workspace.save_session"),
+    (&["project"], "workspace.open_project"),
     (&["e", "edit"], "workspace.edit"),
     (&["eval"], "workspace.eval"),
     (&["h", "help"], "workspace.help"),
@@ -60,6 +61,7 @@ pub enum ExArg {
 pub const EX_ARGS: &[(&str, ExArg)] = &[
     ("workspace.edit", ExArg::File),
     ("workspace.save", ExArg::File),
+    ("workspace.open_project", ExArg::File),
     ("workspace.help", ExArg::Command),
 ];
 

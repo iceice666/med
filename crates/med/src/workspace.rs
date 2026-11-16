@@ -233,11 +233,28 @@ impl Workspace {
     ) -> Self {
         let settings = cx.global::<crate::Settings>();
         let (lsp_enabled, project_env) = (settings.lsp, settings.project_env);
+        if let Some(file) = &settings.projects_file
+            && let Err(error) = crate::projects::remember(file, &root)
+        {
+            eprintln!("med: could not list the project: {error}");
+        }
         let env = match project_env {
             true => Arc::new(EnvCell::default()),
             false => EnvCell::ready(ProjectEnv::inherited()),
         };
         let lsp = cx.new(|_| LspStore::with_env(root.clone(), lsp_enabled, env.clone()));
+        // The panels it has up go with it.
+        let id = cx.entity_id();
+        cx.on_release(move |_, cx| {
+            if cx.has_global::<UserPanels>() {
+                cx.global_mut::<UserPanels>().forget_window(id);
+            }
+        })
+        .detach();
+        let this_one = (window.window_handle(), cx.weak_entity());
+        let workspaces = &mut cx.default_global::<Workspaces>().0;
+        workspaces.retain(|(_, workspace)| workspace.upgrade().is_some());
+        workspaces.push(this_one);
 
         // Closing the window must not silently drop unsaved work.
         let weak = cx.weak_entity();
@@ -1929,16 +1946,17 @@ impl Workspace {
     /// to the editor.
     pub(crate) fn panels_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panels = cx.global::<UserPanels>();
+        let ws = Some(cx.entity_id());
         let shown: Vec<Entity<PanelView>> = self
             .user_panels
             .iter()
-            .filter(|(name, _)| panels.is_shown(name))
+            .filter(|(name, _)| panels.is_shown(name, ws))
             .map(|(_, view)| view.clone())
             .collect();
         let gone = self
             .user_panels
             .iter()
-            .find(|(name, view)| !panels.is_shown(name) && view.read(cx).has_focus(window, cx));
+            .find(|(name, view)| !panels.is_shown(name, ws) && view.read(cx).has_focus(window, cx));
         if let Some((_, view)) = gone {
             let back = view.clone().update(cx, |view, _| view.take_return());
             match back.filter(|back| shown.iter().any(|view| view.read(cx).owns(back, cx))) {
@@ -2209,7 +2227,8 @@ impl Workspace {
 
     /// The panel a program draws in place of a bar of the window, if any.
     fn bar_view(&mut self, at: At, cx: &mut Context<Self>) -> Option<Entity<PanelView>> {
-        let name = cx.global::<UserPanels>().bar(at).cloned()?;
+        let ws = Some(cx.entity_id());
+        let name = cx.global::<UserPanels>().bar(at, ws).cloned()?;
         Some(self.panel_view(&name, cx))
     }
 
@@ -2536,7 +2555,7 @@ impl Workspace {
     /// The panels that are up, each with its view.
     fn shown_user_panels(&mut self, cx: &mut Context<Self>) -> Vec<(UserPanel, Entity<PanelView>)> {
         let panels = cx.global::<UserPanels>();
-        let shown: Vec<UserPanel> = panels.shown().cloned().collect();
+        let shown: Vec<UserPanel> = panels.shown(Some(cx.entity_id())).cloned().collect();
         let defined: Vec<SharedString> = panels.names().map(SharedString::new).collect();
         self.user_panels.retain(|name, _| defined.contains(name));
         shown
@@ -2636,7 +2655,8 @@ impl Render for Workspace {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            cx.global_mut::<UserPanels>().hide(&name);
+                            let ws = Some(cx.entity_id());
+                            cx.global_mut::<UserPanels>().hide(&name, ws);
                             // The keyboard stays where it was, unless the
                             // popup had it.
                             window.prevent_default();
@@ -2676,11 +2696,12 @@ impl Render for Workspace {
                 if event.keystroke.key != "escape" {
                     return;
                 }
+                let ws = cx.entity_id();
                 if this.welcome_shown(cx) {
                     this.welcome_closed = true;
                     cx.stop_propagation();
                     cx.notify();
-                } else if cx.global_mut::<UserPanels>().hide_popups() {
+                } else if cx.global_mut::<UserPanels>().hide_popups(ws) {
                     cx.stop_propagation();
                     this.panels_changed(window, cx);
                 }
@@ -2752,7 +2773,7 @@ pub(crate) fn register(commands: &mut Commands) {
             let active = ws.pane().active;
             if ws.close_tab(active, args.bang, window, cx) && last {
                 ws.keep_session(session);
-                cx.quit();
+                close_window(window, cx);
             }
         }),
     );
@@ -2767,19 +2788,40 @@ pub(crate) fn register(commands: &mut Commands) {
                 ws.close_tab(active, true, window, cx);
                 if last {
                     ws.keep_session(session);
-                    cx.quit();
+                    close_window(window, cx);
                 }
             }
         }),
     );
     commands.register(
         "workspace.quit_all",
-        "Quit; with ! even if there are unsaved changes",
+        "Quit, every window; with ! even if there are unsaved changes",
+        W(|_, args, _, cx| {
+            // The other windows' workspaces are looked at too, which this
+            // one's is not to be in the middle of.
+            let bang = args.bang;
+            cx.defer(move |cx| quit_all(bang, cx));
+        }),
+    );
+    commands.register(
+        "workspace.open_project",
+        "Open a directory as a project, in a window of its own",
         W(|ws, args, _, cx| {
-            if args.bang || ws.can_quit(cx) {
-                let session = ws.session_on_quit(cx);
-                ws.keep_session(session);
-                cx.quit();
+            let arg = args.arg.trim();
+            if arg.is_empty() {
+                ws.set_message("No directory", cx);
+                return;
+            }
+            let path = match arg.strip_prefix('~') {
+                Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                    let home = std::env::var_os("HOME").unwrap_or_default();
+                    PathBuf::from(home).join(rest.trim_start_matches('/'))
+                }
+                _ => ws.root.join(arg),
+            };
+            match path.canonicalize() {
+                Ok(dir) if dir.is_dir() => crate::open_project(dir, cx),
+                _ => ws.set_message(format!("{} is no directory", path.display()), cx),
             }
         }),
     );
@@ -2928,4 +2970,74 @@ pub(crate) fn register(commands: &mut Commands) {
             None => ws.set_message("There is no configuration directory: set MED_CONFIG_DIR", cx),
         }),
     );
+}
+
+/// Close the window the last tab of was closed: and med with it, if it is
+/// the last window.
+fn close_window(window: &mut Window, cx: &mut App) {
+    if cx.windows().len() > 1 {
+        window.remove_window();
+    } else {
+        cx.quit();
+    }
+}
+
+/// Quit med, keeping each window's session. Unless `bang`, not while a
+/// window has unsaved work: that window comes up and says so.
+fn quit_all(bang: bool, cx: &mut App) {
+    let workspaces = all(cx);
+    if !bang {
+        for (window, workspace) in &workspaces {
+            let unsaved = update(window, workspace, cx, |ws, window, cx| {
+                let unsaved = !ws.can_quit(cx);
+                if unsaved {
+                    window.activate_window();
+                }
+                unsaved
+            });
+            if unsaved == Some(true) {
+                return;
+            }
+        }
+    }
+    for (window, workspace) in &workspaces {
+        update(window, workspace, cx, |ws, _, cx| {
+            let session = ws.session_on_quit(cx);
+            ws.keep_session(session);
+        });
+    }
+    cx.quit();
+}
+
+/// Every workspace, with the window it is in: one to a project.
+#[derive(Default)]
+struct Workspaces(Vec<(AnyWindowHandle, WeakEntity<Workspace>)>);
+
+impl Global for Workspaces {}
+
+/// The workspaces there are, with their windows, the first opened first.
+pub(crate) fn all(cx: &App) -> Vec<(AnyWindowHandle, WeakEntity<Workspace>)> {
+    let Some(workspaces) = cx.try_global::<Workspaces>() else {
+        return Vec::new();
+    };
+    let open = cx.windows();
+    let alive = |(window, workspace): &&(AnyWindowHandle, WeakEntity<Workspace>)| {
+        open.contains(window) && workspace.upgrade().is_some()
+    };
+    workspaces.0.iter().filter(alive).cloned().collect()
+}
+
+/// Do something in a workspace and its window. `None` if either is gone.
+fn update<T>(
+    window: &AnyWindowHandle,
+    workspace: &WeakEntity<Workspace>,
+    cx: &mut App,
+    update: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
+) -> Option<T> {
+    window
+        .update(cx, |_, window, cx| {
+            workspace.update(cx, |ws, cx| update(ws, window, cx)).ok()
+        })
+        .ok()
+        .flatten()
 }

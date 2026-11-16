@@ -31,6 +31,7 @@ there. Each brings its commands and its keys:
 | | `:w` | in a listing: do what the edits ask, after a popup says what (`y` / `n`) |
 | `picker.mlisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
+| | `space p` / `⌘⌥O` | open a project opened before, in a window of its own |
 | `git.mlisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.mlisp` | | the keys that can come next, after a pause |
 | | `g ?` | in an oil listing: all of its keys at once (as `init.mlisp` sets it up) |

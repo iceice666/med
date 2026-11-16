@@ -62,6 +62,10 @@ med opens only those, and quitting leaves the project's session as it was;
 in `sessions/` under `MED_STATE_DIR`, one file per project; `MED_NO_SESSION`
 turns them off.
 
+Each window is one project. `:project dir` opens another in a window of
+its own, and with `picker.mlisp`, `space p` lists the projects opened
+before. `:q` on the last tab closes that window only; `:qa` quits them all.
+
 ### Project environment
 
 Language servers (rust-analyzer, clangd, gopls, pyright, …, found on the
@@ -94,7 +98,7 @@ from a checkout:
 | `vim.mlisp` | vim keys in every mode, plus nvim-surround-style `ys` / `ds` / `cs` |
 | `keys.mlisp` | LSP keys (`gd`, `gr`, `K`), tabs, panes, flash-style jumps, `space` leader keys, `⌘` shortcuts |
 | `oil.mlisp` | directories as buffers to edit, as oil.nvim (`space e`, `space -`) |
-| `picker.mlisp` | fuzzy file finder and project search (`space f`, `space /`) |
+| `picker.mlisp` | fuzzy file finder, project search and recent projects (`space f`, `space /`, `space p`) |
 | `git.mlisp` | lazygit-style git screen (`space g`) |
 | `which-key.mlisp` | the keys that can come next, after a pause |
 | `todo.mlisp` | signs on TODO/FIXME/NOTE lines, `]T` / `[T` |

@@ -174,7 +174,18 @@ fn lisp(source: &str, cx: &mut VisualTestContext) -> String {
 }
 
 fn shown(panel: &str, cx: &mut VisualTestContext) -> bool {
-    cx.update(|_, cx| cx.global::<UserPanels>().is_shown(panel))
+    let ws = workspace_id(cx);
+    cx.update(|_, cx| cx.global::<UserPanels>().is_shown(panel, ws))
+}
+
+/// The workspace in the window `cx` is of, by its id.
+fn workspace_id(cx: &mut VisualTestContext) -> Option<gpui::EntityId> {
+    cx.update(|window, cx| {
+        let here = window.window_handle();
+        let all = crate::workspace::all(cx);
+        let found = all.into_iter().find(|(window, _)| *window == here);
+        found.map(|(_, workspace)| workspace.entity_id())
+    })
 }
 
 /// Wait on real time for something that happens off the test executor
@@ -4515,9 +4526,10 @@ fn programs_draw_the_status_and_title_bars(cx: &mut TestAppContext) {
     };
     let height = cx.update(|window, _| f32::from(window.viewport_size().height));
     let bar = |at: At, cx: &mut VisualTestContext| {
+        let ws = workspace_id(cx);
         cx.update(|_, cx| {
             cx.global::<UserPanels>()
-                .bar(at)
+                .bar(at, ws)
                 .map(|name| name.to_string())
         })
     };
@@ -5920,7 +5932,8 @@ fn the_example_status_bar_draws_the_command_line(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     // Its layout holds, so the bar is still the program's...
-    let bar = cx.update(|_, cx| cx.global::<UserPanels>().bar(At::Status).cloned());
+    let ws = workspace_id(cx);
+    let bar = cx.update(|_, cx| cx.global::<UserPanels>().bar(At::Status, ws).cloned());
     assert_eq!(bar.as_deref(), Some("statusline"));
     // ...and it put the line's cursor where the input method can find it.
     let caret = editor.read_with(cx, |e, _| e.cmdline_caret);
@@ -5928,4 +5941,132 @@ fn the_example_status_bar_draws_the_command_line(cx: &mut TestAppContext) {
     let caret = caret.expect("the example draws (caret)");
     assert!(f32::from(caret.origin.y) >= height - 26., "{caret:?}");
     assert!(f32::from(caret.origin.x) > 0., "{caret:?}");
+}
+
+/// Open a window on each of `projects`, one after the other, as
+/// `open-project` does, with the tree loaded: each window's workspace and
+/// a context to type in it.
+fn open_projects(
+    projects: &[&Project],
+    list: PathBuf,
+    cx: &mut TestAppContext,
+) -> Vec<(Entity<Workspace>, VisualTestContext)> {
+    cx.update(|cx| {
+        crate::init(cx);
+        let settings = cx.global_mut::<crate::Settings>();
+        settings.lsp = false;
+        settings.projects_file = Some(list);
+        bind_example_keys(cx);
+        crate::script::eval(TREE, cx).unwrap();
+    });
+    for project in projects {
+        cx.update(|cx| crate::open_project(project.0.clone(), cx));
+        cx.run_until_parked();
+    }
+    let all = cx.update(|cx| crate::workspace::all(cx));
+    all.into_iter()
+        .map(|(window, workspace)| {
+            let vcx = VisualTestContext::from_window(window, cx);
+            (workspace.upgrade().unwrap(), vcx)
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn opens_each_project_in_a_window_of_its_own(cx: &mut TestAppContext) {
+    let a = Project::new(&[("a.txt", "a\n")]);
+    let b = Project::new(&[("b.txt", "b\n"), ("dir/c.txt", "c\n")]);
+    let list = a.path(".state/projects");
+    let mut windows = open_projects(&[&a, &b], list.clone(), cx);
+    assert_eq!(windows.len(), 2);
+    let root = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, _| ws.root().to_path_buf())
+    };
+    let (ws_b, mut vcx_b) = windows.pop().unwrap();
+    let (ws_a, mut vcx_a) = windows.pop().unwrap();
+    assert_eq!(root(&ws_a, &mut vcx_a), a.0);
+    assert_eq!(root(&ws_b, &mut vcx_b), b.0);
+
+    // The last opened first.
+    let quoted = |project: &Project| format!("{:?}", project.0.display().to_string());
+    assert_eq!(
+        lisp("(recent-projects)", &mut vcx_a),
+        format!("({} {})", quoted(&b), quoted(&a))
+    );
+    assert_eq!(crate::projects::read(&list), [b.0.clone(), a.0.clone()]);
+
+    // A project with a window already is brought up, not opened again.
+    lisp(&format!("(open-project {})", quoted(&a)), &mut vcx_a);
+    vcx_a.run_until_parked();
+    assert_eq!(vcx_a.update(|_, cx| crate::workspace::all(cx).len()), 2);
+    let missing = vcx_a.update(|_, cx| crate::script::eval("(open-project \"/no/such/dir\")", cx));
+    assert!(missing.is_err());
+}
+
+#[gpui::test]
+fn each_window_has_a_tree_of_its_own(cx: &mut TestAppContext) {
+    let a = Project::new(&[("a.txt", "a\n")]);
+    let b = Project::new(&[("b.txt", "b\n"), ("dir/c.txt", "c\n")]);
+    let state = Project::new(&[]);
+    let mut windows = open_projects(&[&a, &b], state.path("projects"), cx);
+    let (_, mut vcx_b) = windows.pop().unwrap();
+    let (_, mut vcx_a) = windows.pop().unwrap();
+    let names = |root: &Project, cx: &mut VisualTestContext| {
+        let tree = format!("(tree-of {:?})", root.0.display().to_string());
+        lisp(
+            &format!("(map (fn (e) (get e :name)) (get {tree} :entries))"),
+            cx,
+        )
+    };
+    assert_eq!(names(&a, &mut vcx_a), r#"("a.txt")"#);
+    assert_eq!(names(&b, &mut vcx_b), r#"("dir" "b.txt")"#);
+
+    // Unfolding in one window leaves the other's tree as it was. The keys
+    // go to a window once it is in front, as a click puts it.
+    let front = |cx: &mut VisualTestContext| {
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+    };
+    let ex = |line: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(line);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+    front(&mut vcx_b);
+    ex("tree.first", &mut vcx_b);
+    ex("tree.expand", &mut vcx_b);
+    assert_eq!(names(&b, &mut vcx_b), r#"("dir" "c.txt" "b.txt")"#);
+    // So do the panels it puts up.
+    ex("eval (show-panel 'tree)", &mut vcx_b);
+    assert!(shown("tree", &mut vcx_b));
+    assert!(!shown("tree", &mut vcx_a));
+    front(&mut vcx_a);
+    ex("tree.refresh", &mut vcx_a);
+    assert_eq!(names(&a, &mut vcx_a), r#"("a.txt")"#);
+    assert_eq!(names(&b, &mut vcx_a), r#"("dir" "c.txt" "b.txt")"#);
+}
+
+#[gpui::test]
+fn quitting_closes_one_window_or_all(cx: &mut TestAppContext) {
+    let a = Project::new(&[("a.txt", "a\n")]);
+    let b = Project::new(&[("b.txt", "b\n")]);
+    let mut windows = open_projects(&[&a, &b], a.path(".state/projects"), cx);
+    let (ws_b, mut vcx_b) = windows.pop().unwrap();
+    let (_, mut vcx_a) = windows.pop().unwrap();
+    let count = |cx: &mut VisualTestContext| cx.update(|_, cx| crate::workspace::all(cx).len());
+
+    // Unsaved work in any window keeps :qa from quitting.
+    vcx_b.simulate_keystrokes("i x escape");
+    vcx_a.simulate_keystrokes(": q a enter");
+    vcx_a.run_until_parked();
+    assert_eq!(count(&mut vcx_a), 2);
+    let message = ws_b.read_with(&vcx_b, |ws, _| ws.message.clone().unwrap_or_default());
+    assert!(message.contains("Unsaved"), "{message}");
+
+    // :q on the last tab closes that window, and only that one.
+    vcx_a.simulate_keystrokes(": q enter");
+    vcx_a.run_until_parked();
+    assert_eq!(count(&mut vcx_b), 1);
+    assert_eq!(cx.windows().len(), 1);
 }

@@ -37,6 +37,8 @@ cargo test --workspace
 
 沒有指定檔案啟動時（`med` 或 `med dir`），med 會開啟這個專案上次結束時開著的內容：pane 的分割方式、每個 pane 裡的檔案，以及游標所在位置。已經不在磁碟上的檔案會略過，終端機與程式的文字永遠不會保存。指定了檔案啟動時，med 只開那些檔案，結束時也不會動到專案的 session；不論哪種情況，`:mksession`（`:mks`）都會把目前開著的內容存起來。Session 存在 `MED_STATE_DIR` 底下的 `sessions/`，每個專案一個檔案；`MED_NO_SESSION` 可關閉此功能。
 
+每個視窗就是一個專案。`:project dir` 會在新視窗中開啟另一個專案；載入 `picker.mlisp` 後，`space p` 會列出以前開過的專案。在最後一個分頁上 `:q` 只會關掉那個視窗；`:qa` 則會全部結束。
+
 ### 專案環境
 
 語言伺服器（rust-analyzer、clangd、gopls、pyright 等，從專案的 `PATH` 中尋找）以及用 `spawn` 啟動的程式，都在專案的環境中執行。從終端機啟動時，med 沿用它既有的環境；從 Finder、Dock 或桌面啟動器啟動時，則取用你的登入 shell 的環境（`$SHELL -l -i`）。無論哪種情況，只要裝了 direnv，就會再疊上 `direnv export json` 的結果，devbox 與 nix-direnv flake 也因此涵蓋在內。med 從不自行執行 `direnv allow`；允許或編輯 `.envrc` 之後，`:workspace.reload_env` 會重新載入環境並重啟語言伺服器。`MED_NO_PROJECT_ENV` 或 `(set-option 'project-env false)` 可關閉此功能。
@@ -57,7 +59,7 @@ cargo test --workspace
 | `vim.mlisp` | 各模式的 vim 按鍵，以及 nvim-surround 風格的 `ys` / `ds` / `cs` |
 | `keys.mlisp` | LSP 按鍵（`gd`、`gr`、`K`）、分頁、窗格、flash 風格跳躍、`space` leader 鍵、`⌘` 快捷鍵 |
 | `oil.mlisp` | 把目錄當成緩衝區來編輯，如同 oil.nvim（`space e`、`space -`） |
-| `picker.mlisp` | 模糊檔案搜尋與專案搜尋（`space f`、`space /`） |
+| `picker.mlisp` | 模糊檔案搜尋、專案搜尋與最近的專案（`space f`、`space /`、`space p`） |
 | `git.mlisp` | lazygit 風格的 git 畫面（`space g`） |
 | `which-key.mlisp` | 停頓片刻後，列出接下來可按的鍵 |
 | `todo.mlisp` | 在 TODO/FIXME/NOTE 行旁加上標示，`]T` / `[T` |
