@@ -149,6 +149,26 @@ pub fn no_keys_hint(cx: &App) -> Option<String> {
     })
 }
 
+/// Why no key is bound, for the welcome popup: there is no init file, or
+/// the one there binds none. `None` while keys are bound.
+pub fn no_keys_reason(cx: &App) -> Option<String> {
+    let keymap = &cx.global::<VimGlobal>().0.keymap;
+    if !keymap.is_empty(MapMode::Normal) {
+        return None;
+    }
+    let Some(dir) = crate::config_dir() else {
+        return Some("there is no configuration directory: $HOME is not set.".to_string());
+    };
+    let init = ["init.mlisp", "init.lisp"]
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file());
+    Some(match init {
+        Some(path) => format!("{} binds none in normal mode.", path.display()),
+        None => format!("there is no init.mlisp in {}.", dir.display()),
+    })
+}
+
 /// Load the table above, and start the panels' key tables empty.
 pub fn init(cx: &mut App) {
     cx.set_global(PanelKeymaps::default());

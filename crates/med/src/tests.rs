@@ -2266,6 +2266,47 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_popup_says_how_to_get_keys(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let (ws, cx) = open_window(false, &[], &project, &["a.txt"], cx);
+    let shown = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| ws.welcome_shown(cx))
+    };
+    let reason = cx
+        .update(|_, cx| crate::defaults::no_keys_reason(cx))
+        .unwrap();
+    assert!(reason.contains("init.mlisp"), "{reason}");
+    assert!(shown(&ws, cx));
+
+    // Out of the way while `:` is typed, back after.
+    cx.simulate_keystrokes(":");
+    assert!(!shown(&ws, cx));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert!(shown(&ws, cx));
+    // Escape puts it away.
+    cx.simulate_keystrokes("escape");
+    assert!(!shown(&ws, cx));
+}
+
+#[gpui::test]
+fn the_popup_goes_once_keys_are_bound(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let (ws, cx) = open_window(false, &[], &project, &["a.txt"], cx);
+    let shown = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| ws.welcome_shown(cx))
+    };
+    assert!(shown(&ws, cx));
+    let config = project.path("config");
+    ws.update_in(cx, |ws, window, cx| {
+        ws.install_default_config(&config, false, window, cx)
+    });
+    cx.run_until_parked();
+    assert!(!shown(&ws, cx));
+    assert_eq!(cx.update(|_, cx| crate::defaults::no_keys_reason(cx)), None);
+}
+
+#[gpui::test]
 fn installs_keys_into_an_editor_that_has_none(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\ntwo\n")]);
     let (ws, cx) = open_window(false, &[], &project, &["a.txt"], cx);

@@ -4,7 +4,7 @@
 
 ## 按鍵
 
-med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒有任何按鍵有作用；只要 normal 模式中完全沒有綁定，`:` 就會開啟命令列，狀態列也會提示這一點。在命令列中，`:install_default_config` 會把 [`examples/`](../examples) 的每個檔案寫入設定目錄，並執行其中的 `init.mlisp`；已經存在的檔案會保留不動，並列出是哪些，`:install_default_config!` 則會覆寫它們。
+med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒有任何按鍵有作用；只要 normal 模式中完全沒有綁定，`:` 就會開啟命令列。編輯器上方會出現一個彈出視窗說明這件事，以及要輸入什麼；命令列開啟時它會暫時讓開，按 escape 或點擊視窗外即可關閉，綁定按鍵後也會自動消失。在命令列中，`:install_default_config` 會把 [`examples/`](../examples) 的每個檔案寫入設定目錄，並執行其中的 `init.mlisp`；已經存在的檔案會保留不動，並列出是哪些，`:install_default_config!` 則會覆寫它們。
 
 以下按鍵出自 [`examples/vim.mlisp`](../examples/vim.mlisp)（vim 的部分）與 [`examples/keys.mlisp`](../examples/keys.mlisp)（其餘部分），由初始化檔依序載入：
 

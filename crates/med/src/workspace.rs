@@ -42,6 +42,8 @@ pub struct Workspace {
     _branch_task: Option<Task<()>>,
     /// One-line feedback shown in the status bar until the next key.
     pub(crate) message: Option<SharedString>,
+    /// The popup that says how to get keys, put away by escape or a click.
+    welcome_closed: bool,
     /// Places `ctrl-o` / `ctrl-i` walk through.
     jumps: Vec<(PathBuf, usize)>,
     jump_index: usize,
@@ -296,6 +298,7 @@ impl Workspace {
             branch: None,
             _branch_task: None,
             message: None,
+            welcome_closed: false,
             jumps: Vec::new(),
             jump_index: 0,
             seen: None,
@@ -2222,6 +2225,108 @@ impl Workspace {
     }
 
     /// The status bar: a program's panel at `'status`, or the window's own.
+    /// Whether the popup that says how to get keys is up: while no key is
+    /// bound, until it is put away, and not while `:` is being typed.
+    pub(crate) fn welcome_shown(&self, cx: &App) -> bool {
+        let typing = self
+            .active_editor()
+            .is_some_and(|editor| editor.read(cx).vim.cmdline().is_some());
+        !self.welcome_closed && !typing && defaults::no_keys_reason(cx).is_some()
+    }
+
+    /// An editor with no keys is not broken: what is missing, and the
+    /// command that puts it there, over the editor. It does not take the
+    /// keyboard: `:` goes on working, and puts it aside while it is typed.
+    fn render_welcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.welcome_shown(cx) {
+            return None;
+        }
+        let reason = defaults::no_keys_reason(cx)?;
+        let theme = cx.theme();
+        let (popover, popover_foreground) = (theme.popover, theme.popover_foreground);
+        let (border, muted, accent) = (theme.border, theme.muted_foreground, theme.primary);
+        let mono = theme.mono_font_family.clone();
+        let code = move |text: &'static str| {
+            div()
+                .px_1()
+                .rounded_sm()
+                .bg(accent.opacity(0.12))
+                .font_family(mono.clone())
+                .child(text)
+        };
+        let panel = div()
+            .id("welcome")
+            .w(px(560.))
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .bg(popover)
+            .text_color(popover_foreground)
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .shadow_lg()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.welcome_closed = true;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("No keys are bound"),
+            )
+            .child(div().child(format!(
+                "med binds no key by itself: they come from the init file, and {reason}"
+            )))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child("Type this and press enter:")
+                    .child(
+                        div()
+                            .py_2()
+                            .px_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(accent.opacity(0.5))
+                            .bg(accent.opacity(0.08))
+                            .text_size(px(15.))
+                            .font_family(theme.mono_font_family.clone())
+                            .child(":install_default_config"),
+                    )
+                    .child("It writes the example configuration there, vim's keys and the rest, and runs it."),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .text_color(muted)
+                    .child(code(":install_default_config!"))
+                    .child("writes over files of your own of those names;")
+                    .child(code(":help"))
+                    .child("lists every command. Escape puts this away."),
+            );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .justify_center()
+                .items_start()
+                .pt(px(96.))
+                .child(panel)
+                .into_any_element(),
+        )
+    }
+
     fn render_status_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.bar_view(At::Status, cx) {
             Some(view) => div()
@@ -2527,7 +2632,14 @@ impl Render for Workspace {
             }))
             // Escape puts a popup away before any view gets to see it.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && cx.global_mut::<UserPanels>().hide_popups() {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                if this.welcome_shown(cx) {
+                    this.welcome_closed = true;
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if cx.global_mut::<UserPanels>().hide_popups() {
                     cx.stop_propagation();
                     this.panels_changed(window, cx);
                 }
@@ -2537,6 +2649,7 @@ impl Render for Workspace {
             .children(bottoms)
             .child(self.render_status_bar(cx))
             .children(popups)
+            .children(self.render_welcome(cx))
     }
 }
 

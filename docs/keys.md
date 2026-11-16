@@ -6,7 +6,9 @@ English | [繁體中文](keys.zh-TW.md)
 
 med binds no key by itself: with no init file, no key does anything
 but `:`, which opens the command line for as long as nothing at all is
-bound in normal mode, and the status bar says so. There,
+bound in normal mode. A popup over the editor says so, and what to type;
+it steps aside while the command line is open, escape or a click beside
+it puts it away, and it goes once keys are bound. There,
 `:install_default_config` writes every file of [`examples/`](../examples)
 to the configuration directory and runs its `init.mlisp`; it leaves files
 that are there already alone and says which, and
