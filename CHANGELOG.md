@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/iceice666/med/compare/v0.2.0...v0.2.1) - 2026-11-16
+
+### Added
+
+- *(med/lsp)* show the hover of every server
+- *(med/lsp)* merge completions from every server
+- *(med/lsp)* go to the declaration of a symbol
+- *(med/workspace)* switch project from the title bar
+- *(med/editor)* add sticky scroll
+- *(med/workspace)* open each project in its own window
+
+### Fixed
+
+- *(med/workspace)* run the empty tab's commands once
+
 ## [0.2.0](https://github.com/iceice666/med/compare/v0.1.1...v0.2.0) - 2026-11-16
 
 ### Added
