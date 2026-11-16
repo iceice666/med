@@ -89,6 +89,10 @@ Python), or by what the file is indented with already. `(set-option
 'tab-width 4)` makes it 4 columns in every file; `nil` goes back. Files
 indented with tabs keep them, that many columns wide.
 
+`(set-option 'relative-number true)` numbers each line by how far it is
+from the cursor's, the count `j` or `k` takes to get there, as vim's
+`relativenumber` with `number`: the cursor's line keeps its own number.
+
 Where a file has a syntax tree:
 
 | Key | Action |
@@ -145,7 +149,7 @@ run at startup, or from the command line with `:eval`:
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
-                                              ; project-env
+                                              ; relative-number, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table

@@ -321,6 +321,23 @@ fn tab_width(file: usize, cx: &App) -> usize {
         .unwrap_or(file)
 }
 
+/// What the gutter shows for a line, right-aligned to `digits`: its number,
+/// or with `relative` how many lines it is from the cursor's, the count
+/// `j` and `k` take to get there. The cursor's line keeps its number.
+pub(crate) fn line_number(
+    line: usize,
+    cursor_line: usize,
+    relative: bool,
+    digits: usize,
+) -> String {
+    let number = if relative && line != cursor_line {
+        line.abs_diff(cursor_line)
+    } else {
+        line + 1
+    };
+    format!("{number:>digits$}")
+}
+
 /// Guess (expand_tab, width) from how the file is already indented.
 fn detect_indent(text: &str) -> Option<(bool, usize)> {
     let mut min_spaces: Option<usize> = None;
@@ -2421,7 +2438,7 @@ impl Editor {
             }
 
             // Gutter: line number, tinted by the worst diagnostic.
-            let number = format!("{:>digits$}", line + 1);
+            let number = line_number(line, cursor_line, settings.relative_number, digits);
             let worst = severity_at.iter().copied().filter(|s| *s > 0).min();
             let color = match worst {
                 Some(severity) => diag_colors[(severity - 1) as usize],

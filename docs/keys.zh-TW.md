@@ -53,6 +53,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 `Tab`、`>>` 與新行的縮排寬度依檔案的語言而定（med-lisp、Markdown、TOML、Nix、JavaScript 等為 2，Rust、Python 為 4），或依檔案既有的縮排而定。`(set-option 'tab-width 4)` 讓每個檔案都縮排 4 欄；設為 `nil` 則恢復原樣。以 tab 縮排的檔案仍使用 tab，顯示為該寬度。
 
+`(set-option 'relative-number true)` 讓每一行的行號顯示它與游標所在行的距離，也就是用 `j` 或 `k` 到達那一行所需的次數，如同 vim 同時開啟 `relativenumber` 與 `number`：游標所在行仍顯示自己的行號。
+
 檔案有語法樹時：
 
 | 按鍵 | 動作 |
@@ -89,7 +91,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; 另有 font-family、lsp、key-timeout、
                                               ; auto-pairs、format-on-save、tab-width、
-                                              ; project-env
+                                              ; relative-number、project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。

@@ -45,6 +45,9 @@ pub struct Settings {
     /// Columns to an indent and a tab stop, over what each file's language
     /// and its own indentation say; `None` to go by those.
     pub tab_width: Option<usize>,
+    /// Number the lines by how far each is from the cursor's, as vim's
+    /// `relativenumber` with `number`: the cursor's line keeps its own.
+    pub relative_number: bool,
     /// Work out each project's environment (login shell, direnv) for its
     /// language servers and programs, rather than use med's own.
     pub project_env: bool,
@@ -191,6 +194,7 @@ pub fn init(cx: &mut App) {
         key_timeout: Some(Settings::KEY_TIMEOUT),
         format_on_save: false,
         tab_width: None,
+        relative_number: false,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
         // Turned on by `run` too: tests must not write to $HOME.

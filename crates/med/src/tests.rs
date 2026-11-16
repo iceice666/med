@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -754,6 +754,35 @@ fn the_tab_width_option_is_every_files(cx: &mut TestAppContext) {
         cx.update(|_, cx| cx.global::<crate::Settings>().tab_width),
         None
     );
+}
+
+#[test]
+fn relative_line_numbers_count_from_the_cursor() {
+    use crate::editor::line_number;
+    // Off: every line its own number.
+    assert_eq!(line_number(0, 4, false, 3), "  1");
+    assert_eq!(line_number(4, 4, false, 3), "  5");
+    // On: the distance, either way; the cursor's line keeps its number.
+    assert_eq!(line_number(0, 4, true, 3), "  4");
+    assert_eq!(line_number(4, 4, true, 3), "  5");
+    assert_eq!(line_number(9, 4, true, 3), "  5");
+    assert_eq!(line_number(1203, 0, true, 4), "1203");
+}
+
+#[gpui::test]
+fn the_relative_number_option(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let (_ws, cx) = open(&project, &["a.txt"], cx);
+    let relative = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| cx.global::<crate::Settings>().relative_number)
+    };
+    assert!(!relative(cx));
+    assert_eq!(lisp("(set-option 'relative-number true)", cx), "nil");
+    assert!(relative(cx));
+    assert_eq!(lisp("(set-option 'relative-number nil)", cx), "nil");
+    assert!(!relative(cx));
+    let bad = "(set-option 'relative-number 1)";
+    assert!(cx.update(|_, cx| crate::script::eval(bad, cx)).is_err());
 }
 
 #[gpui::test]

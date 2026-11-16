@@ -16,7 +16,8 @@
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save,
-//!                                      ; tab-width, project-env
+//!                                      ; tab-width, relative-number,
+//!                                      ; project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -1049,6 +1050,8 @@ fn define_functions(interp: &mut Interp) {
                     },
                 };
             }
+            // Each line's number its distance from the cursor's.
+            "relative-number" => settings.relative_number = flag(value)?,
             // Read when a window opens, as `lsp` is.
             "project-env" => settings.project_env = flag(value)?,
             // Close brackets and quotes as they are typed.
@@ -1059,7 +1062,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number project-env)"
                 )));
             }
         }
