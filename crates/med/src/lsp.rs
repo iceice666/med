@@ -152,6 +152,7 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "publishDiagnostics": { "relatedInformation": true },
             "hover": { "contentFormat": ["markdown", "plaintext"] },
             "definition": { "linkSupport": false },
+            "declaration": { "linkSupport": false },
             "references": {},
             "completion": {
                 "contextSupport": true,
@@ -763,6 +764,29 @@ impl LspStore {
             server
                 .client
                 .request::<lsp::request::GotoDefinition>(lsp::GotoDefinitionParams {
+                    text_document_position_params: Self::position_params(path, position)?,
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                }),
+        )
+    }
+
+    pub fn declaration(
+        &self,
+        path: &Path,
+        position: lsp::Position,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<>>
+    {
+        let server = self.ready_server(path, |c| {
+            !matches!(
+                c.declaration_provider,
+                None | Some(lsp::DeclarationCapability::Simple(false))
+            )
+        })?;
+        Some(
+            server
+                .client
+                .request::<lsp::request::GotoDeclaration>(lsp::GotoDefinitionParams {
                     text_document_position_params: Self::position_params(path, position)?,
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),

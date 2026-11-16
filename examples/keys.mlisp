@@ -11,7 +11,7 @@
 
 ; The language server.
 (bind '(normal visual) "gd" "editor.goto_definition")
-(bind '(normal visual) "gD" "editor.goto_definition")
+(bind '(normal visual) "gD" "editor.goto_declaration")
 (bind '(normal visual) "gr" "editor.references")
 (bind '(normal visual) "gh" "editor.hover")
 (bind '(normal visual) "K" "editor.hover")

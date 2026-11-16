@@ -140,6 +140,23 @@ async fn scenario(
         other => return Err(format!("unexpected definition target: {other:?}")),
     }
 
+    // 4b. Go to declaration: `add` has no prototype, so it is declared
+    //     where it is defined.
+    jumps.borrow_mut().clear();
+    run(&editor, cx, "editor.goto_declaration", "");
+    for _ in 0..200 {
+        if !jumps.borrow().is_empty() {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    match jumps.borrow().first() {
+        Some((path, 0, 4)) if path.ends_with("main.c") => println!("ok  declaration"),
+        other => return Err(format!("unexpected declaration target: {other:?}")),
+    }
+
     // 5. Completion: a new line calling `ad…` offers `add`, and accepting
     //    it inserts the name.
     editor.update(cx, |editor, cx| {

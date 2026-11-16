@@ -1958,11 +1958,28 @@ impl Editor {
     // ---- language server features --------------------------------------
 
     fn goto_definition(&mut self, cx: &mut Context<Self>) {
+        self.goto_location(LspStore::definition, "No definition found", cx);
+    }
+
+    fn goto_declaration(&mut self, cx: &mut Context<Self>) {
+        self.goto_location(LspStore::declaration, "No declaration found", cx);
+    }
+
+    /// Ask the language server where the symbol under the cursor is (its
+    /// definition, its declaration) and go there, as a jump.
+    fn goto_location<F>(
+        &mut self,
+        ask: impl FnOnce(&LspStore, &Path, lsp::Position) -> Option<F>,
+        not_found: &'static str,
+        cx: &mut Context<Self>,
+    ) where
+        F: Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + 'static,
+    {
         let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
             return;
         };
         let position = self.lsp_position(self.vim.cursor);
-        let Some(request) = lsp.read(cx).definition(path, position) else {
+        let Some(request) = ask(lsp.read(cx), path, position) else {
             cx.emit(EditorEvent::Message("No language server".into()));
             return;
         };
@@ -1987,7 +2004,7 @@ impl Editor {
                         cx.emit(EditorEvent::PushJump(from));
                         cx.emit(EditorEvent::OpenLocation { path, position });
                     }
-                    None => cx.emit(EditorEvent::Message("No definition found".into())),
+                    None => cx.emit(EditorEvent::Message(not_found.into())),
                 }
             })
             .ok();
@@ -4120,6 +4137,11 @@ pub(crate) fn register(commands: &mut Commands) {
         "editor.goto_definition",
         "Go to the definition of the symbol under the cursor",
         E(|editor, _, cx| editor.goto_definition(cx)),
+    );
+    commands.register(
+        "editor.goto_declaration",
+        "Go to the declaration of the symbol under the cursor",
+        E(|editor, _, cx| editor.goto_declaration(cx)),
     );
     commands.register(
         "editor.references",
