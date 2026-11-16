@@ -64,6 +64,9 @@ pub struct Settings {
     /// Show what the language server says inline of the text, a type or
     /// a parameter's name, where lines do not wrap.
     pub inlay_hints: bool,
+    /// Draw a line down each step of the lines' indents, vim's
+    /// indent-blankline.
+    pub indent_guides: bool,
     /// The colors: `theme.rs`.
     pub theme: theme::ThemeChoice,
     /// Keep each file's undo history when it is saved, and take it up
@@ -224,6 +227,7 @@ pub fn init(cx: &mut App) {
         color_columns: Vec::new(),
         wrap: false,
         inlay_hints: false,
+        indent_guides: false,
         theme: theme::ThemeChoice::System,
         undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.

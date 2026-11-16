@@ -22,6 +22,10 @@ use std::time::{Duration, SystemTime};
 
 const COMPLETION_ROWS: usize = 10;
 
+/// Lines above and below the view looked through for a blank line's
+/// indent, and for the block the cursor is in.
+const GUIDE_REACH: usize = 100;
+
 /// How long writing a file waits for the language server to format it.
 const FORMAT_TIMEOUT: Duration = Duration::from_millis(800);
 
@@ -380,6 +384,69 @@ pub struct BufferOptions {
     pub color_columns: Option<Vec<usize>>,
     pub wrap: Option<bool>,
     pub inlay_hints: Option<bool>,
+    pub indent_guides: Option<bool>,
+}
+
+/// The cells of a line's leading blanks, a tab to its stop; `None` for a
+/// line that is nothing but blanks.
+pub(crate) fn indent_cells(text: &str, tab_width: usize) -> Option<usize> {
+    let mut cells = 0;
+    for c in text.chars() {
+        match c {
+            ' ' | '\t' => cells += cell_width(c, cells, tab_width.max(1)),
+            _ => return Some(cells),
+        }
+    }
+    None
+}
+
+/// The indent of each line, a blank one taking the less of the nearest
+/// lines either side that are not: a block's guides go on through it.
+pub(crate) fn line_indents(indents: &[Option<usize>]) -> Vec<usize> {
+    let mut before = vec![None; indents.len()];
+    let mut last = None;
+    for (i, indent) in indents.iter().enumerate() {
+        last = indent.or(last);
+        before[i] = last;
+    }
+    let mut next = None;
+    let mut out = vec![0; indents.len()];
+    for i in (0..indents.len()).rev() {
+        next = indents[i].or(next);
+        out[i] = match (indents[i], before[i], next) {
+            (Some(indent), ..) => indent,
+            (None, Some(a), Some(b)) => a.min(b),
+            _ => 0,
+        };
+    }
+    out
+}
+
+/// The guide of the block the line at `at` is in: its column, and the
+/// first and last line of the block, the lines either side indented past
+/// it. `None` for a line at the margin.
+pub(crate) fn block_guide(
+    indents: &[usize],
+    at: usize,
+    width: usize,
+) -> Option<(usize, usize, usize)> {
+    let width = width.max(1);
+    let indent = *indents.get(at)?;
+    if indent == 0 {
+        return None;
+    }
+    let column = (indent - 1) / width * width;
+    let inside = |i: usize| indents[i] > column;
+    let first = (0..at)
+        .rev()
+        .take_while(|&i| inside(i))
+        .last()
+        .unwrap_or(at);
+    let last = (at + 1..indents.len())
+        .take_while(|&i| inside(i))
+        .last()
+        .unwrap_or(at);
+    Some((column, first, last))
 }
 
 /// Where the `color-column` columns are drawn: each a cell wide, down the
@@ -1117,6 +1184,12 @@ impl Editor {
                 .map(|s| s.color_columns.clone())
                 .unwrap_or_default(),
         }
+    }
+
+    pub(crate) fn indent_guides(&self, cx: &App) -> bool {
+        self.options
+            .indent_guides
+            .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.indent_guides))
     }
 
     pub(crate) fn wrap(&self, cx: &App) -> bool {
@@ -2636,6 +2709,8 @@ impl Editor {
         // A shade of the text over whatever is behind, the cursor's line
         // too: darker in a light theme, lighter in a dark one.
         let color_column_bg = fg.opacity(0.07);
+        let (guide_color, block_guide_color) = (fg.opacity(0.12), fg.opacity(0.35));
+        let indent_guides = self.indent_guides(cx);
         let diag_colors = [theme.danger, theme.warning, theme.info, muted];
         let search_bg = theme.warning.opacity(0.35);
         // What `motion.flash` found: the place `enter` goes to stands out
@@ -2784,6 +2859,21 @@ impl Editor {
         for band in column_bands(&color_columns, text_bounds, char_width, scroll_left) {
             frame.text_back.push(fill(band, color_column_bg));
         }
+        // Indent guides: the lines' indents, and a blank one's from those
+        // around it, looked for no further than this from the view.
+        let guides = indent_guides.then(|| {
+            let from = first.saturating_sub(GUIDE_REACH);
+            let to = (last + GUIDE_REACH).min(line_count);
+            let raw: Vec<Option<usize>> = (from..to)
+                .map(|line| indent_cells(&buf.line_string(line), tab_width))
+                .collect();
+            let indents = line_indents(&raw);
+            let block = cursor_line
+                .checked_sub(from)
+                .filter(|at| *at < indents.len())
+                .and_then(|at| block_guide(&indents, at, tab_width));
+            (from, indents, block)
+        });
 
         let mut y = y0;
         for line in first..last {
@@ -2991,6 +3081,24 @@ impl Editor {
 
             if cursor_line_shown && line == cursor_line && !mode.is_visual() {
                 frame.back.extend(whole_line(active_line_bg));
+            }
+            if let Some((from, indents, block)) = &guides {
+                let indent = indents[line - from];
+                for column in (0..indent).step_by(tab_width.max(1)) {
+                    let at = line - from;
+                    let in_block = block.is_some_and(|(c, first, last)| {
+                        c == column && (first..=last).contains(&at)
+                    });
+                    let color = if in_block {
+                        block_guide_color
+                    } else {
+                        guide_color
+                    };
+                    let x = char_width * column as f32;
+                    if let Some(cell) = fold.spans(x, x + px(1.)).into_iter().next() {
+                        frame.text_back.push(fill(cell, color));
+                    }
+                }
             }
             for mark in &line_marks {
                 let Some(color) = mark.bg else {

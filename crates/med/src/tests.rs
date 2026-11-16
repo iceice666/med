@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -950,6 +950,50 @@ fn lines_wrap_where_a_char_no_longer_fits() {
     // has a row of its own.
     assert_eq!(wrap_breaks("ab中", 4, 3), [0, 2]);
     assert_eq!(wrap_breaks("中", 4, 1), [0, 1]);
+}
+
+#[test]
+fn indent_guides_go_by_the_lines_indents() {
+    use crate::editor::{block_guide, indent_cells, line_indents};
+    assert_eq!(indent_cells("    x", 4), Some(4));
+    assert_eq!(indent_cells("\t\tx", 4), Some(8));
+    assert_eq!(indent_cells("  \tx", 4), Some(4));
+    assert_eq!(indent_cells("x", 4), Some(0));
+    assert_eq!(indent_cells("   ", 4), None);
+    assert_eq!(indent_cells("", 4), None);
+
+    // A blank line takes the less of the lines either side; one at the
+    // start or end of what is looked at, the margin.
+    let raw = [
+        None,
+        Some(0),
+        Some(4),
+        None,
+        Some(8),
+        None,
+        Some(4),
+        Some(0),
+        None,
+    ];
+    assert_eq!(line_indents(&raw), [0, 0, 4, 4, 8, 4, 4, 0, 0]);
+
+    //   0 fn f() {
+    //   1     if x {
+    //   2         y();
+    //   3
+    //   4         z();
+    //   5     }
+    //   6 }
+    let indents = line_indents(&[Some(0), Some(4), Some(8), None, Some(8), Some(4), Some(0)]);
+    // In the `if`'s block, blank line and all: the guide at column 4.
+    assert_eq!(block_guide(&indents, 2, 4), Some((4, 2, 4)));
+    assert_eq!(block_guide(&indents, 3, 4), Some((4, 2, 4)));
+    // On the `if` line: the function's block, at column 0.
+    assert_eq!(block_guide(&indents, 1, 4), Some((0, 1, 5)));
+    // At the margin: none.
+    assert_eq!(block_guide(&indents, 0, 4), None);
+    // An indent between steps belongs to the step below it.
+    assert_eq!(block_guide(&[0, 6, 6, 0], 1, 4), Some((4, 1, 2)));
 }
 
 #[test]
@@ -1348,6 +1392,24 @@ fn inlay_hints_stand_in_the_line(cx: &mut TestAppContext) {
     let taken = editor.update(cx, |e, _| e.apply_inlay_hints(now, &[stale]));
     assert!(taken);
     assert_eq!(editor.read_with(cx, |e, _| e.inlay_hint_texts()), ["stale"]);
+}
+
+#[gpui::test]
+fn the_indent_guides_option(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let on = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            ws.active_editor().unwrap().read(cx).indent_guides(cx)
+        })
+    };
+    assert!(!on(&ws, cx));
+    assert_eq!(lisp("(set-option 'indent-guides true)", cx), "nil");
+    assert!(on(&ws, cx));
+    eval_in(&ws, "(set-buffer-option 'indent-guides false)", cx);
+    assert!(!on(&ws, cx));
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    assert!(on(&ws, cx));
 }
 
 #[gpui::test]

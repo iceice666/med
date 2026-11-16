@@ -17,7 +17,7 @@
 //!                                      ; relative-number, format-on-save,
 //!                                      ; auto-pairs, scroll-off,
 //!                                      ; cursor-line, color-column, wrap,
-//!                                      ; inlay-hints
+//!                                      ; inlay-hints, indent-guides
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
@@ -26,7 +26,8 @@
 //!                                      ; tab-width, relative-number,
 //!                                      ; scroll-off, cursor-line,
 //!                                      ; color-column, wrap, undo-file,
-//!                                      ; inlay-hints, theme, project-env
+//!                                      ; inlay-hints, indent-guides, theme,
+//!                                      ; project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -758,7 +759,7 @@ fn no_buffer_option(option: &str) -> Error {
     failed(format!(
         "{option} is not an option a tab has its own of \
          (tab-width relative-number format-on-save auto-pairs scroll-off \
-         cursor-line color-column wrap inlay-hints)"
+         cursor-line color-column wrap inlay-hints indent-guides)"
     ))
 }
 
@@ -1121,6 +1122,7 @@ fn define_functions(interp: &mut Interp) {
             "color-column" => settings.color_columns = columns(value)?,
             "wrap" => settings.wrap = flag(value)?,
             "inlay-hints" => settings.inlay_hints = flag(value)?,
+            "indent-guides" => settings.indent_guides = flag(value)?,
             // A theme's name, a light one's and a dark one's, or nil.
             "theme" => {
                 let choice = match value {
@@ -1150,7 +1152,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints undo-file theme project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides undo-file theme project-env)"
                 )));
             }
         }
@@ -1195,6 +1197,10 @@ fn define_functions(interp: &mut Interp) {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.options.inlay_hints = Some(on))
             }
+            "indent-guides" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.options.indent_guides = Some(on))
+            }
             "auto-pairs" => {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.vim.auto_pairs = Some(on))
@@ -1216,6 +1222,7 @@ fn define_functions(interp: &mut Interp) {
             "color-column" => Box::new(|editor| editor.options.color_columns = None),
             "wrap" => Box::new(|editor| editor.options.wrap = None),
             "inlay-hints" => Box::new(|editor| editor.options.inlay_hints = None),
+            "indent-guides" => Box::new(|editor| editor.options.indent_guides = None),
             "auto-pairs" => Box::new(|editor| editor.vim.auto_pairs = None),
             other => return Err(no_buffer_option(other)),
         };

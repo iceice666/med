@@ -117,6 +117,12 @@ diagnostic or a program's text, is cut off at the right edge, and
 `set-buffer-option` and `buffer-language` it can be for some files only:
 `(set-buffer-option 'wrap true)` where the language is `"markdown"`.
 
+`(set-option 'indent-guides true)` draws a thin line down each step of
+the lines' indents, a step being the file's tab width, as vim's
+indent-blankline; a blank line has the indent of the lines around it,
+so that a block's lines go on through it. The line of the block the
+cursor is in is the stronger, down the block. A tab can have its own.
+
 `(set-option 'inlay-hints true)` shows what the language server says
 inline of the text, dimmed, in the line where it goes: a variable's
 type, the name of a parameter an argument is given for. They are asked
@@ -202,7 +208,8 @@ run at startup, or from the command line with `:eval`:
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
                                               ; color-column, wrap, inlay-hints,
-                                              ; undo-file, theme, project-env
+                                              ; indent-guides, undo-file, theme,
+                                              ; project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -229,8 +236,8 @@ again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
 `relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
-`cursor-line`, `color-column`, `wrap` and `inlay-hints` (the others are
-the window's or the application's). Its own value goes before the one `set-option` gives
+`cursor-line`, `color-column`, `wrap`, `inlay-hints` and `indent-guides`
+(the others are the window's or the application's). Its own value goes before the one `set-option` gives
 every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:

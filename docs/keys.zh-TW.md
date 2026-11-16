@@ -59,6 +59,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 游標所在行會被標示出來，如同 vim 的 `cursorline`；`(set-option 'cursor-line false)` 讓它和其他行一樣。`(set-option 'color-column 80)` 會在畫面中標示第 80 欄，如同 vim 的 `colorcolumn`；給一個清單如 `'(80 120)` 會標示每一欄，設為 `nil` 則不標示，這也是預設值。
 
+`(set-option 'indent-guides true)` 會在每一層縮排畫一條細線（每層的寬度為檔案的 tab 寬度），如同 vim 的 indent-blankline；空白行沿用前後行的縮排，讓區塊的線條能連續穿過。游標所在區塊的那條線會畫得較深，貫穿整個區塊。也可以用 `set-buffer-option` 只對單一分頁設定。
+
 `(set-option 'inlay-hints true)` 會在行內顯示語言伺服器提供的提示，以較淡的顏色顯示在對應的位置：例如變數的型別、引數所對應的參數名稱。文字停止變動片刻後才會向伺服器取得提示，伺服器表示有新提示時也會重新取得；在那之前，提示會隨著編輯的文字移動。換列時不顯示。也可以用 `set-buffer-option` 只對單一分頁設定。
 
 `(set-option 'theme "Catppuccin Mocha")` 讓視窗使用該主題的顏色（包括文字與語法上色），不論系統外觀為何；`'("Catppuccin Latte" "Catppuccin Mocha")` 指定一個淺色與一個深色主題，依系統外觀切換；設為 `nil` 則回到 med 內建的淺色與深色主題。主題來自設定目錄下 `themes/` 中的檔案，採用 gpui-component 的主題格式，在啟動時讀取，檔案變更時也會重新讀取。`examples/themes/catppuccin.json` 包含 Catppuccin 的 Latte 與 Mocha，依其調色盤製作（<https://github.com/catppuccin/palette>，MIT 授權），`:install_default_config` 會把它寫到該處。
@@ -105,7 +107,8 @@ flash.nvim 的其他功能也使用同樣的標記：
                                               ; auto-pairs、format-on-save、tab-width、
                                               ; relative-number、scroll-off、cursor-line、
                                               ; color-column、wrap、inlay-hints、
-                                              ; undo-file、theme、project-env
+                                              ; indent-guides、undo-file、theme、
+                                              ; project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
@@ -122,7 +125,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 分頁的表所綁定的鍵會立即執行，即使模式的表中有以它開頭的較長綁定。`:workspace.reload_init` 會重新執行該檔案；檔案中的錯誤會連同行號顯示在狀態列。
 
-分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save`、`auto-pairs`、`scroll-off`、`cursor-line`、`color-column`、`wrap` 與 `inlay-hints`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
+分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save`、`auto-pairs`、`scroll-off`、`cursor-line`、`color-column`、`wrap`、`inlay-hints` 與 `indent-guides`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
 
 ```lisp
 (set-buffer-option 'tab-width 8)            ; 目前顯示的分頁自己的值
