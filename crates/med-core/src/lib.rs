@@ -2,4 +2,4 @@
 
 mod buffer;
 
-pub use buffer::{Buffer, Edit, LineEnding, Point};
+pub use buffer::{Buffer, Edit, History, HistoryChange, HistoryStep, LineEnding, Point};

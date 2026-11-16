@@ -59,6 +59,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 游標所在行會被標示出來，如同 vim 的 `cursorline`；`(set-option 'cursor-line false)` 讓它和其他行一樣。`(set-option 'color-column 80)` 會在畫面中標示第 80 欄，如同 vim 的 `colorcolumn`；給一個清單如 `'(80 120)` 會標示每一欄，設為 `nil` 則不標示，這也是預設值。
 
+`(set-option 'undo-file true)` 會在存檔時保留每個檔案的復原紀錄，如同 vim 的 `undofile`；之後再開啟該檔案（不論在這次或之後的執行中）都會接續這份紀錄：`u` 可以越過存檔點往回復原，最多到最近的 1000 個變更。紀錄存放在 med 的狀態目錄（`$MED_STATE_DIR`，否則為 `$XDG_STATE_HOME/med`，再否則為 `~/.local/state/med`）下的 `undo/`。檔案若在之後被其他程式修改過，開啟時就沒有紀錄。這個選項適用於所有分頁，在開啟與儲存檔案時讀取。
+
 檔案有語法樹時：
 
 | 按鍵 | 動作 |
@@ -96,7 +98,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 (set-option 'font-size 16)                    ; 另有 font-family、lsp、key-timeout、
                                               ; auto-pairs、format-on-save、tab-width、
                                               ; relative-number、scroll-off、cursor-line、
-                                              ; color-column、project-env
+                                              ; color-column、undo-file、project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。

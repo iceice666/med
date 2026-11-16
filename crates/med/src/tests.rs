@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column undo-file project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -995,6 +995,85 @@ fn the_cursor_line_and_color_column_options(cx: &mut TestAppContext) {
             "{bad}"
         );
     }
+}
+
+#[gpui::test]
+fn undo_goes_on_where_the_file_was_left(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n"), ("crlf.txt", "x\r\ny\r\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let undo = project.path(".state/undo");
+    cx.update(|_, cx| cx.global_mut::<crate::Settings>().undo_dir = Some(undo.clone()));
+    let kept = |name: &str| crate::undo_file::path_for(&undo, &project.path(name));
+    // Closed, whatever was not saved, and opened again.
+    let reopen = |name: &str, cx: &mut VisualTestContext| {
+        cx.simulate_input(":bd!");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input(&format!(":e {name}"));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+
+    // Off, as at first: nothing is kept.
+    cx.simulate_keystrokes("A space t w o escape : w enter");
+    assert!(!kept("a.txt").exists());
+    reopen("a.txt", cx);
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one two\n");
+
+    // On: two saves, and the file closed and opened again.
+    assert_eq!(lisp("(set-option 'undo-file true)", cx), "nil");
+    cx.simulate_keystrokes("A space t h r e e escape : w enter");
+    cx.simulate_keystrokes("A space f o u r escape : w enter");
+    assert!(kept("a.txt").exists());
+    reopen("a.txt", cx);
+    assert_eq!(text(&ws, cx), "one two three four\n");
+    assert!(!dirty(&ws, cx));
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one two three\n");
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one two\n");
+    // What came before the option was on is not there.
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one two\n");
+    cx.simulate_keystrokes("ctrl-r ctrl-r");
+    assert_eq!(text(&ws, cx), "one two three four\n");
+    assert!(!dirty(&ws, cx));
+
+    // Saved in the middle of an insert: that much of it is a step.
+    assert_eq!(lisp(r#"(bind 'app "cmd-s" "workspace.save")"#, cx), "nil");
+    cx.simulate_keystrokes("A space f i v e cmd-s space s i x escape");
+    let disk = fs::read_to_string(project.path("a.txt")).unwrap();
+    assert_eq!(disk, "one two three four five\n");
+    // What came after is not saved, and goes.
+    reopen("a.txt", cx);
+    assert_eq!(text(&ws, cx), "one two three four five\n");
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "one two three four\n");
+
+    // Changed elsewhere since: what was kept is of another text.
+    fs::write(project.path("a.txt"), "changed\n").unwrap();
+    reopen("a.txt", cx);
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "changed\n");
+
+    // Line endings as the file has them, the history as the buffer does.
+    reopen("crlf.txt", cx);
+    cx.simulate_keystrokes("A z escape : w enter");
+    assert_eq!(
+        fs::read_to_string(project.path("crlf.txt")).unwrap(),
+        "xz\r\ny\r\n"
+    );
+    reopen("crlf.txt", cx);
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "x\ny\n");
+
+    // Nonsense where a history should be: the file opens as any other.
+    fs::write(kept("crlf.txt"), "{ not json").unwrap();
+    reopen("crlf.txt", cx);
+    assert_eq!(text(&ws, cx), "xz\ny\n");
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "xz\ny\n");
+    assert!(!dirty(&ws, cx));
 }
 
 #[gpui::test]

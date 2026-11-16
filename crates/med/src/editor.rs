@@ -316,6 +316,16 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Where undo histories are kept, if they are to be: the `undo-file`
+/// option.
+fn undo_dir(cx: &App) -> Option<PathBuf> {
+    let settings = cx.try_global::<Settings>()?;
+    settings
+        .undo_file
+        .then(|| settings.undo_dir.clone())
+        .flatten()
+}
+
 /// A tab's own values of options, from `set-buffer-option`; `None` where
 /// it goes by the one of every tab. Auto-pairs is the vim engine's,
 /// [`Vim::auto_pairs`](med_vim::Vim::auto_pairs).
@@ -574,6 +584,9 @@ impl Editor {
                 }));
         }
         if let Some(path) = path {
+            if let Some(dir) = undo_dir(cx) {
+                crate::undo_file::read(&dir, &path, &mut this.buf);
+            }
             this.set_path(path, cx);
         }
         this
@@ -949,6 +962,9 @@ impl Editor {
             .with_context(|| format!("Cannot write {}", path.display()))?;
         self.buf.mark_saved();
         self.mtime = mtime(&path);
+        if let Some(dir) = undo_dir(cx) {
+            crate::undo_file::write(&dir, &path, &self.buf);
+        }
         if let Some(lsp) = &self.lsp {
             lsp.update(cx, |store, _| store.save(&path));
         }

@@ -24,7 +24,8 @@
 //!                                      ; auto-pairs, format-on-save,
 //!                                      ; tab-width, relative-number,
 //!                                      ; scroll-off, cursor-line,
-//!                                      ; color-column, project-env
+//!                                      ; color-column, undo-file,
+//!                                      ; project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -1117,6 +1118,8 @@ fn define_functions(interp: &mut Interp) {
             "scroll-off" => settings.scroll_off = scroll_off(value)?,
             "cursor-line" => settings.cursor_line = flag(value)?,
             "color-column" => settings.color_columns = columns(value)?,
+            // Read as files are opened and saved.
+            "undo-file" => settings.undo_file = flag(value)?,
             // Read when a window opens, as `lsp` is.
             "project-env" => settings.project_env = flag(value)?,
             // Close brackets and quotes as they are typed.
@@ -1127,7 +1130,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column undo-file project-env)"
                 )));
             }
         }

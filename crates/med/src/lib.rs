@@ -19,6 +19,7 @@ pub mod syntax;
 pub mod terminal;
 #[cfg(test)]
 mod tests;
+pub mod undo_file;
 pub mod user_panel;
 pub mod workspace;
 
@@ -56,6 +57,11 @@ pub struct Settings {
     /// Display columns to mark down the view, counted from 1, vim's
     /// `colorcolumn`: a line not to write past.
     pub color_columns: Vec<usize>,
+    /// Keep each file's undo history when it is saved, and take it up
+    /// when it is opened again: vim's `undofile`.
+    pub undo_file: bool,
+    /// Where those histories are kept. `None` to keep none.
+    pub undo_dir: Option<PathBuf>,
     /// Work out each project's environment (login shell, direnv) for its
     /// language servers and programs, rather than use med's own.
     pub project_env: bool,
@@ -207,10 +213,12 @@ pub fn init(cx: &mut App) {
         scroll_off: Settings::SCROLL_OFF,
         cursor_line: true,
         color_columns: Vec::new(),
+        undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
         // Turned on by `run` too: tests must not write to $HOME.
         session_dir: None,
+        undo_dir: None,
     });
     init_globals(cx);
     // With no window to ask about unsaved work, quitting just quits.
@@ -235,6 +243,7 @@ pub fn run() {
                 .then(state_dir)
                 .flatten()
                 .map(|dir| dir.join("sessions"));
+            settings.undo_dir = state_dir().map(|dir| dir.join("undo"));
             // Not in `init`: tests must not depend on what is in $HOME.
             script::load_init(cx);
             cx.activate(true);

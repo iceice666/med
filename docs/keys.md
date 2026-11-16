@@ -104,6 +104,14 @@ The cursor's line is marked, as vim's `cursorline`, and `(set-option
 80)` marks the 80th column down the view, as vim's `colorcolumn`; a list,
 `'(80 120)`, marks each, and `nil` none, as at first.
 
+`(set-option 'undo-file true)` keeps each file's undo history when it is
+saved, as vim's `undofile`, and opening the file again, in this run or
+another, takes it up: `u` goes back past the save, through the last 1000
+changes. It is kept in med's state directory (`$MED_STATE_DIR`, else
+`$XDG_STATE_HOME/med`, else `~/.local/state/med`), under `undo/`. A file
+changed since by something else starts with no history. The option is
+every tab's, read as files are opened and saved.
+
 Where a file has a syntax tree:
 
 | Key | Action |
@@ -161,7 +169,7 @@ run at startup, or from the command line with `:eval`:
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
-                                              ; color-column, project-env
+                                              ; color-column, undo-file, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table

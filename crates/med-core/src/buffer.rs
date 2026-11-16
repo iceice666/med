@@ -1,4 +1,5 @@
 use ropey::{Rope, RopeSlice};
+use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
 /// A (row, column) pair. What `col` counts depends on where the point came
@@ -43,16 +44,82 @@ pub struct Edit {
     pub new_text: String,
 }
 
+#[derive(Clone)]
 struct Change {
     at: usize,
     removed: String,
     inserted: String,
 }
 
+#[derive(Clone)]
 struct Transaction {
     id: u64,
     changes: Vec<Change>,
     cursor_before: usize,
+}
+
+/// A buffer's undo history as data, to keep beyond the buffer: what
+/// [`Buffer::history`] gives and [`Buffer::restore_history`] takes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    /// Oldest first; the last is what `u` undoes.
+    pub undo: Vec<HistoryStep>,
+    /// The last is what a redo does again.
+    pub redo: Vec<HistoryStep>,
+}
+
+/// One undoable step: its changes in the order they were made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryStep {
+    pub changes: Vec<HistoryChange>,
+    pub cursor_before: usize,
+}
+
+/// `inserted` in place of `removed`, at a char offset of the text as it
+/// was just before.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryChange {
+    pub at: usize,
+    pub removed: String,
+    pub inserted: String,
+}
+
+impl From<&Transaction> for HistoryStep {
+    fn from(tx: &Transaction) -> Self {
+        let changes = tx.changes.iter().map(|c| HistoryChange {
+            at: c.at,
+            removed: c.removed.clone(),
+            inserted: c.inserted.clone(),
+        });
+        Self {
+            changes: changes.collect(),
+            cursor_before: tx.cursor_before,
+        }
+    }
+}
+
+/// Make each change of `step` again on `rope`, or take each back, if it
+/// fits what is there; whether it did.
+fn replay(rope: &mut Rope, step: &HistoryStep, undo: bool) -> bool {
+    let apply = |rope: &mut Rope, change: &HistoryChange| {
+        let (gone, put) = if undo {
+            (&change.inserted, &change.removed)
+        } else {
+            (&change.removed, &change.inserted)
+        };
+        let end = change.at + gone.chars().count();
+        if end > rope.len_chars() || rope.slice(change.at..end) != gone.as_str() {
+            return false;
+        }
+        rope.remove(change.at..end);
+        rope.insert(change.at, put);
+        true
+    };
+    if undo {
+        step.changes.iter().rev().all(|c| apply(rope, c))
+    } else {
+        step.changes.iter().all(|c| apply(rope, c))
+    }
 }
 
 /// A text buffer with undo history.
@@ -431,6 +498,66 @@ impl Buffer {
         self.saved_tx = self.current_tx();
     }
 
+    /// The undo history, as data: at most the last `limit` steps to undo,
+    /// the step being made (an insert not yet left) the last of them, as
+    /// the text has it already.
+    pub fn history(&self, limit: usize) -> History {
+        let open = self.open.as_ref().filter(|tx| !tx.changes.is_empty());
+        let mut undo: Vec<HistoryStep> = self.undo.iter().chain(open).map(Into::into).collect();
+        undo.drain(..undo.len().saturating_sub(limit));
+        History {
+            undo,
+            redo: self.redo.iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Take up a history kept from before, of this very text, as though
+    /// it had been made here and then saved. Refused, and the buffer left
+    /// as it was, where the buffer has a history of its own already, or
+    /// where a step does not fit the text it would undo or redo.
+    pub fn restore_history(&mut self, history: History) -> bool {
+        if self.depth > 0 || !self.undo.is_empty() || !self.redo.is_empty() {
+            return false;
+        }
+        // Back to the start and on to the end again, on a copy.
+        let mut rope = self.rope.clone();
+        let fits = history
+            .undo
+            .iter()
+            .rev()
+            .all(|s| replay(&mut rope, s, true))
+            && history.undo.iter().all(|s| replay(&mut rope, s, false))
+            && history
+                .redo
+                .iter()
+                .rev()
+                .all(|s| replay(&mut rope, s, false))
+            && history.redo.iter().all(|s| replay(&mut rope, s, true));
+        if !fits || rope != self.rope {
+            return false;
+        }
+        let mut id = 0;
+        let mut transaction = |step: HistoryStep| {
+            id += 1;
+            Transaction {
+                id,
+                changes: (step.changes.into_iter())
+                    .map(|c| Change {
+                        at: c.at,
+                        removed: c.removed,
+                        inserted: c.inserted,
+                    })
+                    .collect(),
+                cursor_before: step.cursor_before,
+            }
+        };
+        self.undo = history.undo.into_iter().map(&mut transaction).collect();
+        self.redo = history.redo.into_iter().map(&mut transaction).collect();
+        self.next_tx_id = id + 1;
+        self.saved_tx = self.current_tx();
+        true
+    }
+
     /// Replace the whole text (e.g. reload from disk) as one undoable step,
     /// touching only the part that actually differs.
     pub fn set_text(&mut self, text: &str) {
@@ -454,6 +581,64 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_is_taken_up_again_by_the_same_text() {
+        let mut b = Buffer::new("one\n");
+        for (at, text) in [(3, " two"), (7, " three"), (0, "zero ")] {
+            b.begin(at);
+            b.insert(at, text);
+            b.end();
+        }
+        b.undo();
+        let history = b.history(100);
+        assert_eq!((history.undo.len(), history.redo.len()), (2, 1));
+
+        // The text as saved, with what came before it and after.
+        let mut again = Buffer::new(&b.text());
+        assert!(again.restore_history(history.clone()));
+        assert!(!again.is_dirty());
+        again.undo();
+        assert_eq!(again.text(), "one two\n");
+        assert!(again.is_dirty());
+        again.undo();
+        assert_eq!(again.text(), "one\n");
+        assert_eq!(again.undo(), None);
+        again.redo();
+        again.redo();
+        again.redo();
+        assert_eq!(again.text(), "zero one two three\n");
+
+        // Not another text, nor one with a history of its own.
+        let mut other = Buffer::new("one two thre\n");
+        assert!(!other.restore_history(history.clone()));
+        assert_eq!(other.undo(), None);
+        assert!(!again.restore_history(history));
+    }
+
+    #[test]
+    fn history_has_the_step_being_made_and_no_more_than_asked() {
+        let mut b = Buffer::new("\n");
+        for n in 0..5 {
+            b.begin(n);
+            b.insert(n, "x");
+            b.end();
+        }
+        // An insert not yet left: its text is there, so it is a step.
+        b.begin(5);
+        b.insert(5, "y");
+        let history = b.history(3);
+        assert_eq!(history.undo.len(), 3);
+        assert_eq!(history.undo[2].changes[0].inserted, "y");
+
+        let mut again = Buffer::new("xxxxxy\n");
+        assert!(again.restore_history(history));
+        for _ in 0..3 {
+            again.undo();
+        }
+        assert_eq!(again.text(), "xxx\n");
+        assert_eq!(again.undo(), None);
+    }
 
     #[test]
     fn always_ends_with_newline() {
