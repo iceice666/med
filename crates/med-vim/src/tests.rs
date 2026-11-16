@@ -344,6 +344,10 @@ fn search() {
     check("|foo x foo", "*", "foo x |foo");
     check("foo x |foo", "#", "|foo x foo");
     check("|foo foobar foo", "*", "foo foobar |foo");
+    // As vim's with 'ignorecase': whatever the case of the word.
+    check("|Foo x FOO", "*", "Foo x |FOO");
+    check("foo x |Foo", "#", "|foo x Foo");
+    check("|Foo x foo x FOO", "**", "Foo x foo x |FOO");
     check("|a b", "/zzz<cr>", "|a b");
     check("|x Foo foo", "/foo<cr>", "x |Foo foo");
     check("|x Foo foo", "/Foo<cr>n", "x |Foo foo");

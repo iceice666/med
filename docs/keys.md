@@ -27,7 +27,10 @@ and `c` on every line of it), counts, operators (`d c y > < gu gU g~ gc`),
 motions, text objects (`iw i" i( i{ ip` …), registers, marks (`ma`, `'a`,
 `` `a ``, `''`), macros (`qa` … `q`, `@a`, `@@`), `.`, `/ ? n N * #`, `:s`,
 `:w :q :wq :e :bn :bp :bd :wa :qa :mks :vs :sp :close :only`. The unnamed register is the system
-clipboard.
+clipboard. Searches go as vim's with `ignorecase` and `smartcase`: a
+pattern with no capital letter matches any case, one with a capital only
+its own, and `\c` / `\C` in it say which; `*` and `#` match the word in
+any case.
 
 | Key | Action |
 | --- | --- |

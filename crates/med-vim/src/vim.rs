@@ -1811,7 +1811,11 @@ impl Vim {
                 let (s, e) = motion::word_under_cursor(buf, cur)?;
                 let word = buf.slice_string(s..e);
                 let pattern = format!("\\b{}\\b", regex::escape(&word));
-                let regex = regex::RegexBuilder::new(&pattern).build().ok()?;
+                // Every case of the word, as `/` without a capital is.
+                let regex = regex::RegexBuilder::new(&pattern)
+                    .case_insensitive(true)
+                    .build()
+                    .ok()?;
                 let pos = find_match(buf, &regex, s, forward, n);
                 cx.shared.search = Some(Search {
                     pattern,

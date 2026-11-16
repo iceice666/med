@@ -14,7 +14,7 @@ med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒�
 (load "/path/to/med/examples/keys.mlisp")
 ```
 
-編輯方式就是 vim：模式（`v`、`V` 與 `ctrl-v` 的區塊模式，區塊中每一行都可用 `I`、`A` 和 `c`）、次數、運算子（`d c y > < gu gU g~ gc`）、移動、文字物件（`iw i" i( i{ ip` …）、暫存器、標記（`ma`、`'a`、`` `a ``、`''`）、巨集（`qa` … `q`、`@a`、`@@`）、`.`、`/ ? n N * #`、`:s`、`:w :q :wq :e :bn :bp :bd :wa :qa :mks :vs :sp :close :only`。無名暫存器就是系統剪貼簿。
+編輯方式就是 vim：模式（`v`、`V` 與 `ctrl-v` 的區塊模式，區塊中每一行都可用 `I`、`A` 和 `c`）、次數、運算子（`d c y > < gu gU g~ gc`）、移動、文字物件（`iw i" i( i{ ip` …）、暫存器、標記（`ma`、`'a`、`` `a ``、`''`）、巨集（`qa` … `q`、`@a`、`@@`）、`.`、`/ ? n N * #`、`:s`、`:w :q :wq :e :bn :bp :bd :wa :qa :mks :vs :sp :close :only`。無名暫存器就是系統剪貼簿。搜尋如同 vim 開了 `ignorecase` 與 `smartcase`：pattern 中沒有大寫字母時不分大小寫，有大寫字母時只比對原本的大小寫，也可以在 pattern 中用 `\c` / `\C` 指定；`*` 和 `#` 則不分大小寫地比對游標下的字。
 
 | 按鍵 | 動作 |
 | --- | --- |
