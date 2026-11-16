@@ -80,6 +80,12 @@ Brackets and quotes close as they are typed, the closing one is stepped
 over, and backspace between the two takes both; `(set-option 'auto-pairs
 false)` turns that off.
 
+`Tab`, `>>` and a new line indent by what the file's language says (2 for
+med-lisp, Markdown, TOML, Nix, JavaScript and the like, 4 for Rust or
+Python), or by what the file is indented with already. `(set-option
+'tab-width 4)` makes it 4 columns in every file; `nil` goes back. Files
+indented with tabs keep them, that many columns wide.
+
 Where a file has a syntax tree:
 
 | Key | Action |
@@ -135,7 +141,8 @@ run at startup, or from the command line with `:eval`:
 (bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
-                                              ; auto-pairs, format-on-save, project-env
+                                              ; auto-pairs, format-on-save, tab-width,
+                                              ; project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table

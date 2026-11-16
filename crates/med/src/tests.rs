@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -720,6 +720,40 @@ fn tab_reaches_the_editor_in_a_real_window(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.simulate_keystrokes("j o tab x escape");
     assert_eq!(text(&ws, cx), "fn main() {\n}\n    x\n");
+}
+
+#[gpui::test]
+fn the_tab_width_option_is_every_files(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.mlisp", "(a\n  b)\n")]);
+    let (ws, cx) = open(&project, &["a.mlisp"], cx);
+
+    // By the language, and the file's own indentation: 2.
+    cx.simulate_keystrokes("o tab x escape");
+    assert_eq!(text(&ws, cx), "(a\n  x\n  b)\n");
+
+    // The option, in a file already open: `Tab` and `>>` both.
+    assert_eq!(lisp("(set-option 'tab-width 4)", cx), "nil");
+    cx.simulate_keystrokes("u o tab x escape");
+    assert_eq!(text(&ws, cx), "(a\n    x\n  b)\n");
+    cx.simulate_keystrokes("u g g > >");
+    assert_eq!(text(&ws, cx), "    (a\n  b)\n");
+
+    // nil goes back to the file's own.
+    assert_eq!(lisp("(set-option 'tab-width nil)", cx), "nil");
+    cx.simulate_keystrokes("u > >");
+    assert_eq!(text(&ws, cx), "  (a\n  b)\n");
+
+    for bad in ["0", "17", "\"4\""] {
+        let source = format!("(set-option 'tab-width {bad})");
+        assert!(
+            cx.update(|_, cx| crate::script::eval(&source, cx)).is_err(),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        cx.update(|_, cx| cx.global::<crate::Settings>().tab_width),
+        None
+    );
 }
 
 #[gpui::test]

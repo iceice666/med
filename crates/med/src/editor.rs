@@ -222,6 +222,9 @@ pub struct Editor {
     pub path: Option<PathBuf>,
     pub lang: Option<&'static LangInfo>,
     vim_lang: med_vim::Lang,
+    /// The tab width the file's language and indentation give; the
+    /// `tab-width` option, where set, is the one `vim_lang` has.
+    file_tab_width: usize,
     syntax: Option<Syntax>,
     lsp: Option<Entity<LspStore>>,
     lsp_version: i32,
@@ -309,6 +312,13 @@ impl Clipboard for AppClipboard<'_> {
 
 fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// The `tab-width` option where it is set, else the file's own.
+fn tab_width(file: usize, cx: &App) -> usize {
+    cx.try_global::<Settings>()
+        .and_then(|s| s.tab_width)
+        .unwrap_or(file)
 }
 
 /// Guess (expand_tab, width) from how the file is already indented.
@@ -479,6 +489,7 @@ impl Editor {
             path: None,
             lang: None,
             vim_lang: med_vim::Lang::default(),
+            file_tab_width: med_vim::Lang::default().tab_width,
             syntax: None,
             lsp,
             lsp_version: 0,
@@ -544,11 +555,12 @@ impl Editor {
         self.syntax = self.lang.and_then(|lang| Syntax::new(lang, &self.buf));
         let text = self.buf.text();
         let detected = detect_indent(&text);
+        self.file_tab_width = detected
+            .map(|d| d.1)
+            .or(self.lang.map(|l| l.tab_width))
+            .unwrap_or(4);
         self.vim_lang = med_vim::Lang {
-            tab_width: detected
-                .map(|d| d.1)
-                .or(self.lang.map(|l| l.tab_width))
-                .unwrap_or(4),
+            tab_width: tab_width(self.file_tab_width, cx),
             expand_tab: detected
                 .map(|d| d.0)
                 .or(self.lang.map(|l| l.expand_tab))
@@ -942,6 +954,7 @@ impl Editor {
             top: self.scroll_top.max(0.) as usize,
             height: self.visible_lines.max(1),
         };
+        self.vim_lang.tab_width = tab_width(self.file_tab_width, cx);
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
         let syntax = &mut self.syntax;
         cx.update_global::<VimGlobal, R>(|global, cx| {
@@ -1431,9 +1444,9 @@ impl Editor {
         cx: &App,
     ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::TextEdit>>>> + use<>> {
         let (lsp, path) = (self.lsp.as_ref()?, self.path.as_ref()?);
-        let lang = &self.vim_lang;
+        let width = tab_width(self.file_tab_width, cx);
         lsp.read(cx)
-            .formatting(path, lang.tab_width as u32, lang.expand_tab)
+            .formatting(path, width as u32, self.vim_lang.expand_tab)
     }
 
     /// Have the language server format the file.
@@ -2720,6 +2733,8 @@ impl Frame {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // `set-option` refreshes the windows: a new tab width shows at once.
+        self.vim_lang.tab_width = tab_width(self.file_tab_width, cx);
         let mut key_context = KeyContext::default();
         key_context.add("Editor");
         key_context.set(

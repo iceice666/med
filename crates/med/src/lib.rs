@@ -41,6 +41,9 @@ pub struct Settings {
     pub key_timeout: Option<Duration>,
     /// Have the language server format a file before it is written.
     pub format_on_save: bool,
+    /// Columns to an indent and a tab stop, over what each file's language
+    /// and its own indentation say; `None` to go by those.
+    pub tab_width: Option<usize>,
     /// Work out each project's environment (login shell, direnv) for its
     /// language servers and programs, rather than use med's own.
     pub project_env: bool,
@@ -165,6 +168,7 @@ pub fn init(cx: &mut App) {
         lsp: std::env::var_os("MED_NO_LSP").is_none(),
         key_timeout: Some(Settings::KEY_TIMEOUT),
         format_on_save: false,
+        tab_width: None,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
     });

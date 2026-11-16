@@ -16,7 +16,7 @@
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save,
-//!                                      ; project-env
+//!                                      ; tab-width, project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -1038,6 +1038,17 @@ fn define_functions(interp: &mut Interp) {
                 };
             }
             "format-on-save" => settings.format_on_save = flag(value)?,
+            // Columns to an indent, whatever the file; nil to go by its
+            // language and how it is indented already.
+            "tab-width" => {
+                settings.tab_width = match value {
+                    Value::Nil => None,
+                    width => match width.as_int()? {
+                        n @ 1..=16 => Some(n as usize),
+                        _ => return Err(failed(format!("{value} is no width for a tab"))),
+                    },
+                };
+            }
             // Read when a window opens, as `lsp` is.
             "project-env" => settings.project_env = flag(value)?,
             // Close brackets and quotes as they are typed.
@@ -1048,7 +1059,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width project-env)"
                 )));
             }
         }

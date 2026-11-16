@@ -51,6 +51,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 括號與引號在輸入時會自動補上另一半，輸入閉合的那一半時會直接跳過，在兩者之間按 backspace 會一起刪除；`(set-option 'auto-pairs false)` 可關閉此功能。
 
+`Tab`、`>>` 與新行的縮排寬度依檔案的語言而定（med-lisp、Markdown、TOML、Nix、JavaScript 等為 2，Rust、Python 為 4），或依檔案既有的縮排而定。`(set-option 'tab-width 4)` 讓每個檔案都縮排 4 欄；設為 `nil` 則恢復原樣。以 tab 縮排的檔案仍使用 tab，顯示為該寬度。
+
 檔案有語法樹時：
 
 | 按鍵 | 動作 |
@@ -86,7 +88,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 (bind 'app "cmd-shift-t" "tree.toggle")       ; 視窗的快捷鍵
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; 另有 font-family、lsp、key-timeout、
-                                              ; auto-pairs、format-on-save、project-env
+                                              ; auto-pairs、format-on-save、tab-width、
+                                              ; project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
