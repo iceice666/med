@@ -26,7 +26,14 @@ git_release_enable = true
 git_release_name = "v{{ version }}"
 changelog_update = true
 changelog_path = "CHANGELOG.md"
-changelog_include = ["med-core", "med-vim", "med-lsp", "med-git", "med-lisp"]
+changelog_include = ["med-core", "med-vim", "med-lsp", "med-git", "med-lisp", "med-term"]
+
+# med-term is newer than v0.1.1, so with the shared `v*` tag release-plz looks
+# for it in v0.1.1's tree and fails. A tag name no tag has makes it a first
+# release instead. Drop this once a `v*` tag that has med-term exists.
+[[package]]
+name = "med-term"
+git_tag_name = "med-term-v{{ version }}"
 
 [changelog]
 tag_pattern = "v[0-9].*"
