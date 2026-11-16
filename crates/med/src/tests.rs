@@ -1116,6 +1116,15 @@ fn wrapped_lines_scroll_and_click_by_rows(cx: &mut TestAppContext) {
     }
     editor.update(cx, |e, cx| e.replace_text(&text, cx));
 
+    // `gj` and `gk` by rows of the view; `j` by lines.
+    cx.simulate_keystrokes("g g 0 l g j");
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), cells + 1);
+    cx.simulate_keystrokes("g k");
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), 1);
+    cx.simulate_keystrokes("j");
+    let second = editor.read_with(cx, |e, _| e.buf.line_start(1) + 1);
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), second);
+
     // The end of the tall line is on screen, its start not.
     cx.simulate_keystrokes("g g $");
     let (_, top, rows) = view(cx);

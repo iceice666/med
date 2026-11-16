@@ -301,3 +301,41 @@ pub fn word_under_cursor(buf: &Buffer, cur: usize) -> Option<(usize, usize)> {
     }
     Some((start, end))
 }
+
+// ---- rows of wrapped lines ------------------------------------------------
+
+/// Cells a char takes at display column `col`: a tab to the next stop,
+/// CJK and other wide glyphs about two, the rest one.
+pub fn cell_width(c: char, col: usize, tab_width: usize) -> usize {
+    match c {
+        '\t' => tab_width - col % tab_width,
+        c if (c as u32) >= 0x1100 => 2,
+        _ => 1,
+    }
+}
+
+/// Where a line's screen rows start, as char columns: `[0]` for a line
+/// on one row. With `cells` to a row, a char that does not fit where it
+/// is goes to the next row whole, and a line that fills its last row has
+/// one more, empty, for the place after its end.
+pub fn wrap_breaks(text: &str, tab_width: usize, cells: usize) -> Vec<usize> {
+    let tab_width = tab_width.max(1);
+    let cells = cells.max(1);
+    let mut breaks = vec![0];
+    let (mut col, mut used) = (0, 0);
+    let mut chars = 0;
+    for (i, c) in text.chars().enumerate() {
+        let width = cell_width(c, col, tab_width);
+        if used > 0 && used + width > cells {
+            breaks.push(i);
+            used = 0;
+        }
+        col += width;
+        used += width;
+        chars = i + 1;
+    }
+    if used >= cells {
+        breaks.push(chars);
+    }
+    breaks
+}

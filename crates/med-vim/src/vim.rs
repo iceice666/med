@@ -105,6 +105,9 @@ pub struct Lang {
     pub line_comment: Option<String>,
     /// What is closed as it is opened, while [`Shared::auto_pairs`] is on.
     pub pairs: Vec<(char, char)>,
+    /// Cells to a row of the screen where lines wrap there, for `gj` and
+    /// `gk`; `None` where every line is a row.
+    pub wrap: Option<usize>,
 }
 
 /// The brackets and quotes most languages close.
@@ -124,6 +127,7 @@ impl Default for Lang {
             expand_tab: true,
             line_comment: None,
             pairs: PAIRS.to_vec(),
+            wrap: None,
         }
     }
 }
@@ -365,6 +369,9 @@ pub(crate) enum Motion {
     Right,
     Up,
     Down,
+    /// `gj` / `gk`: a row of the screen, where lines wrap.
+    RowDown,
+    RowUp,
     WordFwd(bool),
     WordBack(bool),
     WordEnd(bool),
@@ -601,6 +608,9 @@ pub struct Vim {
     /// The other end of the visual selection.
     pub anchor: usize,
     goal_col: Option<usize>,
+    /// The cell of its row `gj` and `gk` keep to, and the line and row
+    /// the cursor was left on with it: it holds while it is still there.
+    row_goal: Option<(usize, (usize, usize))>,
     pending: Pending,
     cmdline: Option<CmdLine>,
     /// Keys of the command in progress, for `.`.
@@ -676,6 +686,7 @@ impl Vim {
             cursor: 0,
             anchor: 0,
             goal_col: None,
+            row_goal: None,
             pending: Pending::default(),
             cmdline: None,
             keys: Vec::new(),
@@ -1702,6 +1713,81 @@ impl Vim {
                     pos,
                     inclusive: false,
                     linewise: true,
+                    keep_goal: true,
+                    scroll: None,
+                })
+            }
+            Motion::RowDown | Motion::RowUp => {
+                let down = motion == Motion::RowDown;
+                let Some(cells) = cx.lang.wrap else {
+                    // Every line a row: `j` and `k`.
+                    let lines = if down { Motion::Down } else { Motion::Up };
+                    return self.compute_motion(lines, count, op_pending, cx);
+                };
+                let tab = cx.lang.tab_width.max(1);
+                let breaks = |line: usize| motion::wrap_breaks(&buf.line_string(line), tab, cells);
+                // Cells from the start of a line to a column of it.
+                let cells_to = |line: usize, col: usize| {
+                    let start = buf.line_start(line);
+                    buf.slice(start..start + col)
+                        .chars()
+                        .fold(0, |at, c| at + motion::cell_width(c, at, tab))
+                };
+                let row_of = |line: usize, col: usize| {
+                    breaks(line)
+                        .partition_point(|&b| b <= col)
+                        .saturating_sub(1)
+                };
+                let col = cur - ls;
+                let row = row_of(line, col);
+                let goal = match self.row_goal {
+                    Some((goal, at)) if at == (line, row) => goal,
+                    _ => cells_to(line, col) - cells_to(line, breaks(line)[row]),
+                };
+                // `n` rows on, or back, as far as there are.
+                let (mut to_line, mut to_row) = (line, row);
+                for _ in 0..n {
+                    if down {
+                        if to_row + 1 < breaks(to_line).len() {
+                            to_row += 1;
+                        } else if to_line < last {
+                            (to_line, to_row) = (to_line + 1, 0);
+                        } else {
+                            break;
+                        }
+                    } else if to_row > 0 {
+                        to_row -= 1;
+                    } else if to_line > 0 {
+                        to_line -= 1;
+                        to_row = breaks(to_line).len() - 1;
+                    } else {
+                        break;
+                    }
+                }
+                if (to_line, to_row) == (line, row) {
+                    return None;
+                }
+                // The char at that cell of the row, or its last.
+                let row_breaks = breaks(to_line);
+                let start = row_breaks[to_row];
+                // A row's last char; the line's end only after an operator.
+                let end = match row_breaks.get(to_row + 1) {
+                    Some(next) => next - 1,
+                    None if op_pending => buf.line_len(to_line),
+                    None => buf.line_len(to_line).saturating_sub(1).max(start),
+                };
+                let base = cells_to(to_line, start);
+                let mut at = start;
+                while at < end && cells_to(to_line, at + 1) - base <= goal {
+                    at += 1;
+                }
+                let pos = buf.line_start(to_line) + at;
+                self.goal_col = None;
+                self.row_goal = Some((goal, (to_line, to_row)));
+                Some(MotionOut {
+                    pos,
+                    inclusive: false,
+                    linewise: false,
                     keep_goal: true,
                     scroll: None,
                 })

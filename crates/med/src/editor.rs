@@ -12,7 +12,10 @@ use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
 use med_core::Buffer;
-use med_vim::{Clipboard, Ctx, Effect, FlashMatch, Key, Mode, PendingKeys, Scroll, Viewport, Vim};
+pub(crate) use med_vim::wrap_breaks;
+use med_vim::{
+    Clipboard, Ctx, Effect, FlashMatch, Key, Mode, PendingKeys, Scroll, Viewport, Vim, cell_width,
+};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -396,42 +399,6 @@ fn detect_indent(text: &str) -> Option<(bool, usize)> {
     min_spaces.map(|n| (true, n.min(8)))
 }
 
-/// Cells a char takes at display column `col`: a tab to the next stop,
-/// CJK and other wide glyphs about two, the rest one.
-fn cell_width(c: char, col: usize, tab_width: usize) -> usize {
-    match c {
-        '\t' => tab_width - col % tab_width,
-        c if (c as u32) >= 0x1100 => 2,
-        _ => 1,
-    }
-}
-
-/// Where a line's screen rows start, as char columns: `[0]` for a line
-/// on one row. With `cells` to a row, a char that does not fit where it
-/// is goes to the next row whole, and a line that fills its last row has
-/// one more, empty, for the place after its end.
-pub(crate) fn wrap_breaks(text: &str, tab_width: usize, cells: usize) -> Vec<usize> {
-    let tab_width = tab_width.max(1);
-    let cells = cells.max(1);
-    let mut breaks = vec![0];
-    let (mut col, mut used) = (0, 0);
-    let mut chars = 0;
-    for (i, c) in text.chars().enumerate() {
-        let width = cell_width(c, col, tab_width);
-        if used > 0 && used + width > cells {
-            breaks.push(i);
-            used = 0;
-        }
-        col += width;
-        used += width;
-        chars = i + 1;
-    }
-    if used >= cells {
-        breaks.push(chars);
-    }
-    breaks
-}
-
 /// Where a line's things go on screen: each of its rows starts at an x of
 /// the line laid out on one row, and is drawn `line_height` below the
 /// last. Unwrapped, one row starts where the view is scrolled to.
@@ -725,6 +692,7 @@ impl Editor {
                 .unwrap_or(true),
             line_comment: self.lang.and_then(|l| l.line_comment).map(str::to_string),
             pairs: pairs_for(&path),
+            wrap: self.wrap_cells,
         };
         self.mtime = mtime(&path);
         self.diagnostics.clear();
@@ -1218,6 +1186,7 @@ impl Editor {
     ) -> R {
         let viewport = self.viewport(cx);
         self.vim_lang.tab_width = self.tab_width(cx);
+        self.vim_lang.wrap = self.wrap_cells;
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
         let syntax = &mut self.syntax;
         cx.update_global::<VimGlobal, R>(|global, cx| {
@@ -3298,6 +3267,7 @@ impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // `set-option` refreshes the windows: a new tab width shows at once.
         self.vim_lang.tab_width = self.tab_width(cx);
+        self.vim_lang.wrap = self.wrap_cells;
         let mut key_context = KeyContext::default();
         key_context.add("Editor");
         key_context.set(

@@ -189,6 +189,8 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ("motion.right", motion(Motion::Right)),
     ("motion.up", motion(Motion::Up)),
     ("motion.down", motion(Motion::Down)),
+    ("motion.row_up", motion(Motion::RowUp)),
+    ("motion.row_down", motion(Motion::RowDown)),
     ("motion.word_forward", motion(Motion::WordFwd(false))),
     ("motion.big_word_forward", motion(Motion::WordFwd(true))),
     ("motion.word_backward", motion(Motion::WordBack(false))),

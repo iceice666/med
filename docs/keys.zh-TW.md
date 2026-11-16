@@ -61,7 +61,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 `(set-option 'undo-file true)` 會在存檔時保留每個檔案的復原紀錄，如同 vim 的 `undofile`；之後再開啟該檔案（不論在這次或之後的執行中）都會接續這份紀錄：`u` 可以越過存檔點往回復原，最多到最近的 1000 個變更。紀錄存放在 med 的狀態目錄（`$MED_STATE_DIR`，否則為 `$XDG_STATE_HOME/med`，再否則為 `~/.local/state/med`）下的 `undo/`。檔案若在之後被其他程式修改過，開啟時就沒有紀錄。這個選項適用於所有分頁，在開啟與儲存檔案時讀取。
 
-`(set-option 'wrap true)` 讓比畫面寬的行接續到下一列顯示，而不是超出右邊緣，如同 vim 的 `wrap`：可以在任何字元處換列，寬字元或 tab 則整個移到下一列。只有第一列會顯示行號。畫面以列為單位捲動，`scroll-off` 也以列計算，點擊任何一列都會落在該處的字元上。`j` 和 `k` 仍然一次移動一行。行尾之後的文字（診斷訊息或程式加上的文字）會在右邊緣被截斷，`color-column` 則標示畫面上的欄位，每一列都會標示。搭配 `set-buffer-option` 與 `buffer-language` 可以只對部分檔案開啟：在語言為 `"markdown"` 時使用 `(set-buffer-option 'wrap true)`。
+`(set-option 'wrap true)` 讓比畫面寬的行接續到下一列顯示，而不是超出右邊緣，如同 vim 的 `wrap`：可以在任何字元處換列，寬字元或 tab 則整個移到下一列。只有第一列會顯示行號。畫面以列為單位捲動，`scroll-off` 也以列計算，點擊任何一列都會落在該處的字元上。`j` 和 `k` 仍然一次移動一行，`gj` 和 `gk`（`motion.row_down`、`motion.row_up`）則一次移動一列，並停在列中相同的格位；沒有換列時它們就等於 `j` 和 `k`。行尾之後的文字（診斷訊息或程式加上的文字）會在右邊緣被截斷，`color-column` 則標示畫面上的欄位，每一列都會標示。搭配 `set-buffer-option` 與 `buffer-language` 可以只對部分檔案開啟：在語言為 `"markdown"` 時使用 `(set-buffer-option 'wrap true)`。
 
 檔案有語法樹時：
 

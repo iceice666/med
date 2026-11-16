@@ -341,6 +341,36 @@ fn comments() {
 }
 
 #[test]
+fn gj_and_gk_go_by_rows_of_the_screen() {
+    // Rows of 4 cells: `abcd` `efgh` `ij`, then `xy`, then `lmnopq` as
+    // `lmno` `pq`.
+    let wrapped = |text: &str, keys: &str| {
+        let mut h = Harness::new(text);
+        h.lang.wrap = Some(4);
+        h.keys(keys);
+        h.state()
+    };
+    let text = "a|bcdefghij\nxy\nlmnopq";
+    assert_eq!(wrapped(text, "gj"), "abcde|fghij\nxy\nlmnopq");
+    assert_eq!(wrapped(text, "gjgj"), "abcdefghi|j\nxy\nlmnopq");
+    assert_eq!(wrapped(text, "2gj"), "abcdefghi|j\nxy\nlmnopq");
+    // On to the next line, and back up the rows of this one.
+    assert_eq!(wrapped(text, "3gj"), "abcdefghij\nx|y\nlmnopq");
+    assert_eq!(wrapped(text, "3gjgk"), "abcdefghi|j\nxy\nlmnopq");
+    // The cell kept through a row too short for it.
+    let text = "ab|cdefghij\nxy\nlmnopq";
+    assert_eq!(wrapped(text, "4gj"), "abcdefghij\nxy\nlm|nopq");
+    assert_eq!(wrapped(text, "gjgjgjgj"), "abcdefghij\nxy\nlm|nopq");
+    // At the edges, nowhere to go.
+    assert_eq!(wrapped(text, "gk"), "ab|cdefghij\nxy\nlmnopq");
+    // After an operator: from the cursor to that place, not lines.
+    assert_eq!(wrapped("a|bcdefghij\nxy", "dgj"), "a|fghij\nxy");
+    // Where nothing wraps, `j` and `k`, lines and all.
+    check("a|bc\nde\nfg", "gj", "abc\nd|e\nfg");
+    check("a|bc\nde\nfg", "dgj", "|fg");
+}
+
+#[test]
 fn screen_motions_keep_the_scroll_margin() {
     let text: String = (0..30).map(|n| format!("{n}\n")).collect();
     let line = |h: &Harness| h.buf.line_of(h.vim.cursor);

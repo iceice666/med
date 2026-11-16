@@ -109,7 +109,9 @@ the next row of it, rather than off its right edge, as vim's `wrap`: at
 any character, a wide one or a tab going on whole. Only the first row
 has the line's number. The view scrolls by rows, `scroll-off` counts
 them, and a click goes to the char under it on whatever row. `j` and `k`
-still go a line at a time. What is said after a line's end, a
+still go a line at a time, and `gj` and `gk` (`motion.row_down`,
+`motion.row_up`) a row, keeping to the same cell of it; where nothing
+wraps they are `j` and `k`. What is said after a line's end, a
 diagnostic or a program's text, is cut off at the right edge, and
 `color-column` marks a column of the view, on every row. With
 `set-buffer-option` and `buffer-language` it can be for some files only:
