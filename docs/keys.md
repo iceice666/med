@@ -104,6 +104,17 @@ The cursor's line is marked, as vim's `cursorline`, and `(set-option
 80)` marks the 80th column down the view, as vim's `colorcolumn`; a list,
 `'(80 120)`, marks each, and `nil` none, as at first.
 
+`(set-option 'wrap true)` goes on with a line longer than the view on
+the next row of it, rather than off its right edge, as vim's `wrap`: at
+any character, a wide one or a tab going on whole. Only the first row
+has the line's number. The view scrolls by rows, `scroll-off` counts
+them, and a click goes to the char under it on whatever row. `j` and `k`
+still go a line at a time. What is said after a line's end, a
+diagnostic or a program's text, is cut off at the right edge, and
+`color-column` marks a column of the view, on every row. With
+`set-buffer-option` and `buffer-language` it can be for some files only:
+`(set-buffer-option 'wrap true)` where the language is `"markdown"`.
+
 `(set-option 'undo-file true)` keeps each file's undo history when it is
 saved, as vim's `undofile`, and opening the file again, in this run or
 another, takes it up: `u` goes back past the save, through the last 1000
@@ -169,7 +180,8 @@ run at startup, or from the command line with `:eval`:
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
-                                              ; color-column, undo-file, project-env
+                                              ; color-column, wrap, undo-file,
+                                              ; project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -196,8 +208,8 @@ again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
 `relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
-`cursor-line` and `color-column` (the others are the window's or the
-application's). Its own value goes before the one `set-option` gives
+`cursor-line`, `color-column` and `wrap` (the others are the window's or
+the application's). Its own value goes before the one `set-option` gives
 every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:

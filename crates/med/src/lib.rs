@@ -57,6 +57,9 @@ pub struct Settings {
     /// Display columns to mark down the view, counted from 1, vim's
     /// `colorcolumn`: a line not to write past.
     pub color_columns: Vec<usize>,
+    /// Lines longer than the view go on to the next row of it, at any
+    /// character, rather than off its right edge: vim's `wrap`.
+    pub wrap: bool,
     /// Keep each file's undo history when it is saved, and take it up
     /// when it is opened again: vim's `undofile`.
     pub undo_file: bool,
@@ -213,6 +216,7 @@ pub fn init(cx: &mut App) {
         scroll_off: Settings::SCROLL_OFF,
         cursor_line: true,
         color_columns: Vec::new(),
+        wrap: false,
         undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,

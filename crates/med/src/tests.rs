@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column undo-file project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -936,6 +936,23 @@ fn the_view_keeps_lines_about_the_cursor(cx: &mut TestAppContext) {
 }
 
 #[test]
+fn lines_wrap_where_a_char_no_longer_fits() {
+    use crate::editor::wrap_breaks;
+    assert_eq!(wrap_breaks("", 4, 5), [0]);
+    assert_eq!(wrap_breaks("abcd", 4, 5), [0]);
+    // A row filled: the place after the end is on one more.
+    assert_eq!(wrap_breaks("abcde", 4, 5), [0, 5]);
+    assert_eq!(wrap_breaks("abcdef", 4, 5), [0, 5]);
+    assert_eq!(wrap_breaks("abcdefghijk", 4, 5), [0, 5, 10]);
+    // A tab to its stop, from the start of the line: 4 cells, then `a`.
+    assert_eq!(wrap_breaks("\tab", 4, 5), [0, 2]);
+    // A wide char that does not fit goes on whole; one wider than a row
+    // has a row of its own.
+    assert_eq!(wrap_breaks("ab中", 4, 3), [0, 2]);
+    assert_eq!(wrap_breaks("中", 4, 1), [0, 1]);
+}
+
+#[test]
 fn color_columns_are_a_cell_wide_down_the_text() {
     use crate::editor::column_bands;
     use gpui::{Bounds, point, size};
@@ -1074,6 +1091,90 @@ fn undo_goes_on_where_the_file_was_left(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("u");
     assert_eq!(text(&ws, cx), "xz\ny\n");
     assert!(!dirty(&ws, cx));
+}
+
+#[gpui::test]
+fn wrapped_lines_scroll_and_click_by_rows(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let view = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.wrapped_view());
+    assert_eq!(lisp("(set-option 'wrap true)", cx), "nil");
+    cx.simulate_keystrokes("l h");
+    let (Some(cells), _, _) = view(cx) else {
+        panic!("not wrapped");
+    };
+    let (_, visible) = editor.read_with(cx, |e, _| e.view());
+    assert!(cells > 10 && visible > 10, "{cells} cells, {visible} rows");
+
+    // A line taller than the view, then 40 lines of 3 rows each.
+    let tall: String = "t".repeat(cells * (visible + 5));
+    let mut text = format!("{tall}\n");
+    for n in 0..40 {
+        let c = (b'a' + n % 26) as char;
+        text += &format!("{}\n", c.to_string().repeat(cells * 5 / 2));
+    }
+    editor.update(cx, |e, cx| e.replace_text(&text, cx));
+
+    // The end of the tall line is on screen, its start not.
+    cx.simulate_keystrokes("g g $");
+    let (_, top, rows) = view(cx);
+    assert!(top.0 == 0 && top.1 > 0, "{top:?}");
+    assert!(rows.is_some(), "the cursor is off screen");
+
+    // Down the 3-row lines, 2 rows kept below the cursor all the way.
+    assert_eq!(lisp("(set-option 'scroll-off 2)", cx), "nil");
+    for _ in 0..20 {
+        cx.simulate_keystrokes("j");
+        let (_, _, rows) = view(cx);
+        let rows = rows.expect("the cursor is off screen");
+        assert!(rows + 2 < visible, "{rows} rows down of {visible}");
+    }
+
+    // `ctrl-e` goes a row down, and stays there: the cursor goes with it.
+    cx.simulate_keystrokes("g g");
+    let (_, top, _) = view(cx);
+    assert_eq!(top, (0, 0));
+    cx.simulate_keystrokes("ctrl-e ctrl-e");
+    let (_, top, rows) = view(cx);
+    assert_eq!(top, (0, 2));
+    assert!(rows.is_some_and(|rows| rows >= 2), "{rows:?}");
+
+    // `H` and `L` stop short of the edges by the margin, and do not move
+    // the view; flash and paging see every line wholly on screen.
+    cx.simulate_keystrokes("2 0 G");
+    let (_, top, _) = view(cx);
+    assert!(top.1 > 0, "a line cut at the top: {top:?}");
+    let viewport = editor.read_with(cx, |e, cx| e.viewport(cx));
+    assert_eq!((viewport.top, viewport.scroll_off), (top.0 + 1, 2));
+    cx.simulate_keystrokes("shift-h");
+    let (_, after, rows) = view(cx);
+    assert_eq!(after, top);
+    assert!(rows.is_some_and(|rows| rows >= 2), "{rows:?}");
+    cx.simulate_keystrokes("shift-l");
+    let (_, after, rows) = view(cx);
+    assert_eq!(after, top);
+    assert!(rows.is_some_and(|rows| rows + 2 < visible), "{rows:?}");
+
+    // A click on a line's second row is the char painted there.
+    cx.simulate_keystrokes("G");
+    let target = editor.read_with(cx, |e, _| e.buf.line_start(39) + cells + 3);
+    let cell = editor
+        .read_with(cx, |e, _| e.cell_origin(target))
+        .expect("on screen");
+    cx.simulate_click(point(cell.x + px(2.), cell.y + px(4.)), Modifiers::none());
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), target);
+
+    // A tab of its own: this one does not wrap, another does.
+    eval_in(&ws, "(set-buffer-option 'wrap false)", cx);
+    cx.simulate_keystrokes("l h");
+    assert_eq!(view(cx).0, None);
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    cx.simulate_keystrokes("l h");
+    let other = ws.read_with(cx, |ws, cx| {
+        ws.active_editor().unwrap().read(cx).wrapped_view()
+    });
+    assert_eq!(other.0, Some(cells));
 }
 
 #[gpui::test]

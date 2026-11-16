@@ -61,6 +61,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 `(set-option 'undo-file true)` 會在存檔時保留每個檔案的復原紀錄，如同 vim 的 `undofile`；之後再開啟該檔案（不論在這次或之後的執行中）都會接續這份紀錄：`u` 可以越過存檔點往回復原，最多到最近的 1000 個變更。紀錄存放在 med 的狀態目錄（`$MED_STATE_DIR`，否則為 `$XDG_STATE_HOME/med`，再否則為 `~/.local/state/med`）下的 `undo/`。檔案若在之後被其他程式修改過，開啟時就沒有紀錄。這個選項適用於所有分頁，在開啟與儲存檔案時讀取。
 
+`(set-option 'wrap true)` 讓比畫面寬的行接續到下一列顯示，而不是超出右邊緣，如同 vim 的 `wrap`：可以在任何字元處換列，寬字元或 tab 則整個移到下一列。只有第一列會顯示行號。畫面以列為單位捲動，`scroll-off` 也以列計算，點擊任何一列都會落在該處的字元上。`j` 和 `k` 仍然一次移動一行。行尾之後的文字（診斷訊息或程式加上的文字）會在右邊緣被截斷，`color-column` 則標示畫面上的欄位，每一列都會標示。搭配 `set-buffer-option` 與 `buffer-language` 可以只對部分檔案開啟：在語言為 `"markdown"` 時使用 `(set-buffer-option 'wrap true)`。
+
 檔案有語法樹時：
 
 | 按鍵 | 動作 |
@@ -98,7 +100,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 (set-option 'font-size 16)                    ; 另有 font-family、lsp、key-timeout、
                                               ; auto-pairs、format-on-save、tab-width、
                                               ; relative-number、scroll-off、cursor-line、
-                                              ; color-column、undo-file、project-env
+                                              ; color-column、wrap、undo-file、
+                                              ; project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
@@ -115,7 +118,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 分頁的表所綁定的鍵會立即執行，即使模式的表中有以它開頭的較長綁定。`:workspace.reload_init` 會重新執行該檔案；檔案中的錯誤會連同行號顯示在狀態列。
 
-分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save`、`auto-pairs`、`scroll-off`、`cursor-line` 與 `color-column`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
+分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save`、`auto-pairs`、`scroll-off`、`cursor-line`、`color-column` 與 `wrap`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
 
 ```lisp
 (set-buffer-option 'tab-width 8)            ; 目前顯示的分頁自己的值

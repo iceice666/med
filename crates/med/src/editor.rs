@@ -232,6 +232,12 @@ pub struct Editor {
     lsp_version: i32,
     /// First visible line; fractional while wheel-scrolling.
     scroll_top: f32,
+    /// Wrapped, the row of that line the view starts at, and the wheel's
+    /// scrolling not yet come to a whole row.
+    top_row: usize,
+    wheel_rows: f32,
+    /// Cells to a row as the view was last laid out, where lines wrap.
+    wrap_cells: Option<usize>,
     scroll_left: Pixels,
     visible_lines: usize,
     metrics: Option<Metrics>,
@@ -337,6 +343,7 @@ pub struct BufferOptions {
     pub scroll_off: Option<usize>,
     pub cursor_line: Option<bool>,
     pub color_columns: Option<Vec<usize>>,
+    pub wrap: Option<bool>,
 }
 
 /// Where the `color-column` columns are drawn: each a cell wide, down the
@@ -387,6 +394,97 @@ fn detect_indent(text: &str) -> Option<(bool, usize)> {
         }
     }
     min_spaces.map(|n| (true, n.min(8)))
+}
+
+/// Cells a char takes at display column `col`: a tab to the next stop,
+/// CJK and other wide glyphs about two, the rest one.
+fn cell_width(c: char, col: usize, tab_width: usize) -> usize {
+    match c {
+        '\t' => tab_width - col % tab_width,
+        c if (c as u32) >= 0x1100 => 2,
+        _ => 1,
+    }
+}
+
+/// Where a line's screen rows start, as char columns: `[0]` for a line
+/// on one row. With `cells` to a row, a char that does not fit where it
+/// is goes to the next row whole, and a line that fills its last row has
+/// one more, empty, for the place after its end.
+pub(crate) fn wrap_breaks(text: &str, tab_width: usize, cells: usize) -> Vec<usize> {
+    let tab_width = tab_width.max(1);
+    let cells = cells.max(1);
+    let mut breaks = vec![0];
+    let (mut col, mut used) = (0, 0);
+    let mut chars = 0;
+    for (i, c) in text.chars().enumerate() {
+        let width = cell_width(c, col, tab_width);
+        if used > 0 && used + width > cells {
+            breaks.push(i);
+            used = 0;
+        }
+        col += width;
+        used += width;
+        chars = i + 1;
+    }
+    if used >= cells {
+        breaks.push(chars);
+    }
+    breaks
+}
+
+/// Where a line's things go on screen: each of its rows starts at an x of
+/// the line laid out on one row, and is drawn `line_height` below the
+/// last. Unwrapped, one row starts where the view is scrolled to.
+struct Fold {
+    /// The x, in the line, each row starts at.
+    starts: Vec<Pixels>,
+    /// Where the text area starts, and where the line's first row is.
+    left: Pixels,
+    top: Pixels,
+    line_height: Pixels,
+}
+
+impl Fold {
+    fn rows(&self) -> usize {
+        self.starts.len()
+    }
+
+    fn row_at(&self, x: Pixels) -> usize {
+        self.starts
+            .partition_point(|start| *start <= x)
+            .saturating_sub(1)
+    }
+
+    fn row_top(&self, row: usize) -> Pixels {
+        self.top + self.line_height * row as f32
+    }
+
+    /// The screen point of an x in the line.
+    fn at(&self, x: Pixels) -> Point<Pixels> {
+        let row = self.row_at(x);
+        point(self.left + x - self.starts[row], self.row_top(row))
+    }
+
+    /// From one x of the line to another, as rectangles a row high: one
+    /// on each row it goes over.
+    fn spans(&self, from: Pixels, to: Pixels) -> Vec<Bounds<Pixels>> {
+        let last = if to > from {
+            self.row_at(to - px(0.01))
+        } else {
+            self.row_at(from)
+        };
+        (self.row_at(from)..=last)
+            .map(|row| {
+                let start = from.max(self.starts[row]);
+                let end = match self.starts.get(row + 1) {
+                    Some(next) => to.min(*next),
+                    None => to,
+                };
+                let origin = point(self.left + start - self.starts[row], self.row_top(row));
+                Bounds::new(origin, size((end - start).max(px(0.)), self.line_height))
+            })
+            .collect()
+    }
 }
 
 /// Expand tabs for display. Returns the display text and, for every char
@@ -548,6 +646,9 @@ impl Editor {
             lsp,
             lsp_version: 0,
             scroll_top: 0.,
+            top_row: 0,
+            wheel_rows: 0.,
+            wrap_cells: None,
             scroll_left: px(0.),
             visible_lines: 0,
             metrics: None,
@@ -901,6 +1002,49 @@ impl Editor {
         (self.scroll_top as usize, self.visible_lines)
     }
 
+    /// Wrapped: cells to a row, the line and row the view starts at, and
+    /// how many rows down it the cursor is, if it is on screen.
+    #[cfg(test)]
+    pub(crate) fn wrapped_view(&self) -> (Option<usize>, (usize, usize), Option<usize>) {
+        let cursor = self.place_of(self.vim.cursor);
+        let rows = self.rows_between(self.top(), cursor, self.visible_lines.max(1) - 1);
+        (self.wrap_cells, self.top(), rows)
+    }
+
+    /// The lines on screen, for the engine's `H`, `L`, paging and flash.
+    /// Wrapped, the lines wholly on screen, or the one there is: a line
+    /// is a row at least, so the engine's margin in lines keeps the
+    /// view's in rows, and the first and last line of the file are the
+    /// view's edge only where it shows all of them.
+    pub(crate) fn viewport(&self, cx: &App) -> Viewport {
+        let scroll_off = self.scroll_margin(cx);
+        if self.wrap_cells.is_none() {
+            return Viewport {
+                top: self.scroll_top.max(0.) as usize,
+                height: self.visible_lines.max(1),
+                scroll_off,
+            };
+        }
+        let (top, bottom) = (self.top(), self.bottom());
+        let first = if top.1 == 0 { top.0 } else { top.0 + 1 };
+        let whole = bottom.1 + 1 == self.rows(bottom.0);
+        let last = if whole {
+            bottom.0
+        } else {
+            bottom.0.saturating_sub(1)
+        };
+        let (first, last) = if first <= last {
+            (first, last)
+        } else {
+            (top.0, top.0)
+        };
+        Viewport {
+            top: first,
+            height: last - first + 1,
+            scroll_off,
+        }
+    }
+
     /// Lines between the cursor and the edges of the view: the
     /// `scroll-off` option, no more than fit with the cursor between.
     fn scroll_margin(&self, cx: &App) -> usize {
@@ -941,6 +1085,12 @@ impl Editor {
                 .map(|s| s.color_columns.clone())
                 .unwrap_or_default(),
         }
+    }
+
+    pub(crate) fn wrap(&self, cx: &App) -> bool {
+        self.options
+            .wrap
+            .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.wrap))
     }
 
     pub(crate) fn relative_number(&self, cx: &App) -> bool {
@@ -1032,8 +1182,12 @@ impl Editor {
     }
 
     fn center_cursor(&mut self) {
-        let line = self.buf.line_of(self.vim.cursor);
         let half = self.visible_lines.max(20) / 2;
+        if self.wrap_cells.is_some() {
+            self.set_top(self.rows_back(self.place_of(self.vim.cursor), half));
+            return;
+        }
+        let line = self.buf.line_of(self.vim.cursor);
         self.scroll_top = line.saturating_sub(half) as f32;
     }
 
@@ -1062,11 +1216,7 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Vim, &mut Ctx<'_>) -> R,
     ) -> R {
-        let viewport = Viewport {
-            top: self.scroll_top.max(0.) as usize,
-            height: self.visible_lines.max(1),
-            scroll_off: self.scroll_margin(cx),
-        };
+        let viewport = self.viewport(cx);
         self.vim_lang.tab_width = self.tab_width(cx);
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
         let syntax = &mut self.syntax;
@@ -1201,7 +1351,164 @@ impl Editor {
         }
     }
 
+    // ---- rows of wrapped lines ------------------------------------------
+    //
+    // Where lines wrap, a place on screen is a line and a row of it, and
+    // the view starts at one. Unwrapped, every line is one row.
+
+    /// Where a line's rows start, as char columns.
+    fn breaks(&self, line: usize) -> Vec<usize> {
+        match self.wrap_cells {
+            Some(cells) => wrap_breaks(&self.buf.line_string(line), self.vim_lang.tab_width, cells),
+            None => vec![0],
+        }
+    }
+
+    fn rows(&self, line: usize) -> usize {
+        self.breaks(line).len()
+    }
+
+    /// The line and row an offset is on.
+    fn place_of(&self, offset: usize) -> (usize, usize) {
+        let line = self.buf.line_of(offset);
+        let col = offset - self.buf.line_start(line);
+        let row = self.breaks(line).partition_point(|&b| b <= col);
+        (line, row.saturating_sub(1))
+    }
+
+    fn top(&self) -> (usize, usize) {
+        (self.scroll_top.max(0.) as usize, self.top_row)
+    }
+
+    fn set_top(&mut self, (line, row): (usize, usize)) {
+        self.scroll_top = line as f32;
+        self.top_row = row;
+    }
+
+    /// `n` rows on from a place, or as far as there are.
+    fn rows_on(&self, (mut line, mut row): (usize, usize), mut n: usize) -> (usize, usize) {
+        let last = self.buf.last_line();
+        while n > 0 {
+            let rows = self.rows(line);
+            let ahead = (rows - 1 - row).min(n);
+            row += ahead;
+            n -= ahead;
+            if n == 0 || line == last {
+                break;
+            }
+            line += 1;
+            row = 0;
+            n -= 1;
+        }
+        (line, row)
+    }
+
+    /// `n` rows back from a place, or to the first.
+    fn rows_back(&self, (mut line, mut row): (usize, usize), mut n: usize) -> (usize, usize) {
+        while n > 0 {
+            let back = row.min(n);
+            row -= back;
+            n -= back;
+            if n == 0 || line == 0 {
+                break;
+            }
+            line -= 1;
+            row = self.rows(line) - 1;
+            n -= 1;
+        }
+        (line, row)
+    }
+
+    /// How many rows down `to` is from `from`, if it is no further than
+    /// `limit`: the walk goes no further, whatever the size of the file.
+    fn rows_between(
+        &self,
+        from: (usize, usize),
+        to: (usize, usize),
+        limit: usize,
+    ) -> Option<usize> {
+        if to < from || to.0 > from.0 + limit {
+            return None;
+        }
+        // A line at a time: a long line is broken into rows once.
+        let (mut rows, mut row) = (0, from.1);
+        for line in from.0..to.0 {
+            rows += self.rows(line) - row;
+            row = 0;
+            if rows > limit {
+                return None;
+            }
+        }
+        rows += to.1 - row;
+        (rows <= limit).then_some(rows)
+    }
+
+    /// The offset a row starts at.
+    fn row_start(&self, (line, row): (usize, usize)) -> usize {
+        let col = self.breaks(line).get(row).copied().unwrap_or(0);
+        self.buf.line_start(line) + col.min(self.buf.line_len(line))
+    }
+
+    /// The last place on screen, from where the view starts.
+    fn bottom(&self) -> (usize, usize) {
+        self.rows_on(self.top(), self.visible_lines.max(1) - 1)
+    }
+
+    /// `scroll` where lines wrap: by rows.
+    fn scroll_rows(&mut self, scroll: Scroll, cx: &App) {
+        let visible = self.visible_lines.max(1);
+        let cursor = self.place_of(self.vim.cursor);
+        match scroll {
+            Scroll::Center => self.set_top(self.rows_back(cursor, visible / 2)),
+            Scroll::Top => self.set_top(cursor),
+            Scroll::Bottom => self.set_top(self.rows_back(cursor, visible - 1)),
+            Scroll::Lines(n) => {
+                let top = self.top();
+                let top = if n < 0 {
+                    self.rows_back(top, n.unsigned_abs())
+                } else {
+                    self.rows_on(top, n as usize)
+                };
+                self.set_top(top);
+                // The cursor is dragged along as it is unwrapped, by rows.
+                let margin = self.scroll_margin(cx);
+                let end = (self.buf.last_line(), self.rows(self.buf.last_line()) - 1);
+                let bottom = self.bottom();
+                let low = if top == (0, 0) {
+                    top
+                } else {
+                    self.rows_on(top, margin)
+                };
+                let high = if bottom == end {
+                    end
+                } else {
+                    self.rows_back(bottom, margin)
+                };
+                let target = if cursor < low {
+                    low
+                } else if cursor > high {
+                    high
+                } else {
+                    return;
+                };
+                // The same column in the line there, if that is on the
+                // row; else where the row starts.
+                let col = self.vim.cursor - self.buf.line_start(cursor.0);
+                let same = self.buf.line_start(target.0) + col.min(self.buf.line_len(target.0));
+                self.vim.cursor = if self.place_of(same) == target {
+                    same
+                } else {
+                    self.row_start(target)
+                };
+            }
+        }
+    }
+
     fn scroll(&mut self, scroll: Scroll, cx: &App) {
+        if self.wrap_cells.is_some() {
+            self.scroll_rows(scroll, cx);
+            return;
+        }
         let line = self.buf.line_of(self.vim.cursor) as f32;
         let visible = self.visible_lines.max(1) as f32;
         match scroll {
@@ -1298,17 +1605,30 @@ impl Editor {
         let tab = self.vim_lang.tab_width.max(1);
         let mut col = 0;
         for c in self.buf.slice(self.buf.line_start(line)..offset).chars() {
-            col += match c {
-                '\t' => tab - col % tab,
-                // CJK and other wide glyphs take about two cells.
-                c if (c as u32) >= 0x1100 => 2,
-                _ => 1,
-            };
+            col += cell_width(c, col, tab);
         }
         col
     }
 
     fn ensure_cursor_visible(&mut self, cx: &App) {
+        if self.wrap_cells.is_some() {
+            self.scroll_left = px(0.);
+            let visible = self.visible_lines.max(1);
+            let margin = self.scroll_margin(cx);
+            let cursor = self.place_of(self.vim.cursor);
+            let top = self.top();
+            match self.rows_between(top, cursor, visible) {
+                Some(rows) if rows >= margin && rows + margin < visible => {}
+                Some(rows) if rows >= margin => {
+                    self.set_top(self.rows_back(cursor, visible - 1 - margin));
+                }
+                // Above the view, or nearer its top than the margin.
+                Some(_) => self.set_top(self.rows_back(cursor, margin)),
+                None if cursor < top => self.set_top(self.rows_back(cursor, margin)),
+                None => self.set_top(self.rows_back(cursor, visible - 1 - margin)),
+            }
+            return;
+        }
         let line = self.buf.line_of(self.vim.cursor);
         let visible = self.visible_lines.max(1);
         let margin = self.scroll_margin(cx);
@@ -1465,6 +1785,9 @@ impl Editor {
 
     /// The first and the last line on screen, from 0.
     pub fn visible_lines(&self) -> (usize, usize) {
+        if self.wrap_cells.is_some() {
+            return (self.top().0, self.bottom().0);
+        }
         let first = (self.scroll_top.max(0.) as usize).min(self.buf.last_line());
         let last = first + self.visible_lines.max(1) - 1;
         (first, last.min(self.buf.last_line()))
@@ -2004,9 +2327,15 @@ impl Editor {
 
     fn offset_at(&self, position: Point<Pixels>, window: &Window) -> Option<usize> {
         let m = self.metrics.as_ref()?;
-        let row = (position.y - m.text_origin.y) / m.line_height + self.scroll_top;
-        let line = (row.max(0.) as usize).min(self.buf.last_line());
-        let x = (position.x - m.text_origin.x + self.scroll_left).max(px(0.));
+        // The line, and the row of it, under the pointer.
+        let (line, row) = if self.wrap_cells.is_some() {
+            let rows = ((position.y - m.text_origin.y) / m.line_height).max(0.) as usize;
+            self.rows_on(self.top(), rows)
+        } else {
+            let row = (position.y - m.text_origin.y) / m.line_height + self.scroll_top;
+            ((row.max(0.) as usize).min(self.buf.last_line()), 0)
+        };
+        let breaks = self.breaks(line);
         let (display, offsets) = expand_tabs(&self.buf.line_string(line), self.vim_lang.tab_width);
         let run = TextRun {
             len: display.len(),
@@ -2019,8 +2348,16 @@ impl Editor {
         let shaped = window
             .text_system()
             .shape_line(display.into(), m.font_size, &[run], None);
+        // The x in the line laid out on one row: where the row starts in it.
+        let row_x = shaped.x_for_index(offsets[breaks[row]] as usize);
+        let x = (position.x - m.text_origin.x + self.scroll_left).max(px(0.)) + row_x;
         let index = shaped.closest_index_for_x(x) as u32;
         let col = offsets.partition_point(|&b| b <= index).saturating_sub(1);
+        // Past the end of a row is its last char, not the next row's first.
+        let col = match breaks.get(row + 1) {
+            Some(&next) => col.min(next - 1),
+            None => col,
+        };
         Some(self.buf.line_start(line) + col)
     }
 
@@ -2083,6 +2420,22 @@ impl Editor {
             return;
         };
         let delta = event.delta.pixel_delta(m.line_height);
+        if self.wrap_cells.is_some() {
+            // By whole rows, what is left over kept for the next turn.
+            self.wheel_rows -= delta.y / m.line_height;
+            let rows = self.wheel_rows.trunc();
+            self.wheel_rows -= rows;
+            let top = self.top();
+            let top = if rows < 0. {
+                self.rows_back(top, -rows as usize)
+            } else {
+                self.rows_on(top, rows as usize)
+            };
+            self.set_top(top);
+            self.hover = None;
+            cx.notify();
+            return;
+        }
         let max = self.buf.last_line() as f32;
         self.scroll_top = (self.scroll_top - delta.y / m.line_height).clamp(0., max);
         self.scroll_left = (self.scroll_left - delta.x).max(px(0.));
@@ -2152,8 +2505,15 @@ impl Editor {
         let visible = ((bounds.size.height / line_height).floor() as usize).max(1);
         let text_bounds = Bounds::new(text_origin, size(text_width, bounds.size.height));
 
-        let first_layout = self.visible_lines != visible || self.metrics.is_none();
+        // Wrapped, a row has as many whole cells as fit.
+        let wrap_cells = self
+            .wrap(cx)
+            .then(|| ((text_width / char_width).floor() as usize).max(1));
+        let first_layout = self.visible_lines != visible
+            || self.metrics.is_none()
+            || self.wrap_cells != wrap_cells;
         self.visible_lines = visible;
+        self.wrap_cells = wrap_cells;
         self.metrics = Some(Metrics {
             text_origin,
             text_width,
@@ -2163,6 +2523,14 @@ impl Editor {
             font: base_font.clone(),
         });
         self.scroll_top = self.scroll_top.clamp(0., (line_count - 1) as f32);
+        if wrap_cells.is_some() {
+            // Whole lines and rows of them: the wheel keeps its own part.
+            self.scroll_top = self.scroll_top.floor();
+            self.top_row = self.top_row.min(self.rows(self.top().0) - 1);
+            self.scroll_left = px(0.);
+        } else {
+            self.top_row = 0;
+        }
         if first_layout {
             self.ensure_cursor_visible(cx);
         }
@@ -2170,7 +2538,10 @@ impl Editor {
 
         let first = self.scroll_top.floor() as usize;
         let last = (first + visible + 2).min(line_count);
-        let y0 = bounds.top() - line_height * self.scroll_top.fract();
+        let y0 = match wrap_cells {
+            Some(_) => bounds.top() - line_height * self.top_row as f32,
+            None => bounds.top() - line_height * self.scroll_top.fract(),
+        };
         let scroll_left = self.scroll_left;
 
         let byte_start = buf.char_to_byte(buf.line_start(first));
@@ -2244,8 +2615,11 @@ impl Editor {
             frame.text_back.push(fill(band, color_column_bg));
         }
 
+        let mut y = y0;
         for line in first..last {
-            let y = y0 + line_height * (line - first) as f32;
+            if y >= bounds.bottom() {
+                break;
+            }
             let ls = buf.line_start(line);
             let text = buf.line_string(line);
             let (mut display, mut offsets) = expand_tabs(&text, tab_width);
@@ -2401,47 +2775,58 @@ impl Editor {
             }
             let shaped = text_system.shape_line(display.into(), font_size, &runs, None);
             let x_of = |col: usize| shaped.x_for_index(offsets[col.min(nchars)] as usize);
-            let line_x = text_origin.x - scroll_left;
+            let starts = match wrap_cells {
+                Some(cells) => wrap_breaks(&text, tab_width, cells)
+                    .into_iter()
+                    .map(&x_of)
+                    .collect(),
+                None => vec![scroll_left],
+            };
+            let fold = Fold {
+                starts,
+                left: text_origin.x,
+                top: y,
+                line_height,
+            };
             let span = |from: usize, to: usize, through_newline: bool, color: Hsla| {
                 let x1 = x_of(from);
                 let mut x2 = x_of(to);
                 if through_newline {
                     x2 += char_width;
                 }
-                fill(
-                    Bounds::new(point(line_x + x1, y), size(x2 - x1, line_height)),
-                    color,
-                )
+                fold.spans(x1, x2)
+                    .into_iter()
+                    .map(move |cell| fill(cell, color))
+            };
+            // The whole width of the view, on every row of the line.
+            let whole_line = |color: Hsla| -> Vec<PaintQuad> {
+                (0..fold.rows())
+                    .map(|row| {
+                        let origin = point(bounds.left(), fold.row_top(row));
+                        fill(
+                            Bounds::new(origin, size(bounds.size.width, line_height)),
+                            color,
+                        )
+                    })
+                    .collect()
             };
 
             if cursor_line_shown && line == cursor_line && !mode.is_visual() {
-                frame.back.push(fill(
-                    Bounds::new(
-                        point(bounds.left(), y),
-                        size(bounds.size.width, line_height),
-                    ),
-                    active_line_bg,
-                ));
+                frame.back.extend(whole_line(active_line_bg));
             }
             for mark in &line_marks {
                 let Some(color) = mark.bg else {
                     continue;
                 };
                 if mark.whole_line {
-                    frame.back.push(fill(
-                        Bounds::new(
-                            point(bounds.left(), y),
-                            size(bounds.size.width, line_height),
-                        ),
-                        color,
-                    ));
+                    frame.back.extend(whole_line(color));
                 } else {
                     let (a, b) = (mark.start.max(ls), mark.end.min(le + 1));
                     if a < b {
                         let through = b > le;
                         frame
                             .text_back
-                            .push(span(a - ls, (b - ls).min(nchars), through, color));
+                            .extend(span(a - ls, (b - ls).min(nchars), through, color));
                     }
                 }
             }
@@ -2452,19 +2837,19 @@ impl Editor {
                     }
                     let from = text[..m.start()].chars().count();
                     let to = from + text[m.start()..m.end()].chars().count();
-                    frame.text_back.push(span(from, to, false, search_bg));
+                    frame.text_back.extend(span(from, to, false, search_bg));
                 }
             }
             for m in &found {
                 let color = if m.target { flash_target_bg } else { search_bg };
                 frame
                     .text_back
-                    .push(span(m.start - ls, m.end - ls, false, color));
+                    .extend(span(m.start - ls, m.end - ls, false, color));
                 // Its label, over the character after it.
                 let Some(label) = m.label else {
                     continue;
                 };
-                let origin = point(line_x + x_of(m.end - ls), y);
+                let origin = fold.at(x_of(m.end - ls));
                 let cell = Bounds::new(origin, size(char_width, line_height));
                 frame.front.push(fill(cell, label_bg));
                 let mut run = plain(label.len_utf8(), label_fg);
@@ -2480,16 +2865,19 @@ impl Editor {
                 .filter(|(_, bytes)| **bytes > 0)
             {
                 let from = shaped.x_for_index((offsets[col] - bytes) as usize);
-                let origin = point(line_x + from, y);
-                let cell = Bounds::new(origin, size(x_of(col) - from, line_height));
-                frame.text_back.push(fill(cell, label_bg));
+                for cell in fold.spans(from, x_of(col)) {
+                    frame.text_back.push(fill(cell, label_bg));
+                }
             }
             for &(s, e) in &selections {
                 let (a, b) = (s.max(ls), e.min(le + 1));
                 if a < b {
-                    frame
-                        .text_back
-                        .push(span(a - ls, (b - ls).min(nchars), b > le, selection_bg));
+                    frame.text_back.extend(span(
+                        a - ls,
+                        (b - ls).min(nchars),
+                        b > le,
+                        selection_bg,
+                    ));
                 }
             }
             if line == cursor_line {
@@ -2500,7 +2888,7 @@ impl Editor {
                 } else {
                     char_width
                 };
-                let cell = Bounds::new(point(line_x + x, y), size(width, line_height));
+                let cell = Bounds::new(fold.at(x), size(width, line_height));
                 if block_cursor {
                     frame.text_back.push(fill(cell, caret));
                 } else if focused && mode == Mode::Insert {
@@ -2517,7 +2905,21 @@ impl Editor {
 
             // Inline diagnostic after the end of the line.
             let mut text_end = shaped.width;
-            frame.lines.push((point(line_x, y), shaped));
+            for (row, start) in fold.starts.iter().enumerate() {
+                // Wrapped, each row shows its part of the line and no more.
+                let clip = (fold.rows() > 1).then(|| {
+                    let origin = point(text_origin.x, fold.row_top(row));
+                    // To where the next row starts: the text area can be
+                    // a part of a cell wider, which would show its start.
+                    let width = match fold.starts.get(row + 1) {
+                        Some(next) => *next - *start,
+                        None => text_width,
+                    };
+                    Bounds::new(origin, size(width, line_height))
+                });
+                let origin = point(text_origin.x - *start, fold.row_top(row));
+                frame.lines.push((origin, shaped.clone(), clip));
+            }
             // What programs have to say of the line, after its end.
             for mark in &line_marks {
                 let Some(words) = mark.text.as_ref().filter(|_| mark.whole_line) else {
@@ -2532,7 +2934,7 @@ impl Editor {
                 let shaped = text_system.shape_line(words.into(), font_size, &[run], None);
                 let x = text_end + char_width * 3.;
                 text_end = x + shaped.width;
-                frame.lines.push((point(line_x + x, y), shaped));
+                frame.lines.push((fold.at(x), shaped, None));
             }
             if let Some(d) = line_diag {
                 let color = diag_colors[(d.severity - 1) as usize];
@@ -2546,9 +2948,8 @@ impl Editor {
                     .collect();
                 let run = plain(message.len(), color.opacity(0.75));
                 let shaped = text_system.shape_line(message.into(), font_size, &[run], None);
-                frame
-                    .lines
-                    .push((point(line_x + text_end + char_width * 3., y), shaped));
+                let x = text_end + char_width * 3.;
+                frame.lines.push((fold.at(x), shaped, None));
             }
 
             // Gutter: line number, tinted by the worst diagnostic.
@@ -2583,6 +2984,7 @@ impl Editor {
                     .gutter
                     .push((point(bounds.left() + char_width * 0.5, y), shaped));
             }
+            y += line_height * fold.rows() as f32;
         }
 
         // A plain scroll position indicator.
@@ -2605,6 +3007,20 @@ impl Editor {
     /// the last paint.
     pub fn cell_origin(&self, offset: usize) -> Option<Point<Pixels>> {
         let m = self.metrics.as_ref()?;
+        if self.wrap_cells.is_some() {
+            let place = self.place_of(offset);
+            let top = self.top();
+            // Near the view, or nowhere to show it.
+            let near = self.visible_lines.max(1) * 2;
+            let rows = match self.rows_between(top, place, near) {
+                Some(rows) => rows as f32,
+                None => -(self.rows_between(place, top, near)? as f32),
+            };
+            let row_col = self.display_col(self.row_start(place));
+            let x = m.char_width * (self.display_col(offset) - row_col) as f32;
+            let y = m.line_height * rows;
+            return Some(point(m.text_origin.x + x, m.text_origin.y + y));
+        }
         let line = self.buf.line_of(offset) as f32;
         let x = m.char_width * self.display_col(offset) as f32 - self.scroll_left;
         let y = m.line_height * (line - self.scroll_top);
@@ -2812,7 +3228,8 @@ struct Frame {
     back: Vec<PaintQuad>,
     /// Decorations behind the text, clipped to the text area.
     text_back: Vec<PaintQuad>,
-    lines: Vec<(Point<Pixels>, ShapedLine)>,
+    /// Text, and the row it is cut down to where it is a wrapped line's.
+    lines: Vec<(Point<Pixels>, ShapedLine, Option<Bounds<Pixels>>)>,
     gutter: Vec<(Point<Pixels>, ShapedLine)>,
     /// Drawn over the text: bar cursor, scroll indicator, and what is
     /// behind a label.
@@ -2841,9 +3258,24 @@ impl Frame {
                         for quad in self.text_back {
                             window.paint_quad(quad);
                         }
-                        for (origin, line) in &self.lines {
-                            let _ =
-                                line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+                        for (origin, line, clip) in &self.lines {
+                            let mut paint = |window: &mut Window| {
+                                let _ = line.paint(
+                                    *origin,
+                                    line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            };
+                            match clip {
+                                Some(bounds) => window.with_content_mask(
+                                    Some(ContentMask { bounds: *bounds }),
+                                    paint,
+                                ),
+                                None => paint(window),
+                            }
                         }
                         for quad in self.front {
                             window.paint_quad(quad);
@@ -3055,13 +3487,8 @@ impl EntityInputHandler for Editor {
     ) -> Option<Bounds<Pixels>> {
         let m = self.metrics.as_ref()?;
         let offset = self.utf16_to_char(range_utf16.start);
-        let line = self.buf.line_of(offset) as f32;
-        let x = m.char_width * self.display_col(offset) as f32 - self.scroll_left;
-        let y = m.line_height * (line - self.scroll_top);
-        Some(Bounds::new(
-            point(m.text_origin.x + x, m.text_origin.y + y),
-            size(m.char_width, m.line_height),
-        ))
+        let origin = self.cell_origin(offset)?;
+        Some(Bounds::new(origin, size(m.char_width, m.line_height)))
     }
 
     fn character_index_for_point(
@@ -3147,7 +3574,39 @@ pub(crate) fn register(commands: &mut Commands) {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_tabs, insert_labels};
+    use super::{Fold, expand_tabs, insert_labels};
+    use gpui::{point, px};
+
+    #[test]
+    fn a_span_is_cut_where_the_rows_are() {
+        let fold = Fold {
+            starts: vec![px(0.), px(50.), px(100.)],
+            left: px(10.),
+            top: px(200.),
+            line_height: px(20.),
+        };
+        let spans: Vec<_> = fold
+            .spans(px(40.), px(120.))
+            .iter()
+            .map(|b| {
+                (
+                    f32::from(b.left()),
+                    f32::from(b.top()),
+                    f32::from(b.size.width),
+                )
+            })
+            .collect();
+        // The end of the first row, all of the second, the start of the last.
+        assert_eq!(
+            spans,
+            [(50., 200., 10.), (10., 220., 50.), (10., 240., 20.)]
+        );
+        // Within a row, and at a row's start: on that row.
+        assert_eq!(fold.spans(px(60.), px(70.)).len(), 1);
+        assert_eq!(fold.at(px(50.)), point(px(10.), px(220.)));
+        // Past the last row's start: on the last row, however far.
+        assert_eq!(fold.at(px(300.)), point(px(210.), px(240.)));
+    }
 
     #[test]
     fn labels_stand_between_the_characters() {

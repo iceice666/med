@@ -16,7 +16,7 @@
 //! (set-buffer-option 'tab-width 8)     ; the tab up's own; also
 //!                                      ; relative-number, format-on-save,
 //!                                      ; auto-pairs, scroll-off,
-//!                                      ; cursor-line, color-column
+//!                                      ; cursor-line, color-column, wrap
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
@@ -24,7 +24,7 @@
 //!                                      ; auto-pairs, format-on-save,
 //!                                      ; tab-width, relative-number,
 //!                                      ; scroll-off, cursor-line,
-//!                                      ; color-column, undo-file,
+//!                                      ; color-column, wrap, undo-file,
 //!                                      ; project-env
 //! (message "ready")                    ; shown in the status bar
 //!
@@ -757,7 +757,7 @@ fn no_buffer_option(option: &str) -> Error {
     failed(format!(
         "{option} is not an option a tab has its own of \
          (tab-width relative-number format-on-save auto-pairs scroll-off \
-         cursor-line color-column)"
+         cursor-line color-column wrap)"
     ))
 }
 
@@ -1118,6 +1118,7 @@ fn define_functions(interp: &mut Interp) {
             "scroll-off" => settings.scroll_off = scroll_off(value)?,
             "cursor-line" => settings.cursor_line = flag(value)?,
             "color-column" => settings.color_columns = columns(value)?,
+            "wrap" => settings.wrap = flag(value)?,
             // Read as files are opened and saved.
             "undo-file" => settings.undo_file = flag(value)?,
             // Read when a window opens, as `lsp` is.
@@ -1130,7 +1131,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column undo-file project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file project-env)"
                 )));
             }
         }
@@ -1167,6 +1168,10 @@ fn define_functions(interp: &mut Interp) {
                 let columns = columns(value)?;
                 Box::new(move |editor| editor.options.color_columns = Some(columns))
             }
+            "wrap" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.options.wrap = Some(on))
+            }
             "auto-pairs" => {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.vim.auto_pairs = Some(on))
@@ -1186,6 +1191,7 @@ fn define_functions(interp: &mut Interp) {
             "scroll-off" => Box::new(|editor| editor.options.scroll_off = None),
             "cursor-line" => Box::new(|editor| editor.options.cursor_line = None),
             "color-column" => Box::new(|editor| editor.options.color_columns = None),
+            "wrap" => Box::new(|editor| editor.options.wrap = None),
             "auto-pairs" => Box::new(|editor| editor.vim.auto_pairs = None),
             other => return Err(no_buffer_option(other)),
         };
