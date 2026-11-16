@@ -148,6 +148,12 @@ pub fn init_globals(cx: &mut App) {
 /// Globals and key bindings; everything a window needs before it opens.
 pub fn init(cx: &mut App) {
     gpui::init(cx);
+    // The window's root moves focus on `tab`, before any view hears of it:
+    // here `tab` is a key for the editor, panels and terminal to have.
+    cx.bind_keys([
+        KeyBinding::new("tab", NoAction, Some("Root")),
+        KeyBinding::new("shift-tab", NoAction, Some("Root")),
+    ]);
     // gpui-component starts out light; follow the system instead.
     gpui::component::Theme::sync_system_appearance(None, cx);
     cx.set_global(Settings {

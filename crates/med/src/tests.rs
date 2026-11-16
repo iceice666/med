@@ -697,6 +697,31 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     assert_eq!(message(cx), "4");
 }
 
+/// The real window: the workspace inside gpui's root, whose own keys
+/// (`tab` moves focus) come before the views'.
+#[gpui::test]
+fn tab_reaches_the_editor_in_a_real_window(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    let project = Project::new(&[("a.rs", "fn main() {\n}\n")]);
+    cx.update(|cx| {
+        crate::init(cx);
+        cx.global_mut::<crate::Settings>().lsp = false;
+        bind_example_keys(cx);
+    });
+    let root = project.0.clone();
+    let files = vec![project.path("a.rs")];
+    let mut workspace = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let ws = cx.new(|cx| Workspace::new(root, files, window, cx));
+        workspace = Some(ws.clone());
+        gpui::base::Root::new(ws, window, cx)
+    });
+    let ws = workspace.unwrap();
+    cx.run_until_parked();
+    cx.simulate_keystrokes("j o tab x escape");
+    assert_eq!(text(&ws, cx), "fn main() {\n}\n    x\n");
+}
+
 #[gpui::test]
 fn scripts_define_commands(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
