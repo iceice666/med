@@ -2,7 +2,7 @@
 
 # med
 
-一個建構在 [GPUI](https://www.gpui.rs/)（Zed 背後的 UI 框架）之上的模式式（vim 風格）程式碼編輯器。
+**M**y **ED**itor：一個建構在 [GPUI](https://www.gpui.rs/)（Zed 背後的 UI 框架）之上的模式式（vim 風格）程式碼編輯器。
 
 - 自有的編輯核心：具分組復原的 rope 緩衝區（`med-core`），以及不需 UI 就能執行的 vim 引擎（`med-vim`）
 - 約 35 種語言的 Tree-sitter 語法高亮，以及依循語法樹的文字物件與移動（函式、型別、引數、註解）
@@ -117,6 +117,14 @@ cargo packager -p med --release --formats deb,appimage --out-dir "$PWD/dist"   #
 ```
 
 相對路徑的 `--out-dir` 以 `crates/med` 為基準。要重建某個 release 的安裝包，請以它的標籤手動執行該 workflow。
+
+## 致謝
+
+- [GPUI](https://www.gpui.rs/) 與 [Zed](https://zed.dev/)：med 建構於其上
+- [Vim](https://www.vim.org/)：`med-vim` 依循它的模式式編輯
+- [oil.nvim](https://github.com/stevearc/oil.nvim)、[lazygit](https://github.com/jesseduffield/lazygit)、[which-key.nvim](https://github.com/folke/which-key.nvim) 與 Emacs 的 dired：[`examples/`](examples) 裡的程式取用了它們的想法
+- [tree-sitter](https://tree-sitter.github.io/) 及其語法
+- [Catppuccin](https://github.com/catppuccin/palette)：佈景主題的配色（MIT）
 
 ## 授權
 

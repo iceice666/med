@@ -2,8 +2,8 @@ English | [繁體中文](README.zh-TW.md)
 
 # med
 
-A modal (vim-style) code editor built on [GPUI](https://www.gpui.rs/), the UI
-framework behind Zed.
+**M**y **ED**itor: a modal (vim-style) code editor built on
+[GPUI](https://www.gpui.rs/), the UI framework behind Zed.
 
 - Its own editing core: a rope buffer with grouped undo (`med-core`) and a
   vim engine that runs without a UI (`med-vim`)
@@ -167,6 +167,19 @@ cargo packager -p med --release --formats deb,appimage --out-dir "$PWD/dist"   #
 
 A relative `--out-dir` is taken from `crates/med`. To rebuild a release's
 packages, run the workflow by hand with its tag.
+
+## Acknowledgements
+
+- [GPUI](https://www.gpui.rs/) and [Zed](https://zed.dev/), which med is
+  built on
+- [Vim](https://www.vim.org/), whose modal editing `med-vim` follows
+- [oil.nvim](https://github.com/stevearc/oil.nvim),
+  [lazygit](https://github.com/jesseduffield/lazygit),
+  [which-key.nvim](https://github.com/folke/which-key.nvim) and Emacs's
+  dired, whose ideas the programs in [`examples/`](examples) take
+- [tree-sitter](https://tree-sitter.github.io/) and its grammars
+- [Catppuccin](https://github.com/catppuccin/palette), for the palette of
+  the theme (MIT)
 
 ## License
 
