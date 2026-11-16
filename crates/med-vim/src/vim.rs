@@ -823,17 +823,27 @@ impl Vim {
         let listed_from = version.saturating_sub(edits.len() as u64);
         let skip = self.marks_version.saturating_sub(listed_from) as usize;
         for edit in edits.iter().skip(skip) {
-            for mark in self.marks.values_mut() {
+            let follow = |mark: &mut usize| {
                 if *mark >= edit.old_end_char {
                     *mark = *mark + edit.new_end_char - edit.old_end_char;
                 } else if *mark > edit.start_char {
                     *mark = edit.start_char;
                 }
+            };
+            self.marks.values_mut().for_each(follow);
+            // The last selection is the marks `<` and `>`, and `gv`'s.
+            if let Some((anchor, cursor, _)) = &mut self.last_visual {
+                follow(anchor);
+                follow(cursor);
             }
         }
         let max = buf.max_offset();
         for mark in self.marks.values_mut() {
             *mark = (*mark).min(max);
+        }
+        if let Some((anchor, cursor, _)) = &mut self.last_visual {
+            *anchor = (*anchor).min(max);
+            *cursor = (*cursor).min(max);
         }
         self.marks_version = version;
     }
@@ -1084,6 +1094,9 @@ impl Vim {
                 self.message = Some("Key mapping never ends".to_string());
                 break;
             }
+            // Marks follow what the keys before this one did: `>gv` as one
+            // mapping reselects the lines `>` shifted.
+            self.sync(cx.buf);
             self.step(key, cx, fx);
         }
         if cx.buf.version() != version {

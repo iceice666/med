@@ -989,6 +989,23 @@ fn visual_block() {
     h.keys("gv");
     assert_eq!(h.vim.mode, Mode::VisualBlock);
 
+    // The last selection follows the edits made since: after `>` the same
+    // lines, as `>gv` has it, and after lines go above it, its own still.
+    let mut h = Harness::new("one\n|two\nthree\nfour");
+    h.keys("Vj>gv>");
+    assert_eq!(h.buf.text(), "one\n        two\n        three\nfour\n");
+    h.keys("<Esc>ggOzero<Esc>gvd");
+    assert_eq!(h.buf.text(), "zero\none\nfour\n");
+    // As well when `>gv` is what a key stands for.
+    let mut h = Harness::new("one\n|two\nthree\nfour");
+    h.shared
+        .keymap
+        .bind(MapMode::Visual, "g>", "operator.indent");
+    h.shared.keymap.bind_keys(MapMode::Visual, ">", "g>gv");
+    h.keys("Vj>>");
+    assert_eq!(h.buf.text(), "one\n        two\n        three\nfour\n");
+    assert_eq!(h.vim.mode, Mode::VisualLine);
+
     // In the other visual modes `I` and `A` go to the ends of the selection.
     check("a |bcd e", "veIX<Esc>", "a |Xbcd e");
     check("a |bcd e", "veAX<Esc>", "a bcd|X e");
