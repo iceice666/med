@@ -23,6 +23,13 @@
 ; The lines changed from HEAD, as the gutter marks them.
 (bind '(normal visual) "]h" "editor.next_hunk")
 (bind '(normal visual) "[h" "editor.prev_hunk")
+
+; Folds, by the syntax tree, or by indent where there is none.
+(bind 'normal "za" "fold.toggle")
+(bind 'normal "zo" "fold.open")
+(bind 'normal "zc" "fold.close")
+(bind 'normal "zR" "fold.open_all")
+(bind 'normal "zM" "fold.close_all")
 (bind 'insert "<C-n>" "editor.complete")
 (bind 'insert "<C-p>" "editor.complete")
 (bind 'insert "<C-Space>" "editor.complete")

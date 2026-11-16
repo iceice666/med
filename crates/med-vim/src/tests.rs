@@ -371,6 +371,50 @@ fn gj_and_gk_go_by_rows_of_the_screen() {
 }
 
 #[test]
+fn a_closed_fold_is_one_line() {
+    // `{` on line 1 folds lines 2 and 3 away.
+    let folded = |text: &str, keys: &str| {
+        let mut h = Harness::new(text);
+        h.lang.hidden = Hidden::new(vec![(2, 3)]);
+        h.keys(keys);
+        h.state()
+    };
+    let text = "a|a\nb {\nc\nd\n}\ne";
+    assert_eq!(folded(text, "j"), "aa\nb| {\nc\nd\n}\ne");
+    assert_eq!(folded(text, "jj"), "aa\nb {\nc\nd\n|}\ne");
+    assert_eq!(folded(text, "2j"), "aa\nb {\nc\nd\n|}\ne");
+    assert_eq!(folded(text, "Gk"), "aa\nb {\nc\nd\n|}\ne");
+    assert_eq!(folded(text, "Gkk"), "aa\n|b {\nc\nd\n}\ne");
+    // Where lines wrap, `gj` too.
+    let mut h = Harness::new("b| {\nc\nd\n}");
+    h.lang.hidden = Hidden::new(vec![(1, 2)]);
+    h.lang.wrap = Some(8);
+    h.keys("gj");
+    assert_eq!(h.state(), "b {\nc\nd\n|}");
+    // Paging counts a fold as a line, and so does the view it scrolls.
+    let text: String = (0..30).map(|n| format!("{n}\n")).collect();
+    // Ten lines on screen: 0 to 19 with 2 to 11 hidden.
+    let mut h = Harness::new(&text);
+    h.lang.hidden = Hidden::new(vec![(2, 11)]);
+    h.viewport.height = 20;
+    h.keys("<C-d>");
+    assert_eq!(h.buf.line_of(h.vim.cursor), 15);
+    assert_eq!(h.effects, [Effect::Scroll(Scroll::Lines(5))]);
+    // `L` and `M` by lines on screen.
+    let line = |keys: &str| {
+        let mut h = Harness::new(&text);
+        h.lang.hidden = Hidden::new(vec![(2, 11)]);
+        h.viewport.height = 20;
+        h.keys(keys);
+        h.buf.line_of(h.vim.cursor)
+    };
+    assert_eq!(line("L"), 19);
+    assert_eq!(line("M"), 14);
+    assert_eq!(line("2H"), 1);
+    assert_eq!(line("3H"), 12);
+}
+
+#[test]
 fn screen_motions_keep_the_scroll_margin() {
     let text: String = (0..30).map(|n| format!("{n}\n")).collect();
     let line = |h: &Harness| h.buf.line_of(h.vim.cursor);

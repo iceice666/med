@@ -11,6 +11,7 @@
 use crate::command::{Action, Await, Builtin, Cmd, InsertCmd};
 use crate::ex::{self, RangeCtx};
 use crate::flash::{self, Flash, FlashMatch, FlashView, Kind};
+use crate::fold::Hidden;
 use crate::keymap::{Keymap, Lookup, MapMode, format_keys, parse_keys};
 use crate::motion::{self, Find, WS, class, first_non_blank, leading_ws};
 use crate::textobj::{self, ObjRange};
@@ -108,6 +109,9 @@ pub struct Lang {
     /// Cells to a row of the screen where lines wrap there, for `gj` and
     /// `gk`; `None` where every line is a row.
     pub wrap: Option<usize>,
+    /// The lines closed folds hide: `j`, `k` and paging go over a fold
+    /// as over one line.
+    pub hidden: Hidden,
 }
 
 /// The brackets and quotes most languages close.
@@ -128,6 +132,7 @@ impl Default for Lang {
             line_comment: None,
             pairs: PAIRS.to_vec(),
             wrap: None,
+            hidden: Hidden::default(),
         }
     }
 }
@@ -1713,10 +1718,12 @@ impl Vim {
                 }
             }
             Motion::Up | Motion::Down => {
+                // A closed fold is one line.
+                let hidden = &cx.lang.hidden;
                 let row = if motion == Motion::Down {
-                    (line + n).min(last)
+                    hidden.down(line, n, last)
                 } else {
-                    line.saturating_sub(n)
+                    hidden.up(line, n)
                 };
                 if row == line {
                     return None;
@@ -1757,21 +1764,23 @@ impl Vim {
                     Some((goal, at)) if at == (line, row) => goal,
                     _ => cells_to(line, col) - cells_to(line, breaks(line)[row]),
                 };
-                // `n` rows on, or back, as far as there are.
+                // `n` rows on, or back, as far as there are; over a closed
+                // fold to the line after it, or its first.
+                let hidden = &cx.lang.hidden;
                 let (mut to_line, mut to_row) = (line, row);
                 for _ in 0..n {
                     if down {
                         if to_row + 1 < breaks(to_line).len() {
                             to_row += 1;
-                        } else if to_line < last {
-                            (to_line, to_row) = (to_line + 1, 0);
+                        } else if let Some(next) = hidden.next(to_line, last) {
+                            (to_line, to_row) = (next, 0);
                         } else {
                             break;
                         }
                     } else if to_row > 0 {
                         to_row -= 1;
-                    } else if to_line > 0 {
-                        to_line -= 1;
+                    } else if let Some(prev) = hidden.prev(to_line) {
+                        to_line = prev;
                         to_row = breaks(to_line).len() - 1;
                     } else {
                         break;
@@ -1873,36 +1882,47 @@ impl Vim {
                 // Short of the edges by the scroll margin, but for an edge
                 // that is the file's own: the view goes no further there.
                 let off = cx.viewport.scroll_off;
+                // By lines on screen: a closed fold is one.
+                let hidden = &cx.lang.hidden;
                 let row = match motion {
                     Motion::ScreenTop => {
                         let off = if top == 0 { 0 } else { off };
-                        (top + (n - 1).max(off)).min(bottom)
+                        hidden.down(top, (n - 1).max(off), bottom)
                     }
                     Motion::ScreenBot => {
                         let off = if bottom == last { 0 } else { off };
-                        bottom.saturating_sub((n - 1).max(off)).max(top)
+                        hidden.up(bottom, (n - 1).max(off)).max(top)
                     }
-                    _ => top + (bottom - top) / 2,
+                    _ => hidden.down(top, hidden.between(top, bottom) / 2, bottom),
                 };
                 out(fnb(row), false, true)
             }
             Motion::Page { down, half } => {
-                let height = cx.viewport.height.max(1);
+                // As many lines as are on screen, a closed fold one.
+                let top = cx.viewport.top.min(last);
+                let bottom = (top + cx.viewport.height.saturating_sub(1)).min(last);
+                let height = cx.lang.hidden.between(top, bottom) + 1;
                 let delta = if half {
                     count.unwrap_or((height / 2).max(1))
                 } else {
                     height.saturating_sub(2).max(1).saturating_mul(n)
                 };
+                let hidden = &cx.lang.hidden;
                 let row = if down {
-                    (line + delta).min(last)
+                    hidden.down(line, delta, last)
                 } else {
-                    line.saturating_sub(delta)
+                    hidden.up(line, delta)
                 };
                 if row == line {
                     return None;
                 }
                 let pos = self.vertical(buf, row);
-                let moved = row as isize - line as isize;
+                // The view goes by lines on screen, as the cursor did.
+                let moved = if down {
+                    hidden.between(line, row) as isize
+                } else {
+                    -(hidden.between(row, line) as isize)
+                };
                 Some(MotionOut {
                     pos,
                     inclusive: false,
@@ -3085,18 +3105,28 @@ impl Vim {
                 self.goal_col = None;
             }
             InsertCmd::Up | InsertCmd::Down | InsertCmd::PageUp | InsertCmd::PageDown => {
-                let page = cx.viewport.height.saturating_sub(2).max(1);
-                let row = match cmd {
-                    InsertCmd::Up => line.saturating_sub(1),
-                    InsertCmd::Down => line + 1,
-                    InsertCmd::PageUp => line.saturating_sub(page),
-                    _ => line + page,
-                }
-                .min(buf.last_line());
+                let hidden = &cx.lang.hidden;
+                let top = cx.viewport.top.min(buf.last_line());
+                let bottom = (top + cx.viewport.height.saturating_sub(1)).min(buf.last_line());
+                let page = hidden.between(top, bottom).saturating_sub(1).max(1);
+                let last = buf.last_line();
+                let (n, down) = match cmd {
+                    InsertCmd::Up => (1, false),
+                    InsertCmd::Down => (1, true),
+                    InsertCmd::PageUp => (page, false),
+                    _ => (page, true),
+                };
+                let row = match down {
+                    true => hidden.down(line, n, last),
+                    false => hidden.up(line, n),
+                };
                 if row != line {
                     self.cursor = self.vertical(buf, row);
                     if matches!(cmd, InsertCmd::PageUp | InsertCmd::PageDown) {
-                        let moved = row as isize - line as isize;
+                        let moved = match down {
+                            true => hidden.between(line, row) as isize,
+                            false => -(hidden.between(row, line) as isize),
+                        };
                         fx.push(Effect::Scroll(Scroll::Lines(moved)));
                     }
                 }

@@ -474,6 +474,102 @@ impl Syntax {
         scopes.dedup_by_key(|&mut (start, _)| start);
         scopes
     }
+
+    /// What can be folded: each node of the tree over more than one line,
+    /// and comments on lines that follow each other, as one; as its first
+    /// line and its last. Of those that start on the same line, the
+    /// outermost. In the order they start.
+    pub fn folds(&self, buf: &Buffer) -> Vec<(usize, usize)> {
+        let Some(tree) = &self.tree else {
+            return Vec::new();
+        };
+        // The tree can be a change behind the text for a paint.
+        let len = buf.len_bytes();
+        let line_at = |byte: usize| buf.line_of(buf.byte_to_char(byte.min(len)));
+        let mut folds: Vec<(usize, usize)> = Vec::new();
+        // Lines that are a comment of one line and nothing else.
+        let mut comments: Vec<usize> = Vec::new();
+        let mut cursor = tree.walk();
+        // Not the root: it is the whole file.
+        let mut more = cursor.goto_first_child();
+        while more {
+            let node = cursor.node();
+            // Its last byte: a body can take in the line break after it.
+            let start = line_at(node.start_byte());
+            let end = line_at(node.end_byte().saturating_sub(1).max(node.start_byte()));
+            let many = end > start;
+            if many && node.is_named() && folds.last().is_none_or(|&(last, _)| last < start) {
+                folds.push((start, end));
+            }
+            if !many && is_comment(node) {
+                let text = buf.line_string(start);
+                let blanks = text.len() - text.trim_start_matches([' ', '\t']).len();
+                if node.start_position().column == blanks {
+                    comments.push(start);
+                }
+            }
+            // A node on one line has none over more under it.
+            if many && cursor.goto_first_child() {
+                continue;
+            }
+            more = loop {
+                if cursor.goto_next_sibling() {
+                    break true;
+                }
+                if !cursor.goto_parent() || cursor.depth() == 0 {
+                    break false;
+                }
+            };
+        }
+        comments.dedup();
+        let mut at = 0;
+        while at < comments.len() {
+            let mut end = at;
+            while comments.get(end + 1) == Some(&(comments[end] + 1)) {
+                end += 1;
+            }
+            if end > at {
+                folds.push((comments[at], comments[end]));
+            }
+            at = end + 1;
+        }
+        // The outermost first of those that start on a line.
+        folds.sort_unstable_by_key(|&(start, end)| (start, std::cmp::Reverse(end)));
+        folds.dedup_by_key(|&mut (start, _)| start);
+        folds
+    }
+}
+
+/// What can be folded where there is no syntax tree: each line followed by
+/// lines indented further, to the last of them. Blank lines go with what
+/// is around them. In the order they start.
+pub fn indent_folds(indents: impl IntoIterator<Item = Option<usize>>) -> Vec<(usize, usize)> {
+    let mut folds = Vec::new();
+    // The lines still open, with their indents, the deepest last.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    let mut last_text = 0;
+    let mut close = |open: &mut Vec<(usize, usize)>, below: usize, last_text: usize| {
+        while let Some(&(line, indent)) = open.last() {
+            if indent < below {
+                break;
+            }
+            open.pop();
+            if last_text > line {
+                folds.push((line, last_text));
+            }
+        }
+    };
+    for (line, indent) in indents.into_iter().enumerate() {
+        let Some(indent) = indent else {
+            continue;
+        };
+        close(&mut open, indent, last_text);
+        open.push((line, indent));
+        last_text = line;
+    }
+    close(&mut open, 0, last_text);
+    folds.sort_unstable();
+    folds
 }
 
 // ---- what the vim engine asks ---------------------------------------------
@@ -980,5 +1076,45 @@ fn add(left: i32, right: i32) -> i32 {
         assert_eq!(scopes[2], [(0, 7)]);
         assert_eq!(scopes[6], [(0, 7), (4, 7)]);
         assert_eq!(scopes[10], [(8, 10)]);
+    }
+
+    #[test]
+    fn folds_are_the_nodes_over_lines() {
+        let text = "/// doc\n\
+                    /// more\n\
+                    fn f(\n\
+                    \x20   a: u8,\n\
+                    ) {\n\
+                    \x20   if a {\n\
+                    \x20       g();\n\
+                    \x20   } else {\n\
+                    \x20       h();\n\
+                    \x20   }\n\
+                    }\n\
+                    fn one() {}\n";
+        let buf = Buffer::new(text);
+        let syntax = Syntax::new(lang_named("rust").unwrap(), &buf).unwrap();
+        // The comments, the function, its body from where it starts on a
+        // line of its own, the `if` and its `else`; not `one`.
+        assert_eq!(
+            syntax.folds(&buf),
+            [(0, 1), (2, 10), (4, 10), (5, 9), (7, 9)]
+        );
+    }
+
+    #[test]
+    fn folds_go_by_indent_without_a_tree() {
+        use super::indent_folds;
+        let indents = |text: &str| -> Vec<Option<usize>> {
+            text.lines()
+                .map(|line| {
+                    let blanks = line.len() - line.trim_start().len();
+                    (!line.trim().is_empty()).then_some(blanks)
+                })
+                .collect()
+        };
+        let text = "a\n  b\n    c\n\n  d\ne\n  f\n\ng\n";
+        assert_eq!(indent_folds(indents(text)), [(0, 4), (1, 2), (5, 6)]);
+        assert_eq!(indent_folds(indents("a\nb\n")), []);
     }
 }

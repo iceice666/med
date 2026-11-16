@@ -1256,6 +1256,88 @@ fn wrapped_lines_scroll_and_click_by_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn folds_hide_lines_that_keys_and_the_view_go_over(cx: &mut TestAppContext) {
+    // `a` is lines 0 to 21, `b` 22 to 24, then lines of one line each.
+    let mut text = String::from("fn a() {\n");
+    for n in 0..20 {
+        text += &format!("    let x{n} = {n};\n");
+    }
+    text += "}\nfn b() {\n    1\n}\n";
+    for n in 0..60 {
+        text += &format!("const C{n}: u8 = {n};\n");
+    }
+    let project = Project::new(&[("a.rs", &text)]);
+    let (ws, cx) = open(&project, &["a.rs"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let folds = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.closed_folds());
+    let line =
+        |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.buf.line_of(e.vim.cursor));
+    let (_, visible) = editor.read_with(cx, |e, _| e.view());
+    assert!(visible > 10, "{visible} rows");
+
+    // `zc` on the function's first line folds it, and `j` goes over it.
+    cx.simulate_keystrokes("g g z c");
+    assert_eq!(folds(cx), [(0, 21)]);
+    cx.simulate_keystrokes("j");
+    assert_eq!(line(cx), 22);
+    cx.simulate_keystrokes("k");
+    assert_eq!(line(cx), 0);
+    // On screen, the line after it is the next; a click there goes to it.
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.visible_lines()),
+        (0, 21 + visible - 1)
+    );
+    let origin = |offset: usize, cx: &mut VisualTestContext| {
+        editor
+            .read_with(cx, |e, _| e.cell_origin(offset))
+            .expect("on screen")
+    };
+    let starts = editor.read_with(cx, |e, _| (e.buf.line_start(22), e.buf.line_start(23)));
+    let (top, after, next) = (origin(0, cx), origin(starts.0, cx), origin(starts.1, cx));
+    let row = next.y - after.y;
+    assert_eq!(after.y - top.y, row);
+    cx.simulate_click(point(after.x + px(2.), after.y + px(4.)), Modifiers::none());
+    assert_eq!(line(cx), 22);
+
+    // `zo` opens it; `za` from in it closes it, the cursor to its first
+    // line, and opens it again.
+    cx.simulate_keystrokes("g g z o");
+    assert_eq!(folds(cx), []);
+    cx.simulate_keystrokes("5 j z a");
+    assert_eq!((folds(cx), line(cx)), (vec![(0, 21)], 0));
+    cx.simulate_keystrokes("z a");
+    assert_eq!(folds(cx), []);
+
+    // A search that finds a place in a closed fold opens it.
+    cx.simulate_keystrokes("z c / x 1 0 enter");
+    assert_eq!((folds(cx), line(cx)), (vec![], 11));
+
+    // `zM` closes them all, `zR` opens them all.
+    cx.simulate_keystrokes("z shift-m");
+    assert_eq!((folds(cx), line(cx)), (vec![(0, 21), (22, 24)], 0));
+    cx.simulate_keystrokes("j j");
+    assert_eq!(line(cx), 25);
+    cx.simulate_keystrokes("2 k");
+    assert_eq!(line(cx), 0);
+    cx.simulate_keystrokes("z shift-r");
+    assert_eq!(folds(cx), []);
+
+    // A fold goes with the text as it is edited, and with undo.
+    cx.simulate_keystrokes("z c shift-o / / escape");
+    assert_eq!(folds(cx), [(1, 22)]);
+    cx.simulate_keystrokes("u");
+    assert_eq!(folds(cx), [(0, 21)]);
+
+    // Where lines wrap as well.
+    assert_eq!(lisp("(set-option 'wrap true)", cx), "nil");
+    cx.simulate_keystrokes("g g j");
+    assert_eq!(line(cx), 22);
+    assert_eq!(editor.read_with(cx, |e, _| e.visible_lines().0), 0);
+    let (top, after) = (origin(0, cx), origin(starts.0, cx));
+    assert_eq!(after.y - top.y, row);
+}
+
+#[gpui::test]
 fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
     use gpui::component::{ActiveTheme as _, Theme};
     let project = Project::new(&[("a.txt", "a\n")]);
@@ -2349,7 +2431,7 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                     (bindings 'normal "z"))"#,
             cx
         ),
-        r#"(("-" "view.bottom") ("." "view.center") ("<CR>" "view.top") ("b" "view.bottom") ("t" "view.top") ("z" "view.center"))"#
+        r#"(("-" "view.bottom") ("." "view.center") ("<CR>" "view.top") ("M" "fold.close_all") ("R" "fold.open_all") ("a" "fold.toggle") ("b" "view.bottom") ("c" "fold.close") ("o" "fold.open") ("t" "view.top") ("z" "view.center"))"#
     );
     // With no keys, the first key of every binding.
     assert_eq!(

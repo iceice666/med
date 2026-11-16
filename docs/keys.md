@@ -43,6 +43,8 @@ any case.
 | `space l` | the lenses of the file (run a test, its references…), to run one |
 | `]d` / `[d` | next / previous diagnostic |
 | `]h` / `[h` | next / previous change from HEAD that the gutter marks |
+| `za` / `zo` / `zc` | toggle / open / close the fold on the cursor's line |
+| `zR` / `zM` | open / close every fold |
 | `space r` | rename: the new name is typed after `:rename` |
 | `space a` | code actions, for the cursor or the selection: `j` `k`, `enter` or a number |
 | `space =`, `:format` | format the file |
@@ -133,6 +135,21 @@ the lines' indents, a step being the file's tab width, as vim's
 indent-blankline; a blank line has the indent of the lines around it,
 so that a block's lines go on through it. The line of the block the
 cursor is in is the stronger, down the block. A tab can have its own.
+
+Folds: `zc` closes the fold the cursor's line is in, the innermost
+that is not closed already, so a second `zc` closes the one around it;
+`zo` opens the closed fold on the cursor's line, `za` does whichever of
+the two fits, `zM` closes every fold and `zR` opens them all
+(`fold.close`, `fold.open`, `fold.toggle`, `fold.close_all`,
+`fold.open_all`). What can be folded goes by the syntax tree: every
+node over more than one line, the outermost of those that start on a
+line, and comments on lines that follow each other as one. A file with
+no grammar folds by indent: a line, and the lines indented further after
+it. A closed fold shows its first line, a `▸` beside its number and how
+many lines it hides after its end. `j`, `k`, `gj`, `gk`, `H`, `M`, `L`,
+paging and relative line numbers count it as one line; a search, a jump
+or an edit that comes to a line in it opens it. Folds follow the text as
+it is edited.
 
 `(set-option 'sticky-scroll true)` keeps the first lines of the
 functions, types and modules the top of the view is in standing at its

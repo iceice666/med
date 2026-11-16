@@ -17,7 +17,8 @@ use med_core::Buffer;
 use med_git::{Hunk, HunkKind};
 pub(crate) use med_vim::wrap_breaks;
 use med_vim::{
-    Clipboard, Ctx, Effect, FlashMatch, Key, Mode, PendingKeys, Scroll, Viewport, Vim, cell_width,
+    Clipboard, Ctx, Effect, FlashMatch, Hidden, Key, Mode, PendingKeys, Scroll, Viewport, Vim,
+    cell_width,
 };
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -359,6 +360,11 @@ pub struct Editor {
     /// The first lines of scopes standing at the top of the view, as it
     /// was last laid out, the outermost first: a click on one goes to it.
     sticky: Vec<StickyHeader>,
+    /// The closed folds, each from the start of its first line to the end
+    /// of its last, as char offsets that follow the text as it is edited;
+    /// and the lines they hide.
+    folds: Vec<Range<usize>>,
+    hidden: Hidden,
     /// IME composition in progress, as a char range of the buffer.
     marked: Option<Range<usize>>,
     /// IME composition on the `:` line, not yet given to it: it goes in at
@@ -947,6 +953,8 @@ impl Editor {
             visible_lines: 0,
             metrics: None,
             sticky: Vec::new(),
+            folds: Vec::new(),
+            hidden: Hidden::default(),
             marked: None,
             cmdline_preedit: None,
             cmdline_caret: None,
@@ -1054,6 +1062,7 @@ impl Editor {
             line_comment: self.lang.and_then(|l| l.line_comment).map(str::to_string),
             pairs: pairs_for(&path),
             wrap: self.wrap_cells,
+            hidden: self.hidden.clone(),
         };
         self.mtime = mtime(&path);
         self.diagnostics.clear();
@@ -1106,6 +1115,8 @@ impl Editor {
     /// scratch text, made again. Text that was never changed is replaced
     /// for good, so that there is no undoing back to none.
     pub fn replace_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.folds.clear();
+        self.hidden = Hidden::default();
         if self.buf.version() == 0 {
             self.buf = Buffer::new(text);
         } else {
@@ -1351,7 +1362,7 @@ impl Editor {
     /// view's edge only where it shows all of them.
     pub(crate) fn viewport(&self, cx: &App) -> Viewport {
         let scroll_off = self.scroll_margin(cx);
-        if self.wrap_cells.is_none() {
+        if !self.by_rows() {
             return Viewport {
                 top: self.scroll_top.max(0.) as usize,
                 height: self.visible_lines.max(1),
@@ -1485,6 +1496,8 @@ impl Editor {
         }
         self.mtime = disk;
         if let Ok(text) = std::fs::read_to_string(&path) {
+            self.folds.clear();
+            self.hidden = Hidden::default();
             self.buf.set_text(&text);
             self.buf.mark_saved();
             self.vim.set_cursor(self.vim.cursor, &self.buf);
@@ -1534,7 +1547,7 @@ impl Editor {
 
     fn center_cursor(&mut self) {
         let half = self.visible_lines.max(20) / 2;
-        if self.wrap_cells.is_some() {
+        if self.by_rows() {
             self.set_top(self.rows_back(self.place_of(self.vim.cursor), half));
             return;
         }
@@ -2022,6 +2035,7 @@ impl Editor {
         let viewport = self.viewport(cx);
         self.vim_lang.tab_width = self.tab_width(cx);
         self.vim_lang.wrap = self.wrap_cells;
+        self.vim_lang.hidden = self.hidden.clone();
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
         let syntax = &mut self.syntax;
         cx.update_global::<VimGlobal, R>(|global, cx| {
@@ -2158,10 +2172,178 @@ impl Editor {
         }
     }
 
+    // ---- folds -----------------------------------------------------------
+    //
+    // A closed fold shows its first line, with how many lines it hides
+    // after it, and none of the rest. What can be folded is worked out when
+    // it is asked for: the syntax tree's nodes over more than one line, or
+    // lines indented further where there is no tree.
+
+    /// What can be folded, as first and last lines, in the order they start.
+    fn foldable(&self) -> Vec<(usize, usize)> {
+        if let Some(syntax) = &self.syntax {
+            return syntax.folds(&self.buf);
+        }
+        let tab = self.vim_lang.tab_width;
+        crate::syntax::indent_folds(
+            (0..self.buf.line_count()).map(|line| indent_cells(&self.buf.line_string(line), tab)),
+        )
+    }
+
+    /// The first and last line of a closed fold, as the text is now.
+    fn fold_lines(&self, fold: &Range<usize>) -> (usize, usize) {
+        (self.buf.line_of(fold.start), self.buf.line_of(fold.end))
+    }
+
+    /// After the folds or the text changed: a fold edited down to a line is
+    /// gone, and the lines hidden are worked out again.
+    fn refold(&mut self) {
+        let len = self.buf.len_chars();
+        let mut folds = std::mem::take(&mut self.folds);
+        folds.retain(|fold| {
+            let (first, last) = self.fold_lines(fold);
+            fold.end <= len && first < last
+        });
+        folds.sort_by_key(|fold| (fold.start, std::cmp::Reverse(fold.end)));
+        folds.dedup();
+        self.hidden = Hidden::new(
+            folds
+                .iter()
+                .map(|fold| {
+                    let (first, last) = self.fold_lines(fold);
+                    (first + 1, last)
+                })
+                .collect(),
+        );
+        self.folds = folds;
+    }
+
+    /// Open every closed fold that hides `line`.
+    fn unfold_line(&mut self, line: usize) {
+        if !self.hidden.is_hidden(line) {
+            return;
+        }
+        let mut folds = std::mem::take(&mut self.folds);
+        folds.retain(|fold| {
+            let (first, last) = self.fold_lines(fold);
+            !(first < line && line <= last)
+        });
+        self.folds = folds;
+        self.refold();
+    }
+
+    /// The closed fold whose first line is `line`, the outermost there.
+    fn closed_fold_at(&self, line: usize) -> Option<usize> {
+        self.folds
+            .iter()
+            .position(|fold| self.fold_lines(fold).0 == line)
+    }
+
+    /// Close `folds`; the cursor, if hidden now, goes to the first line of
+    /// the fold it is in.
+    fn close_folds(&mut self, folds: &[(usize, usize)], cx: &mut Context<Self>) {
+        for &(first, last) in folds {
+            let fold = self.buf.line_start(first)..self.buf.line_end(last);
+            self.folds.push(fold);
+        }
+        self.refold();
+        let line = self.buf.line_of(self.vim.cursor);
+        if self.hidden.is_hidden(line) {
+            let first = self.hidden.shown(line);
+            let at = med_vim::motion::first_non_blank(&self.buf, first);
+            self.vim.set_cursor(at, &self.buf);
+        }
+        self.after_folding(cx);
+    }
+
+    /// The view after folds opened or closed: it starts on a line on
+    /// screen, and keeps the cursor.
+    fn after_folding(&mut self, cx: &mut Context<Self>) {
+        let (line, _) = self.top();
+        if self.hidden.is_hidden(line) {
+            self.set_top((self.hidden.shown(line), 0));
+        }
+        if !self.by_rows() {
+            self.top_row = 0;
+        } else {
+            self.scroll_top = self.scroll_top.floor();
+        }
+        self.after_change(cx);
+    }
+
+    /// `zc`: close the innermost fold the cursor's line is in that is not
+    /// closed already, of those that start on it first.
+    fn fold_close(&mut self, cx: &mut Context<Self>) {
+        let line = self.buf.line_of(self.vim.cursor);
+        let closed: Vec<(usize, usize)> = self.folds.iter().map(|f| self.fold_lines(f)).collect();
+        let fold = self
+            .foldable()
+            .into_iter()
+            .filter(|&(first, last)| {
+                first <= line && line <= last && !closed.contains(&(first, last))
+            })
+            .max_by_key(|&(first, _)| first);
+        match fold {
+            Some(fold) => self.close_folds(&[fold], cx),
+            None => cx.emit(EditorEvent::Message("No fold here".into())),
+        }
+    }
+
+    /// `zo`: open the closed fold on the cursor's line.
+    fn fold_open(&mut self, cx: &mut Context<Self>) -> bool {
+        let line = self.buf.line_of(self.vim.cursor);
+        let Some(at) = self.closed_fold_at(line) else {
+            return false;
+        };
+        self.folds.remove(at);
+        self.refold();
+        self.after_folding(cx);
+        true
+    }
+
+    /// `za`: open the closed fold on the cursor's line, or close one.
+    fn fold_toggle(&mut self, cx: &mut Context<Self>) {
+        if !self.fold_open(cx) {
+            self.fold_close(cx);
+        }
+    }
+
+    /// `zM`: close every fold.
+    fn fold_close_all(&mut self, cx: &mut Context<Self>) {
+        let folds = self.foldable();
+        if folds.is_empty() {
+            cx.emit(EditorEvent::Message("Nothing to fold".into()));
+            return;
+        }
+        self.close_folds(&folds, cx);
+    }
+
+    /// `zR`: open every fold.
+    fn fold_open_all(&mut self, cx: &mut Context<Self>) {
+        self.folds.clear();
+        self.refold();
+        self.after_folding(cx);
+    }
+
+    /// The closed folds, as first and last lines, in the order they start.
+    pub fn closed_folds(&self) -> Vec<(usize, usize)> {
+        self.folds
+            .iter()
+            .map(|fold| self.fold_lines(fold))
+            .collect()
+    }
+
     // ---- rows of wrapped lines ------------------------------------------
     //
     // Where lines wrap, a place on screen is a line and a row of it, and
-    // the view starts at one. Unwrapped, every line is one row.
+    // the view starts at one. Unwrapped, every line is one row. A line a
+    // closed fold hides has none: the walks go over it.
+
+    /// Whether the view goes by rows rather than by lines, which may be
+    /// scrolled a part of one: where lines wrap, or folds hide some.
+    fn by_rows(&self) -> bool {
+        self.wrap_cells.is_some() || !self.hidden.is_empty()
+    }
 
     /// Where a line's rows start, as char columns.
     fn breaks(&self, line: usize) -> Vec<usize> {
@@ -2175,9 +2357,12 @@ impl Editor {
         self.breaks(line).len()
     }
 
-    /// The line and row an offset is on.
+    /// The line and row an offset is on; in a closed fold, its first line.
     fn place_of(&self, offset: usize) -> (usize, usize) {
         let line = self.buf.line_of(offset);
+        if self.hidden.is_hidden(line) {
+            return (self.hidden.shown(line), 0);
+        }
         let col = offset - self.buf.line_start(line);
         let row = self.breaks(line).partition_point(|&b| b <= col);
         (line, row.saturating_sub(1))
@@ -2200,10 +2385,13 @@ impl Editor {
             let ahead = (rows - 1 - row).min(n);
             row += ahead;
             n -= ahead;
-            if n == 0 || line == last {
+            if n == 0 {
                 break;
             }
-            line += 1;
+            let Some(next) = self.hidden.next(line, last) else {
+                break;
+            };
+            line = next;
             row = 0;
             n -= 1;
         }
@@ -2216,10 +2404,13 @@ impl Editor {
             let back = row.min(n);
             row -= back;
             n -= back;
-            if n == 0 || line == 0 {
+            if n == 0 {
                 break;
             }
-            line -= 1;
+            let Some(prev) = self.hidden.prev(line) else {
+                break;
+            };
+            line = prev;
             row = self.rows(line) - 1;
             n -= 1;
         }
@@ -2234,17 +2425,19 @@ impl Editor {
         to: (usize, usize),
         limit: usize,
     ) -> Option<usize> {
-        if to < from || to.0 > from.0 + limit {
+        if to < from || self.hidden.between(from.0, to.0) > limit {
             return None;
         }
         // A line at a time: a long line is broken into rows once.
         let (mut rows, mut row) = (0, from.1);
-        for line in from.0..to.0 {
+        let mut line = from.0;
+        while line < to.0 {
             rows += self.rows(line) - row;
             row = 0;
             if rows > limit {
                 return None;
             }
+            line = self.hidden.next(line, to.0).unwrap_or(to.0);
         }
         rows += to.1 - row;
         (rows <= limit).then_some(rows)
@@ -2279,7 +2472,8 @@ impl Editor {
                 self.set_top(top);
                 // The cursor is dragged along as it is unwrapped, by rows.
                 let margin = self.scroll_margin(cx);
-                let end = (self.buf.last_line(), self.rows(self.buf.last_line()) - 1);
+                let last = self.hidden.shown(self.buf.last_line());
+                let end = (last, self.rows(last) - 1);
                 let bottom = self.bottom();
                 let low = if top == (0, 0) {
                     top
@@ -2312,7 +2506,7 @@ impl Editor {
     }
 
     fn scroll(&mut self, scroll: Scroll, cx: &App) {
-        if self.wrap_cells.is_some() {
+        if self.by_rows() {
             self.scroll_rows(scroll, cx);
             return;
         }
@@ -2384,6 +2578,9 @@ impl Editor {
                         shift_range(&mut d.start, &mut d.end, edit);
                     }
                 }
+                for fold in &mut self.folds {
+                    shift_range(&mut fold.start, &mut fold.end, edit);
+                }
                 // A token the edit touches is no longer known; those
                 // after it move with the text.
                 let delta = edit.new_end_char as isize - edit.old_end_char as isize;
@@ -2433,6 +2630,15 @@ impl Editor {
                 break;
             }
         }
+        // A place found in a closed fold, or a change made there, opens
+        // it: what the cursor is on is never hidden.
+        if !self.folds.is_empty() {
+            self.refold();
+            self.unfold_line(self.buf.line_of(self.vim.cursor));
+            if !self.by_rows() {
+                self.top_row = 0;
+            }
+        }
         // The snippet is done with once its places are left.
         if self
             .snippet
@@ -2477,8 +2683,7 @@ impl Editor {
     }
 
     fn ensure_cursor_visible(&mut self, cx: &App) {
-        if self.wrap_cells.is_some() {
-            self.scroll_left = px(0.);
+        if self.by_rows() {
             let visible = self.visible_lines.max(1);
             let margin = self.scroll_margin(cx);
             let cursor = self.place_of(self.vim.cursor);
@@ -2493,16 +2698,20 @@ impl Editor {
                 None if cursor < top => self.set_top(self.rows_back(cursor, margin)),
                 None => self.set_top(self.rows_back(cursor, visible - 1 - margin)),
             }
-            return;
-        }
-        let line = self.buf.line_of(self.vim.cursor);
-        let visible = self.visible_lines.max(1);
-        let margin = self.scroll_margin(cx);
-        let top = self.scroll_top;
-        if (line as f32) < top + margin as f32 {
-            self.scroll_top = line.saturating_sub(margin) as f32;
-        } else if line as f32 > top + (visible - 1 - margin) as f32 {
-            self.scroll_top = (line + margin + 1).saturating_sub(visible) as f32;
+            if self.wrap_cells.is_some() {
+                self.scroll_left = px(0.);
+                return;
+            }
+        } else {
+            let line = self.buf.line_of(self.vim.cursor);
+            let visible = self.visible_lines.max(1);
+            let margin = self.scroll_margin(cx);
+            let top = self.scroll_top;
+            if (line as f32) < top + margin as f32 {
+                self.scroll_top = line.saturating_sub(margin) as f32;
+            } else if line as f32 > top + (visible - 1 - margin) as f32 {
+                self.scroll_top = (line + margin + 1).saturating_sub(visible) as f32;
+            }
         }
         if let Some(m) = &self.metrics {
             let x = m.char_width * self.display_col(self.vim.cursor) as f32;
@@ -2747,7 +2956,7 @@ impl Editor {
 
     /// The first and the last line on screen, from 0.
     pub fn visible_lines(&self) -> (usize, usize) {
-        if self.wrap_cells.is_some() {
+        if self.by_rows() {
             return (self.top().0, self.bottom().0);
         }
         let first = (self.scroll_top.max(0.) as usize).min(self.buf.last_line());
@@ -3555,7 +3764,7 @@ impl Editor {
     fn offset_at(&self, position: Point<Pixels>, window: &Window) -> Option<usize> {
         let m = self.metrics.as_ref()?;
         // The line, and the row of it, under the pointer.
-        let (line, row) = if self.wrap_cells.is_some() {
+        let (line, row) = if self.by_rows() {
             let rows = ((position.y - m.text_origin.y) / m.line_height).max(0.) as usize;
             self.rows_on(self.top(), rows)
         } else {
@@ -3670,7 +3879,10 @@ impl Editor {
             return;
         };
         let delta = event.delta.pixel_delta(m.line_height);
-        if self.wrap_cells.is_some() {
+        if self.by_rows() {
+            if self.wrap_cells.is_none() {
+                self.scroll_left = (self.scroll_left - delta.x).max(px(0.));
+            }
             // By whole rows, what is left over kept for the next turn.
             self.wheel_rows -= delta.y / m.line_height;
             let rows = self.wheel_rows.trunc();
@@ -3719,6 +3931,9 @@ impl Editor {
         // too: darker in a light theme, lighter in a dark one.
         let color_column_bg = fg.opacity(0.07);
         let (guide_color, block_guide_color) = (fg.opacity(0.12), fg.opacity(0.35));
+        // A closed fold: behind the count of its lines, and its sign.
+        let fold_bg = fg.opacity(0.1);
+        let fold_sign = SharedString::new_static("▸");
         let indent_guides = self.indent_guides(cx);
         let sticky_scroll = self.sticky_scroll(cx);
         let sticky_edge_color = theme.border;
@@ -3784,11 +3999,19 @@ impl Editor {
             font: base_font.clone(),
         });
         self.scroll_top = self.scroll_top.clamp(0., (line_count - 1) as f32);
-        if wrap_cells.is_some() {
+        let by_rows = self.by_rows();
+        if by_rows {
             // Whole lines and rows of them: the wheel keeps its own part.
+            // The first is on screen, not in a closed fold.
             self.scroll_top = self.scroll_top.floor();
+            let (top, _) = self.top();
+            if self.hidden.is_hidden(top) {
+                self.set_top((self.hidden.shown(top), 0));
+            }
             self.top_row = self.top_row.min(self.rows(self.top().0) - 1);
-            self.scroll_left = px(0.);
+            if wrap_cells.is_some() {
+                self.scroll_left = px(0.);
+            }
         } else {
             self.top_row = 0;
         }
@@ -3798,18 +4021,41 @@ impl Editor {
         let buf = &self.buf;
 
         let first = self.scroll_top.floor() as usize;
-        let last = (first + visible + 2).min(line_count);
-        let y0 = match wrap_cells {
-            Some(_) => bounds.top() - line_height * self.top_row as f32,
-            None => bounds.top() - line_height * self.scroll_top.fract(),
+        let hidden = &self.hidden;
+        // The lines that may be drawn: those not in closed folds, from the
+        // first, as many as the view could show.
+        let mut shown = vec![first];
+        while shown.len() < visible + 2 {
+            match hidden.next(shown[shown.len() - 1], line_count - 1) {
+                Some(next) => shown.push(next),
+                None => break,
+            }
+        }
+        let last = shown[shown.len() - 1] + 1;
+        // Of lines that follow each other: the hidden ones not looked at.
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for &line in &shown {
+            match spans.last_mut() {
+                Some(span) if span.1 + 1 == line => span.1 = line,
+                _ => spans.push((line, line)),
+            }
+        }
+        let y0 = match by_rows {
+            true => bounds.top() - line_height * self.top_row as f32,
+            false => bounds.top() - line_height * self.scroll_top.fract(),
         };
         let scroll_left = self.scroll_left;
 
-        let byte_start = buf.char_to_byte(buf.line_start(first));
-        let byte_end = buf.char_to_byte(buf.line_end(last - 1));
         let (mut captures, mut styles) = match &self.syntax {
             Some(syntax) => (
-                syntax.captures(buf, byte_start..byte_end),
+                spans
+                    .iter()
+                    .flat_map(|&(from, to)| {
+                        let start = buf.char_to_byte(buf.line_start(from));
+                        let end = buf.char_to_byte(buf.line_end(to));
+                        syntax.captures(buf, start..end)
+                    })
+                    .collect(),
                 syntax
                     .capture_names()
                     .iter()
@@ -3943,24 +4189,30 @@ impl Editor {
         }
         // Indent guides: the lines' indents, and a blank one's from those
         // around it, looked for no further than this from the view.
+        // Closed folds are a line each, as on screen.
         let guides = indent_guides.then(|| {
-            let from = first.saturating_sub(GUIDE_REACH);
-            let to = (last + GUIDE_REACH).min(line_count);
-            let raw: Vec<Option<usize>> = (from..to)
-                .map(|line| indent_cells(&buf.line_string(line), tab_width))
+            let from = hidden.up(first, GUIDE_REACH);
+            let to = hidden.down(last - 1, GUIDE_REACH, line_count - 1);
+            let mut lines = vec![from];
+            while let Some(next) = hidden.next(lines[lines.len() - 1], to) {
+                lines.push(next);
+            }
+            let raw: Vec<Option<usize>> = lines
+                .iter()
+                .map(|&line| indent_cells(&buf.line_string(line), tab_width))
                 .collect();
             let indents = line_indents(&raw);
-            let block = cursor_line
-                .checked_sub(from)
-                .filter(|at| *at < indents.len())
+            let block = lines
+                .binary_search(&cursor_line)
+                .ok()
                 .and_then(|at| block_guide(&indents, at, tab_width));
-            (from, indents, block)
+            (lines, indents, block)
         });
 
         // Each line drawn: where its first row is, and how many it has.
         let mut drawn: Vec<(usize, Pixels, usize)> = Vec::new();
         let mut y = y0;
-        for line in first..last {
+        for &line in &shown {
             if y >= bounds.bottom() {
                 break;
             }
@@ -4166,10 +4418,11 @@ impl Editor {
             if cursor_line_shown && line == cursor_line && !mode.is_visual() {
                 frame.back.extend(whole_line(active_line_bg));
             }
-            if let Some((from, indents, block)) = &guides {
-                let indent = indents[line - from];
+            if let Some((lines, indents, block)) = &guides
+                && let Ok(at) = lines.binary_search(&line)
+            {
+                let indent = indents[at];
                 for column in (0..indent).step_by(tab_width.max(1)) {
-                    let at = line - from;
                     let in_block = block.is_some_and(|(c, first, last)| {
                         c == column && (first..=last).contains(&at)
                     });
@@ -4290,6 +4543,27 @@ impl Editor {
                 let origin = point(text_origin.x - *start, fold.row_top(row));
                 frame.lines.push((origin, shaped.clone(), clip));
             }
+            // A closed fold's first line: how many lines it hides.
+            let folded = hidden.around(line + 1).map(|(_, end)| end - line);
+            if let Some(lines) = folded {
+                let words = match lines {
+                    1 => "⋯ 1 line".to_string(),
+                    n => format!("⋯ {n} lines"),
+                };
+                let run = plain(words.len(), muted);
+                let shaped = text_system.shape_line(words.into(), font_size, &[run], None);
+                let x = text_end + char_width * 1.5;
+                let origin = fold.at(x);
+                let pill = Bounds::new(
+                    point(origin.x - char_width * 0.5, origin.y),
+                    size(shaped.width + char_width, line_height),
+                );
+                frame
+                    .text_back
+                    .push(fill(pill, fold_bg).corner_radii(line_height * 0.25));
+                text_end = x + shaped.width;
+                frame.lines.push((origin, shaped, None));
+            }
             // What programs have to say of the line, after its end.
             for mark in &line_marks {
                 let Some(words) = mark.text.as_ref().filter(|_| mark.whole_line) else {
@@ -4322,8 +4596,15 @@ impl Editor {
                 frame.lines.push((fold.at(x), shaped, None));
             }
 
-            // Gutter: line number, tinted by the worst diagnostic.
-            let number = line_number(line, cursor_line, relative_number, digits);
+            // Gutter: line number, tinted by the worst diagnostic. Counted
+            // from the cursor's, a closed fold is a line.
+            let number = match relative_number && line != cursor_line {
+                true => {
+                    let away = hidden.between(line.min(cursor_line), line.max(cursor_line));
+                    format!("{away:>digits$}")
+                }
+                false => line_number(line, cursor_line, relative_number, digits),
+            };
             let worst = severity_at.iter().copied().filter(|s| *s > 0).min();
             let color = match worst {
                 Some(severity) => diag_colors[(severity - 1) as usize],
@@ -4345,7 +4626,8 @@ impl Editor {
             let sign = line_marks
                 .iter()
                 .filter(|m| m.whole_line)
-                .find_map(|m| Some((m.sign.as_ref()?, m.color)));
+                .find_map(|m| Some((m.sign.as_ref()?, m.color)))
+                .or_else(|| folded.map(|_| (&fold_sign, Some(muted))));
             if let Some((sign, color)) = sign {
                 let sign: String = sign.chars().filter(|c| !c.is_control()).take(1).collect();
                 let run = plain(sign.len(), color.unwrap_or(fg));
@@ -4497,7 +4779,7 @@ impl Editor {
     /// the last paint.
     pub fn cell_origin(&self, offset: usize) -> Option<Point<Pixels>> {
         let m = self.metrics.as_ref()?;
-        if self.wrap_cells.is_some() {
+        if self.by_rows() {
             let place = self.place_of(offset);
             let top = self.top();
             // Near the view, or nowhere to show it.
@@ -4507,7 +4789,7 @@ impl Editor {
                 None => -(self.rows_between(place, top, near)? as f32),
             };
             let row_col = self.display_col(self.row_start(place));
-            let x = m.char_width * (self.display_col(offset) - row_col) as f32;
+            let x = m.char_width * (self.display_col(offset) - row_col) as f32 - self.scroll_left;
             let y = m.line_height * rows;
             return Some(point(m.text_origin.x + x, m.text_origin.y + y));
         }
@@ -5119,6 +5401,35 @@ impl EntityInputHandler for Editor {
 
 pub(crate) fn register(commands: &mut Commands) {
     use Handler::Editor as E;
+    commands.register(
+        "fold.toggle",
+        "Open the closed fold on the cursor's line, or close the fold it is in",
+        E(|editor, _, cx| editor.fold_toggle(cx)),
+    );
+    commands.register(
+        "fold.open",
+        "Open the closed fold on the cursor's line",
+        E(|editor, _, cx| {
+            if !editor.fold_open(cx) {
+                cx.emit(EditorEvent::Message("No closed fold here".into()));
+            }
+        }),
+    );
+    commands.register(
+        "fold.close",
+        "Close the fold the cursor's line is in, or the one around a closed one",
+        E(|editor, _, cx| editor.fold_close(cx)),
+    );
+    commands.register(
+        "fold.open_all",
+        "Open every fold",
+        E(|editor, _, cx| editor.fold_open_all(cx)),
+    );
+    commands.register(
+        "fold.close_all",
+        "Close every fold, by the syntax tree or else by indent",
+        E(|editor, _, cx| editor.fold_close_all(cx)),
+    );
     commands.register(
         "editor.goto_definition",
         "Go to the definition of the symbol under the cursor",
