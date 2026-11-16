@@ -42,7 +42,7 @@ there. Each brings its commands and its keys:
 | | `enter` / `-` | in a listing: open the line's file or directory / go up |
 | | `i` | in a listing: edit the names, as wdired |
 | `statusline.mlisp` | | the status bar, as a layout to change: the one the window draws without it |
-| `titlebar.mlisp` | | the title bar: what is being edited, the project and its branch |
+| `titlebar.mlisp` | | the title bar: what is being edited, the project's directory (a click switches project) and its branch |
 | | click the branch | switch branch (also `:titlebar.branches`) |
 
 With `which-key.mlisp`, a command that is half typed (`g`, `space`, `d g`)

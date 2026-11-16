@@ -1,5 +1,5 @@
 ; The title bar, as a layout of its own: what is being edited in the
-; middle, and the project and its branch at the right.
+; middle, and the project's directory and its branch at the right.
 ;
 ;   (load "titlebar.mlisp")
 ;
@@ -9,8 +9,10 @@
 ; bar's has (docs/lisp.md, under "The bars"), `:title` among it: the
 ; window's own title, "file — med".
 ;
-; A click on the branch lists the project's branches, and a click on one
-; checks it out; so does the command `titlebar.branches`.
+; A click on the directory switches to another project, as the window's
+; own title bar does: the picker's list of them (picker.mlisp), or else a
+; directory to choose. A click on the branch lists the project's branches,
+; and a click on one checks it out; so does the command `titlebar.branches`.
 
 (defpanel 'titlebar :at 'title
   (fn (panel)
@@ -19,7 +21,9 @@
       (text (or (get panel :path) (get panel :scratch) "med")
             :grow true :nowrap true :clip true
             :color (if (get panel :modified) 'warning 'muted-foreground))
-      (text (path-name (get panel :root)) :color 'muted-foreground)
+      (row :padding-x 6 :rounded 4 :hover (list :bg 'list-hover)
+           :on-click "workspace.switch_project"
+        (text (get panel :directory) :color 'muted-foreground :nowrap true))
       (when (get panel :branch)
         (row :padding-x 6 :rounded 4 :hover (list :bg 'list-hover)
              :on-click "titlebar.branches"

@@ -46,7 +46,10 @@ move the window and double-clicked to zoom it, and on macOS starts after
 the window's buttons. Such a panel is up once it is defined;
 `hide-panel` gives the window its own bar back, and so does a layout
 that fails, which the status bar then says, until the panel is given a
-layout again. With several up, the one defined last is drawn.
+layout again. With several up, the one defined last is drawn. The
+window's own title bar shows the project's directory, and a click on it
+runs `workspace.switch_project`: the picker's list of projects if
+`picker.mlisp` is loaded, or else a directory to choose.
 
 ```lisp
 (defpanel 'mine :at 'status
@@ -62,6 +65,7 @@ show, `nil` where there is nothing to show:
 | Name | Is |
 | --- | --- |
 | `:title` | the window's title, `"src/main.rs — med"` |
+| `:directory` | the project's directory, home as `~`: `"~/code/med"` |
 | `:mode`, `:mode-label` | the mode, as `(mode)` has it, and as the status bar names it: `'normal`, `"NORMAL"` |
 | `:path`, `:scratch` | the file being edited, from the project's root; the name of a tab that is no file |
 | `:modified` | whether it has changes that are not written |
@@ -215,7 +219,9 @@ is the project's:
 
 Each window is one project. `:project dir` (`workspace.open_project`)
 opens another in a window of its own, or brings up the window already on
-it; `:q` on the last tab and closing a window close only that one, and
+it. A click on the title bar's directory (`workspace.switch_project`)
+offers the other projects to switch to. `:q` on the last tab and closing a window
+close only that one, and
 `:qa` quits every window, keeping each one's session. Which panels are
 up is each window's own; one the init file puts up is up in every window.
 The projects

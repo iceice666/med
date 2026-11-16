@@ -596,6 +596,21 @@ impl Workspace {
         }
     }
 
+    /// The project's directory as the title bar shows it, home as `~`:
+    /// `~/code/med`.
+    pub(crate) fn directory(&self) -> String {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = home.filter(|home| home.is_absolute());
+        match home
+            .as_deref()
+            .and_then(|home| self.root.strip_prefix(home).ok())
+        {
+            Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+            Some(rest) => format!("~/{}", rest.display()),
+            None => self.root.display().to_string(),
+        }
+    }
+
     /// What the window's own bars show, for a program's bar to draw from:
     /// see "The bars" in docs/lisp.md.
     pub(crate) fn bar_vars(&self, cx: &App) -> Vec<(&'static str, Value)> {
@@ -607,6 +622,7 @@ impl Workspace {
         let (errors, warnings) = lsp.diagnostic_counts();
         let mut vars = vec![
             ("title", Value::from(self.title(cx))),
+            ("directory", Value::from(self.directory())),
             (
                 "message",
                 text(self.message.as_ref().map(|m| m.to_string())),
@@ -2236,13 +2252,28 @@ impl Workspace {
     }
 
     /// The title bar, which the window leaves to be drawn: a program's
-    /// panel at `'title`, or the window's title.
+    /// panel at `'title`, or the project's directory, which a click on
+    /// switches from.
     fn render_title(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bar = TitleBar::new();
         match self.bar_view(At::Title, cx) {
             Some(view) => bar.child(div().size_full().child(view)),
             None => {
-                let muted = cx.theme().muted_foreground;
+                let (muted, foreground) = (cx.theme().muted_foreground, cx.theme().foreground);
+                let hover = cx.theme().list_hover;
+                let directory = div()
+                    .id("title-directory")
+                    .px_2()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(move |el| el.bg(hover).text_color(foreground))
+                    // Not the start of dragging the window.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.run_command("workspace.switch_project", &Args::default(), window, cx);
+                    }))
+                    .child(self.directory());
                 bar.child(
                     div()
                         .flex_1()
@@ -2255,7 +2286,7 @@ impl Workspace {
                         .when(cfg!(target_os = "macos") && !window.is_fullscreen(), |el| {
                             el.mr(px(80.))
                         })
-                        .child(self.title(cx)),
+                        .child(directory),
                 )
             }
         }
@@ -2826,6 +2857,30 @@ pub(crate) fn register(commands: &mut Commands) {
                 Ok(dir) if dir.is_dir() => crate::open_project(dir, cx),
                 _ => ws.set_message(format!("{} is no directory", path.display()), cx),
             }
+        }),
+    );
+    commands.register(
+        "workspace.switch_project",
+        "Switch to another project: the picker's list of them, or a directory to choose",
+        W(|ws, _, window, cx| {
+            if cx.global::<Commands>().get("picker.projects").is_some() {
+                ws.run_command("picker.projects", &Args::default(), window, cx);
+                return;
+            }
+            let chosen = cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some("Open Project".into()),
+            });
+            cx.spawn(async move |_, cx| {
+                if let Ok(Ok(Some(paths))) = chosen.await
+                    && let Some(dir) = paths.into_iter().next()
+                {
+                    cx.update(|cx| crate::open_project(dir, cx));
+                }
+            })
+            .detach();
         }),
     );
     commands.register(

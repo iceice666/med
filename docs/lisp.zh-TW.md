@@ -28,7 +28,7 @@
 
 ### 狀態列與標題列
 
-狀態列與標題列由視窗自己繪製，直到有程式為其中之一提供版面：位於 `'status` 的面板會取代狀態列繪製，位於 `'title` 的面板則畫在標題列中；標題列仍可拖曳來移動視窗、雙擊來縮放，在 macOS 上則從視窗按鈕之後開始。這樣的面板一經定義就會顯示；`hide-panel` 會讓視窗恢復自己的列，版面出錯時也會如此（狀態列會提示錯誤），直到該面板再次被賦予版面。同時有多個顯示時，繪製最後定義的那一個。
+狀態列與標題列由視窗自己繪製，直到有程式為其中之一提供版面：位於 `'status` 的面板會取代狀態列繪製，位於 `'title` 的面板則畫在標題列中；標題列仍可拖曳來移動視窗、雙擊來縮放，在 macOS 上則從視窗按鈕之後開始。這樣的面板一經定義就會顯示；`hide-panel` 會讓視窗恢復自己的列，版面出錯時也會如此（狀態列會提示錯誤），直到該面板再次被賦予版面。同時有多個顯示時，繪製最後定義的那一個。視窗自己的標題列顯示專案目錄，點擊它會執行 `workspace.switch_project`：載入了 `picker.mlisp` 時列出開過的專案，否則請你選擇一個目錄。
 
 ```lisp
 (defpanel 'mine :at 'status
@@ -43,6 +43,7 @@
 | 名稱 | 內容 |
 | --- | --- |
 | `:title` | 視窗標題，例如 `"src/main.rs — med"` |
+| `:directory` | 專案目錄，家目錄寫成 `~`，例如 `"~/code/med"` |
 | `:mode`、`:mode-label` | 模式，分別是 `(mode)` 給出的形式與狀態列顯示的名稱：`'normal`、`"NORMAL"` |
 | `:path`、`:scratch` | 正在編輯的檔案（相對於專案根目錄）；非檔案分頁的名稱 |
 | `:modified` | 是否有尚未寫入的變更 |
@@ -139,7 +140,7 @@
 | `(make-link target path [hard])` | 在 `path` 建立指向 `target`（照原樣寫入）的符號連結，或硬連結 |
 | `(set-file-mode path mode)` | 權限，如同 chmod：`493` 或 `"755"` |
 
-每個視窗就是一個專案。`:project dir`（`workspace.open_project`）會在新視窗中開啟另一個專案；如果已經有視窗開在那個目錄上，就把它叫到前面。在最後一個分頁上 `:q`，或關閉視窗，都只會關掉那一個視窗；`:qa` 則會結束所有視窗，並保存每個視窗的 session。哪些 panel 開著由各個視窗各自決定；init 檔開啟的 panel 會出現在每個視窗。開過的專案列在 `MED_STATE_DIR` 底下的 `projects`。所有視窗共用同一個直譯器，所以程式中的名稱在每個視窗裡都相同：要保存某個專案的資料，應以 `(project-root)` 區分，就像 `tree.mlisp` 和 `picker.mlisp` 那樣。命令、hook 與點擊都在它們來自的視窗中執行；layout 則從 `:root` 得知所屬視窗的專案。
+每個視窗就是一個專案。`:project dir`（`workspace.open_project`）會在新視窗中開啟另一個專案；如果已經有視窗開在那個目錄上，就把它叫到前面；點擊標題列上的目錄（`workspace.switch_project`）也可以切換專案。在最後一個分頁上 `:q`，或關閉視窗，都只會關掉那一個視窗；`:qa` 則會結束所有視窗，並保存每個視窗的 session。哪些 panel 開著由各個視窗各自決定；init 檔開啟的 panel 會出現在每個視窗。開過的專案列在 `MED_STATE_DIR` 底下的 `projects`。所有視窗共用同一個直譯器，所以程式中的名稱在每個視窗裡都相同：要保存某個專案的資料，應以 `(project-root)` 區分，就像 `tree.mlisp` 和 `picker.mlisp` 那樣。命令、hook 與點擊都在它們來自的視窗中執行；layout 則從 `:root` 得知所屬視窗的專案。
 
 hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照）、`keys-pending`（見下文）、`terminal-exited`（見 Terminal 一節），以及與正在編輯的檔案相關的 hook（見後文）。
 

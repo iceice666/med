@@ -64,7 +64,8 @@ turns them off.
 
 Each window is one project. `:project dir` opens another in a window of
 its own, and with `picker.mlisp`, `space p` lists the projects opened
-before. `:q` on the last tab closes that window only; `:qa` quits them all.
+before, as does a click on the directory in the title bar. `:q` on the
+last tab closes that window only; `:qa` quits them all.
 
 ### Project environment
 

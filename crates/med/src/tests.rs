@@ -6199,3 +6199,41 @@ fn the_empty_tab_runs_a_command_once(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(": e space a . t x t enter : b d enter space z");
     assert_eq!(lisp("presses", cx), "3");
 }
+
+/// The window's own title bar names the project's directory, and a click
+/// on it lists the other projects, to switch to one; so does the example's.
+#[gpui::test]
+fn a_click_on_the_title_switches_project(cx: &mut TestAppContext) {
+    let a = Project::new(&[("a.txt", "a\n")]);
+    let b = Project::new(&[("b.txt", "b\n")]);
+    let state = Project::new(&[]);
+    let mut windows = open_projects(&[&b, &a], state.path("projects"), cx);
+    let (ws_a, mut vcx) = windows.pop().unwrap();
+    let cx = &mut vcx;
+    cx.update(|window, _| window.activate_window());
+    assert_eq!(ws_a.read_with(cx, |ws, _| ws.root().to_path_buf()), a.0);
+    let directory = ws_a.read_with(cx, |ws, _| ws.directory());
+    assert!(directory.ends_with(&*a.0.file_name().unwrap().to_string_lossy()));
+    lisp(PICKER, cx);
+    assert!(!shown("picker", cx));
+
+    // The middle of the bar, where the directory is.
+    let width = cx.update(|window, _| f32::from(window.viewport_size().width));
+    cx.simulate_click(point(px(width / 2.), px(TITLE / 2.)), Modifiers::none());
+    assert!(wait_for(cx, |cx| shown("picker", cx)));
+    assert_eq!(lisp("picker-mode", cx), "projects");
+    let quoted = format!("{:?}", b.0.display().to_string());
+    assert_eq!(lisp("picker-projects", cx), format!("({quoted})"));
+    lisp("(hide-panel 'picker)", cx);
+
+    // The example's bar has the directory at the right, as `:directory`.
+    let vars = ws_a.read_with(cx, |ws, cx| ws.bar_vars(cx));
+    let (_, value) = vars.iter().find(|(name, _)| *name == "directory").unwrap();
+    assert_eq!(value.to_string(), format!("{directory:?}"));
+    lisp(TITLEBAR, cx);
+    cx.run_until_parked();
+    assert!(!shown("picker", cx));
+    cx.simulate_click(point(px(width - 30.), px(TITLE / 2.)), Modifiers::none());
+    assert!(wait_for(cx, |cx| shown("picker", cx)));
+    assert_eq!(lisp("picker-mode", cx), "projects");
+}
