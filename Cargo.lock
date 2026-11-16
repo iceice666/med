@@ -4011,6 +4011,7 @@ name = "med-git"
 version = "0.2.2"
 dependencies = [
  "anyhow",
+ "similar",
 ]
 
 [[package]]

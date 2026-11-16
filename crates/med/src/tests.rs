@@ -692,7 +692,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides sticky-scroll undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides sticky-scroll git-gutter undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -6263,4 +6263,94 @@ fn a_click_on_the_title_switches_project(cx: &mut TestAppContext) {
     cx.simulate_click(point(px(width - 30.), px(TITLE / 2.)), Modifiers::none());
     assert!(wait_for(cx, |cx| shown("picker", cx)));
     assert_eq!(lisp("picker-mode", cx), "projects");
+}
+
+#[test]
+fn git_marks_say_what_each_line_is() {
+    use crate::editor::{GitMarks, git_marks};
+    use med_git::Hunk;
+    use med_git::HunkKind::*;
+    let hunk = |kind, lines| Hunk { kind, lines };
+    // Lines 0..=5; taken out before 0 and after 5, 1 and 2 added, 4
+    // changed.
+    let hunks = [
+        hunk(Deleted, 0..0),
+        hunk(Added, 1..3),
+        hunk(Modified, 4..5),
+        hunk(Deleted, 6..6),
+    ];
+    let marks = |line| git_marks(&hunks, line, 5);
+    let at = |line, deleted_above, deleted_below| GitMarks {
+        line,
+        deleted_above,
+        deleted_below,
+    };
+    assert_eq!(marks(0), at(None, true, false));
+    assert_eq!(marks(1), at(Some(Added), false, false));
+    assert_eq!(marks(2), at(Some(Added), false, false));
+    assert_eq!(marks(3), at(None, false, false));
+    assert_eq!(marks(4), at(Some(Modified), false, false));
+    assert_eq!(marks(5), at(None, false, true));
+    assert_eq!(git_marks(&[], 0, 0), GitMarks::default());
+}
+
+#[gpui::test]
+fn the_gutter_marks_what_changed_from_head(cx: &mut TestAppContext) {
+    use med_git::HunkKind::*;
+    let project = Project::new(&[("a.txt", "one\ntwo\nthree\nfour\n")]);
+    project.git_init();
+    project.git(&["add", "-A"]);
+    project.git(&["commit", "-q", "-m", "first"]);
+    let (ws, cx) = open_with(&["(set-option 'git-gutter true)"], &project, &["a.txt"], cx);
+    let hunks = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            let hunks = editor.git_hunks().iter();
+            hunks.map(|h| (h.kind, h.lines.clone())).collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(hunks(&ws, cx), []);
+    cx.simulate_keystrokes("j d d");
+    assert_eq!(hunks(&ws, cx), [(Deleted, 1..1)]);
+    cx.simulate_keystrokes("c c");
+    cx.simulate_input("TWO");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(hunks(&ws, cx), [(Modified, 1..2)]);
+    cx.simulate_keystrokes("G o");
+    cx.simulate_input("five");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(hunks(&ws, cx), [(Modified, 1..2), (Added, 3..4)]);
+
+    // Committed, the text is as at HEAD once that is read again.
+    cx.simulate_keystrokes("space w");
+    project.git(&["commit", "-q", "-am", "second"]);
+    assert_eq!(hunks(&ws, cx).len(), 2);
+    eval_in(&ws, "(run \"workspace.sync\")", cx);
+    assert_eq!(hunks(&ws, cx), []);
+
+    // Off, for this tab: nothing more is worked out.
+    eval_in(&ws, "(set-buffer-option 'git-gutter false)", cx);
+    cx.simulate_keystrokes("g g d d");
+    assert_eq!(hunks(&ws, cx), []);
+    eval_in(&ws, "(reset-buffer-option 'git-gutter)", cx);
+    assert_eq!(hunks(&ws, cx), [(Deleted, 0..0)]);
+}
+
+#[gpui::test]
+fn a_file_git_does_not_have_has_no_marks(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    project.git_init();
+    let (ws, cx) = open_with(&["(set-option 'git-gutter true)"], &project, &["a.txt"], cx);
+    cx.simulate_keystrokes("o");
+    cx.simulate_input("two");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    ws.read_with(cx, |ws, cx| {
+        assert!(ws.active_editor().unwrap().read(cx).git_hunks().is_empty());
+    });
 }

@@ -12,13 +12,15 @@ use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
 use med_core::Buffer;
+use med_git::{Hunk, HunkKind};
 pub(crate) use med_vim::wrap_breaks;
 use med_vim::{
     Clipboard, Ctx, Effect, FlashMatch, Key, Mode, PendingKeys, Scroll, Viewport, Vim, cell_width,
 };
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 const COMPLETION_ROWS: usize = 10;
 
@@ -327,6 +329,13 @@ pub struct Editor {
     signature_task: Option<Task<()>>,
     drag_anchor: Option<usize>,
     mtime: Option<SystemTime>,
+    /// The file as it is at HEAD, which the gutter marks the changes from.
+    git_base: GitBase,
+    /// The lines changed from it, the version of the text they are for,
+    /// and the working out.
+    git_hunks: Vec<Hunk>,
+    git_diffed: Option<u64>,
+    git_diff_task: Option<Task<()>>,
     /// A tab that a program made, with no file behind it.
     pub scratch: Option<Scratch>,
     /// A tab that shows a Markdown file rendered.
@@ -411,6 +420,20 @@ pub struct BufferOptions {
     pub inlay_hints: Option<bool>,
     pub indent_guides: Option<bool>,
     pub sticky_scroll: Option<bool>,
+    pub git_gutter: Option<bool>,
+}
+
+/// What the file was at HEAD, as far as it is known.
+enum GitBase {
+    /// To be read: the file is new to the tab, or HEAD may have moved.
+    Unread,
+    /// Kept to be dropped, which gives up the reading.
+    Reading {
+        _task: Task<()>,
+    },
+    /// Nothing to compare with: no repository, or not committed.
+    Missing,
+    Text(Arc<str>),
 }
 
 /// The cells of a line's leading blanks, a tab to its stop; `None` for a
@@ -521,6 +544,41 @@ pub(crate) fn column_bands(
         })
         .filter(|band| band.right() > text.left() && band.left() < text.right())
         .collect()
+}
+
+/// What the git gutter marks at a line.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct GitMarks {
+    /// The line was added, or changed.
+    pub line: Option<HunkKind>,
+    /// Lines were taken out just before it, or, it being the last, after.
+    pub deleted_above: bool,
+    pub deleted_below: bool,
+}
+
+/// What the git gutter marks at `line`, of `hunks` in order; `last` is
+/// the last line of the text.
+pub(crate) fn git_marks(hunks: &[Hunk], line: usize, last: usize) -> GitMarks {
+    let mut marks = GitMarks::default();
+    // The one that could hold the line is the last to start before it.
+    let from = hunks
+        .partition_point(|h| h.lines.start < line)
+        .saturating_sub(1);
+    for hunk in hunks[from..]
+        .iter()
+        .take_while(|h| h.lines.start <= line + 1)
+    {
+        match hunk.kind {
+            HunkKind::Deleted if hunk.lines.start == line => marks.deleted_above = true,
+            HunkKind::Deleted if hunk.lines.start > line && line == last => {
+                marks.deleted_below = true
+            }
+            HunkKind::Deleted => {}
+            kind if hunk.lines.contains(&line) => marks.line = Some(kind),
+            _ => {}
+        }
+    }
+    marks
 }
 
 /// What the gutter shows for a line, right-aligned to `digits`: its number,
@@ -826,6 +884,10 @@ impl Editor {
             signature_task: None,
             drag_anchor: None,
             mtime: None,
+            git_base: GitBase::Unread,
+            git_hunks: Vec::new(),
+            git_diffed: None,
+            git_diff_task: None,
             scratch: None,
             preview: None,
             _subscriptions: Vec::new(),
@@ -897,6 +959,10 @@ impl Editor {
         };
         self.mtime = mtime(&path);
         self.diagnostics.clear();
+        self.git_base = GitBase::Unread;
+        self.git_hunks.clear();
+        self.git_diffed = None;
+        self.git_diff_task = None;
         if let (Some(lsp), Some(lang)) = (&self.lsp, self.lang) {
             self.lsp_version = 0;
             lsp.update(cx, |store, cx| store.open(&path, lang, text, cx));
@@ -1262,6 +1328,12 @@ impl Editor {
             .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.indent_guides))
     }
 
+    pub(crate) fn git_gutter(&self, cx: &App) -> bool {
+        self.options
+            .git_gutter
+            .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.git_gutter))
+    }
+
     pub(crate) fn sticky_scroll(&self, cx: &App) -> bool {
         self.options
             .sticky_scroll
@@ -1370,6 +1442,100 @@ impl Editor {
         }
         let line = self.buf.line_of(self.vim.cursor);
         self.scroll_top = line.saturating_sub(half) as f32;
+    }
+
+    // ---- git gutter ----------------------------------------------------
+
+    /// Read again what the file is at HEAD, which a commit, a checkout or
+    /// a pull may have changed. The marks stay as they are until it is.
+    pub fn reread_git_base(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.git_base, GitBase::Unread) {
+            self.git_base = GitBase::Unread;
+            cx.notify();
+        }
+    }
+
+    /// Work out which lines are not as at HEAD, once the text has been
+    /// still a moment, if that is not known for this version of it.
+    /// Drawing asks.
+    pub fn request_git_diff(&mut self, cx: &mut Context<Self>) {
+        let file = self.scratch.is_none() && self.preview.is_none();
+        let Some(path) = self.path.clone().filter(|_| file && self.git_gutter(cx)) else {
+            return;
+        };
+        let base = match &self.git_base {
+            GitBase::Unread => {
+                let task = cx.spawn(async move |this, cx| {
+                    let base = cx
+                        .background_executor()
+                        .spawn(async move { med_git::committed_text(&path) })
+                        .await;
+                    this.update(cx, |this, cx| this.set_git_base(base.as_deref(), cx))
+                        .ok();
+                });
+                self.git_base = GitBase::Reading { _task: task };
+                return;
+            }
+            GitBase::Reading { .. } => return,
+            GitBase::Missing => return,
+            GitBase::Text(base) => base.clone(),
+        };
+        if self.git_diff_task.is_some() || self.git_diffed == Some(self.buf.version()) {
+            return;
+        }
+        self.git_diffed = Some(self.buf.version());
+        self.git_diff_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let Ok((version, rope)) =
+                this.update(cx, |this, _| (this.buf.version(), this.buf.rope().clone()))
+            else {
+                return;
+            };
+            let hunks = cx
+                .background_executor()
+                .spawn(async move {
+                    // A file so changed that the diff takes long is marked
+                    // more roughly.
+                    let deadline = Instant::now() + Duration::from_millis(200);
+                    med_git::line_hunks(&base, &rope.to_string(), Some(deadline))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.git_diff_task = None;
+                if this.buf.version() == version {
+                    this.git_hunks = hunks;
+                    this.git_diffed = Some(version);
+                } else {
+                    // Typed in meanwhile: again, for the text as it is now.
+                    this.git_diffed = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Take what the file is at HEAD (`None`: nothing to compare with),
+    /// and mark the lines again by it.
+    pub(crate) fn set_git_base(&mut self, base: Option<&str>, cx: &mut Context<Self>) {
+        self.git_base = match base {
+            Some(text) => GitBase::Text(text.into()),
+            None => GitBase::Missing,
+        };
+        if base.is_none() {
+            self.git_hunks.clear();
+        }
+        self.git_diffed = None;
+        self.git_diff_task = None;
+        cx.notify();
+    }
+
+    /// The lines changed from HEAD as last worked out, for programs and
+    /// tests.
+    pub fn git_hunks(&self) -> &[Hunk] {
+        &self.git_hunks
     }
 
     // ---- inlay hints ---------------------------------------------------
@@ -2850,6 +3016,11 @@ impl Editor {
         let sticky_scroll = self.sticky_scroll(cx);
         let sticky_edge_color = theme.border;
         let diag_colors = [theme.danger, theme.warning, theme.info, muted];
+        let (git_added, git_modified, git_deleted) = (theme.green, theme.blue, theme.red);
+        let git_hunks = match self.git_gutter(cx) {
+            true => self.git_hunks.clone(),
+            false => Vec::new(),
+        };
         let search_bg = theme.warning.opacity(0.35);
         // What `motion.flash` found: the place `enter` goes to stands out
         // among the others, and a label from everything.
@@ -3413,6 +3584,32 @@ impl Editor {
                     .gutter
                     .push((point(bounds.left() + char_width * 0.5, y), shaped));
             }
+            // What git has of the line: a bar between the number and the
+            // text down a line added or changed, and a tick where lines
+            // were taken out.
+            let marks = git_marks(&git_hunks, line, line_count.saturating_sub(1));
+            let git_x = bounds.left() + gutter_width - char_width;
+            if let Some(kind) = marks.line {
+                let color = match kind {
+                    HunkKind::Added => git_added,
+                    _ => git_modified,
+                };
+                let height = line_height * fold.rows() as f32;
+                frame.back.push(fill(
+                    Bounds::new(point(git_x, y), size(px(3.), height)),
+                    color,
+                ));
+            }
+            let tick = |y: Pixels| {
+                let bounds = Bounds::new(point(git_x, y - px(1.5)), size(char_width * 0.6, px(3.)));
+                fill(bounds, git_deleted)
+            };
+            if marks.deleted_above {
+                frame.back.push(tick(y));
+            }
+            if marks.deleted_below {
+                frame.back.push(tick(y + line_height * fold.rows() as f32));
+            }
             drawn.push((line, y, fold.rows()));
             y += line_height * fold.rows() as f32;
         }
@@ -3849,6 +4046,7 @@ impl Render for Editor {
         self.vim_lang.tab_width = self.tab_width(cx);
         self.vim_lang.wrap = self.wrap_cells;
         self.request_hints(cx);
+        self.request_git_diff(cx);
         let mut key_context = KeyContext::default();
         key_context.add("Editor");
         key_context.set(

@@ -7,3 +7,5 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# The line diff the gutter's marks come from; gpui-component has it too.
+similar = "2.7"

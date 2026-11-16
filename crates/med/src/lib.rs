@@ -72,6 +72,9 @@ pub struct Settings {
     /// Keep the first lines of the functions and types the top of the
     /// view is in standing at its top, VS Code's sticky scroll.
     pub sticky_scroll: bool,
+    /// Mark beside each line what changed from the file as it is at
+    /// HEAD: lines added, changed, or taken out.
+    pub git_gutter: bool,
     /// The colors: `theme.rs`.
     pub theme: theme::ThemeChoice,
     /// Keep each file's undo history when it is saved, and take it up
@@ -237,6 +240,8 @@ pub fn init(cx: &mut App) {
         inlay_hints: false,
         indent_guides: false,
         sticky_scroll: false,
+        // Turned on by `run`: tests must not start git for every file.
+        git_gutter: false,
         theme: theme::ThemeChoice::System,
         undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.
@@ -264,6 +269,7 @@ pub fn run() {
             init(cx);
             let settings = cx.global_mut::<Settings>();
             settings.project_env = std::env::var_os("MED_NO_PROJECT_ENV").is_none();
+            settings.git_gutter = true;
             settings.session_dir = std::env::var_os("MED_NO_SESSION")
                 .is_none()
                 .then(state_dir)

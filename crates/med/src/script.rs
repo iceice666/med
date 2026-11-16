@@ -18,7 +18,7 @@
 //!                                      ; auto-pairs, scroll-off,
 //!                                      ; cursor-line, color-column, wrap,
 //!                                      ; inlay-hints, indent-guides,
-//!                                      ; sticky-scroll
+//!                                      ; sticky-scroll, git-gutter
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
@@ -28,7 +28,8 @@
 //!                                      ; scroll-off, cursor-line,
 //!                                      ; color-column, wrap, undo-file,
 //!                                      ; inlay-hints, indent-guides,
-//!                                      ; sticky-scroll, theme, project-env
+//!                                      ; sticky-scroll, git-gutter, theme,
+//!                                      ; project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -768,7 +769,8 @@ fn no_buffer_option(option: &str) -> Error {
     failed(format!(
         "{option} is not an option a tab has its own of \
          (tab-width relative-number format-on-save auto-pairs scroll-off \
-         cursor-line color-column wrap inlay-hints indent-guides sticky-scroll)"
+         cursor-line color-column wrap inlay-hints indent-guides sticky-scroll \
+         git-gutter)"
     ))
 }
 
@@ -1133,6 +1135,7 @@ fn define_functions(interp: &mut Interp) {
             "inlay-hints" => settings.inlay_hints = flag(value)?,
             "indent-guides" => settings.indent_guides = flag(value)?,
             "sticky-scroll" => settings.sticky_scroll = flag(value)?,
+            "git-gutter" => settings.git_gutter = flag(value)?,
             // A theme's name, a light one's and a dark one's, or nil.
             "theme" => {
                 let choice = match value {
@@ -1162,7 +1165,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides sticky-scroll undo-file theme project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides sticky-scroll git-gutter undo-file theme project-env)"
                 )));
             }
         }
@@ -1215,6 +1218,10 @@ fn define_functions(interp: &mut Interp) {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.options.sticky_scroll = Some(on))
             }
+            "git-gutter" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.options.git_gutter = Some(on))
+            }
             "auto-pairs" => {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.vim.auto_pairs = Some(on))
@@ -1238,6 +1245,7 @@ fn define_functions(interp: &mut Interp) {
             "inlay-hints" => Box::new(|editor| editor.options.inlay_hints = None),
             "indent-guides" => Box::new(|editor| editor.options.indent_guides = None),
             "sticky-scroll" => Box::new(|editor| editor.options.sticky_scroll = None),
+            "git-gutter" => Box::new(|editor| editor.options.git_gutter = None),
             "auto-pairs" => Box::new(|editor| editor.vim.auto_pairs = None),
             other => return Err(no_buffer_option(other)),
         };

@@ -5,6 +5,10 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod hunks;
+
+pub use hunks::{Hunk, HunkKind, committed_text, line_hunks};
+
 const SEP: char = '\x1f';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -460,6 +464,9 @@ mod tests {
 
     struct TempRepo {
         repo: Repo,
+        /// The directory as it was made, which `repo.root` may name by
+        /// another path (`/var` and `/private/var` on macOS).
+        dir: PathBuf,
     }
 
     impl TempRepo {
@@ -487,7 +494,7 @@ mod tests {
             run(&["config", "user.email", "test@example.invalid"]);
             run(&["config", "commit.gpgsign", "false"]);
             let repo = Repo::discover(&dir).unwrap();
-            Self { repo }
+            Self { repo, dir }
         }
 
         fn write(&self, name: &str, text: &str) {
@@ -499,6 +506,31 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.repo.root);
         }
+    }
+
+    #[test]
+    fn committed_text_is_the_file_at_head() {
+        let t = TempRepo::new();
+        let file = t.dir.join("sub").join("a b.txt");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "one\n").unwrap();
+        // No commit yet, then not committed.
+        assert_eq!(committed_text(&file), None);
+        t.repo.stage_all().unwrap();
+        t.repo.commit("first", false).unwrap();
+        fs::write(&file, "two\n").unwrap();
+        assert_eq!(committed_text(&file).as_deref(), Some("one\n"));
+        t.write("new.txt", "x\n");
+        assert_eq!(committed_text(&t.dir.join("new.txt")), None);
+        t.write("bin", "a\0b");
+        t.repo.stage_all().unwrap();
+        t.repo.commit("binary", false).unwrap();
+        assert_eq!(committed_text(&t.dir.join("bin")), None);
+        // Not in a repository at all.
+        assert_eq!(
+            committed_text(&std::env::temp_dir().join("med-no-repo.txt")),
+            None
+        );
     }
 
     #[test]

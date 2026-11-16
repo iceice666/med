@@ -134,6 +134,16 @@ view, its line is pushed up out of it. They take no more than a third
 of the view, five at most, and never stand over the cursor's line. A
 click on one goes to it. A tab can have its own.
 
+Beside the line numbers, a bar marks the lines that are not as they
+are at HEAD, the last commit: green for lines added, blue for lines
+changed, and a red tick where lines were taken out. It follows the text
+as it is typed, a moment after. What is staged is still a change from
+HEAD, and keeps its mark until it is committed. HEAD is read again when
+the window comes to the front and after `workspace.sync`, which the git
+screen runs after each thing it does. A file git does not have, or a
+file in no repository, has no marks. `(set-option 'git-gutter false)`
+turns them off; a tab can have its own.
+
 `(set-option 'inlay-hints true)` shows what the language server says
 inline of the text, dimmed, in the line where it goes: a variable's
 type, the name of a parameter an argument is given for. They are asked
@@ -220,7 +230,8 @@ run at startup, or from the command line with `:eval`:
                                               ; relative-number, scroll-off, cursor-line,
                                               ; color-column, wrap, inlay-hints,
                                               ; indent-guides, sticky-scroll,
-                                              ; undo-file, theme, project-env
+                                              ; git-gutter, undo-file, theme,
+                                              ; project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -247,8 +258,8 @@ again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
 `relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
-`cursor-line`, `color-column`, `wrap`, `inlay-hints`, `indent-guides`
-and `sticky-scroll` (the others are the window's or the application's). Its own value goes before the one `set-option` gives
+`cursor-line`, `color-column`, `wrap`, `inlay-hints`, `indent-guides`,
+`sticky-scroll` and `git-gutter` (the others are the window's or the application's). Its own value goes before the one `set-option` gives
 every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:

@@ -462,7 +462,11 @@ impl Workspace {
 
     fn sync_with_disk(&mut self, window: &Window, cx: &mut Context<Self>) {
         for tab in self.all_editors().cloned().collect::<Vec<_>>() {
-            tab.update(cx, |editor, cx| editor.reload_if_changed(cx));
+            tab.update(cx, |editor, cx| {
+                editor.reload_if_changed(cx);
+                // A commit or a checkout moves HEAD.
+                editor.reread_git_base(cx);
+            });
         }
         self.files_changed(window, cx);
     }
