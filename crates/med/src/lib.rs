@@ -39,6 +39,25 @@ pub struct Settings {
     /// Editor font; the theme's monospace font when unset.
     pub font_family: Option<SharedString>,
     pub font_size: f32,
+    /// The height of a row of text, as a multiple of the font size.
+    pub line_height: f32,
+    /// How heavy the text is drawn; bold text is drawn at 700 whatever this is.
+    pub font_weight: FontWeight,
+    /// OpenType features, as a tag and its value: `("ss01", 1)` for a
+    /// stylistic set, `("calt", 0)` to turn ligatures off.
+    pub font_features: Vec<(String, u32)>,
+    /// Ligatures (`calt` and `liga`); off, they are turned off over what
+    /// `font_features` says of them.
+    pub ligatures: bool,
+    /// Fonts to look in, in turn, for the characters the font has not got:
+    /// CJK, symbols.
+    pub font_fallbacks: Vec<SharedString>,
+    /// The terminal's font; the editor's when unset.
+    pub terminal_font_family: Option<SharedString>,
+    /// The terminal's font size; the editor's when unset.
+    pub terminal_font_size: Option<f32>,
+    /// The height of a row in the terminal, as `line_height`.
+    pub terminal_line_height: f32,
     /// Start language servers for opened files.
     pub lsp: bool,
     /// How long a key that is a binding by itself waits to become a longer
@@ -100,6 +119,44 @@ pub struct Settings {
 impl Settings {
     pub const KEY_TIMEOUT: Duration = Duration::from_millis(1000);
     pub const SCROLL_OFF: usize = 3;
+    pub const LINE_HEIGHT: f32 = 1.5;
+    pub const TERMINAL_LINE_HEIGHT: f32 = 1.4;
+
+    /// The font the editor's text is drawn in; `mono`, the theme's
+    /// monospace family, where no family is set.
+    pub fn editor_font(&self, mono: &SharedString) -> Font {
+        self.font(self.font_family.as_ref().unwrap_or(mono))
+    }
+
+    /// The font of the terminal: its own family, else the editor's.
+    pub fn terminal_font(&self, mono: &SharedString) -> Font {
+        let family = self
+            .terminal_font_family
+            .as_ref()
+            .or(self.font_family.as_ref());
+        self.font(family.unwrap_or(mono))
+    }
+
+    pub fn terminal_font_size(&self) -> f32 {
+        self.terminal_font_size.unwrap_or(self.font_size)
+    }
+
+    fn font(&self, family: &SharedString) -> Font {
+        let mut features = self.font_features.clone();
+        if !self.ligatures {
+            features.retain(|(tag, _)| tag != "calt" && tag != "liga");
+            features.extend([("calt".into(), 0), ("liga".into(), 0)]);
+        }
+        let fallbacks = self.font_fallbacks.iter().map(|f| f.to_string()).collect();
+        Font {
+            family: family.clone(),
+            features: FontFeatures(std::sync::Arc::new(features)),
+            fallbacks: (!self.font_fallbacks.is_empty())
+                .then(|| FontFallbacks::from_fonts(fallbacks)),
+            weight: self.font_weight,
+            style: FontStyle::Normal,
+        }
+    }
 }
 
 impl Global for Settings {}
@@ -232,6 +289,14 @@ pub fn init(cx: &mut App) {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(14.),
+        line_height: Settings::LINE_HEIGHT,
+        font_weight: FontWeight::NORMAL,
+        font_features: Vec::new(),
+        ligatures: true,
+        font_fallbacks: Vec::new(),
+        terminal_font_family: None,
+        terminal_font_size: None,
+        terminal_line_height: Settings::TERMINAL_LINE_HEIGHT,
         lsp: std::env::var_os("MED_NO_LSP").is_none(),
         key_timeout: Some(Settings::KEY_TIMEOUT),
         format_on_save: false,

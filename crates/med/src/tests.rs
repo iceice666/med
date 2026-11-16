@@ -5,7 +5,7 @@
 use crate::keymap::PanelKeymaps;
 use crate::user_panel::UserPanels;
 use crate::workspace::Workspace;
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
+use gpui::{Entity, FontWeight, Modifiers, TestAppContext, VisualTestContext, point, px};
 use med_vim::{MapMode, Mode};
 use std::fs;
 use std::path::PathBuf;
@@ -682,6 +682,78 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
         assert_eq!(settings.font_size, 18.5);
         assert_eq!(settings.font_family.as_deref(), Some("Menlo"));
     });
+
+    // The font's other settings, and the terminal's own.
+    eval("(set-option 'line-height 1.25)", cx);
+    eval("(set-option 'font-weight 'medium)", cx);
+    eval(
+        r#"(set-option 'font-features '("ss01" ("cv01" 2) ("calt" true)))"#,
+        cx,
+    );
+    eval("(set-option 'ligatures false)", cx);
+    eval(
+        r#"(set-option 'font-fallbacks '("PingFang TC" "Apple Color Emoji"))"#,
+        cx,
+    );
+    eval(r#"(set-option 'terminal-font-size 12)"#, cx);
+    cx.update(|_, cx| {
+        let settings = cx.global::<crate::Settings>();
+        assert_eq!(settings.line_height, 1.25);
+        let font = settings.editor_font(&"Mono".into());
+        assert_eq!(font.family.as_ref(), "Menlo");
+        assert_eq!(font.weight, FontWeight::MEDIUM);
+        assert_eq!(
+            font.features.tag_value_list(),
+            [
+                ("ss01".into(), 1),
+                ("cv01".into(), 2),
+                ("calt".into(), 0),
+                ("liga".into(), 0)
+            ]
+        );
+        assert_eq!(
+            font.fallbacks.unwrap().fallback_list(),
+            ["PingFang TC", "Apple Color Emoji"]
+        );
+        // The editor's family and weight, at a size of its own.
+        let terminal = settings.terminal_font(&"Mono".into());
+        assert_eq!(terminal.family.as_ref(), "Menlo");
+        assert_eq!(terminal.weight, FontWeight::MEDIUM);
+        assert_eq!(settings.terminal_font_size(), 12.);
+        assert_eq!(settings.terminal_line_height, 1.4);
+    });
+    eval(r#"(set-option 'terminal-font-family "Iosevka Term")"#, cx);
+    eval("(set-option 'font-weight 300)", cx);
+    eval("(set-option 'terminal-font-size nil)", cx);
+    eval("(set-option 'font-features nil)", cx);
+    eval("(set-option 'ligatures true)", cx);
+    eval("(set-option 'line-height nil)", cx);
+    cx.update(|_, cx| {
+        let settings = cx.global::<crate::Settings>();
+        let terminal = settings.terminal_font(&"Mono".into());
+        assert_eq!(terminal.family.as_ref(), "Iosevka Term");
+        assert_eq!(terminal.weight, FontWeight::LIGHT);
+        assert!(terminal.features.tag_value_list().is_empty());
+        assert_eq!(settings.terminal_font_size(), 18.5);
+        assert_eq!(settings.line_height, crate::Settings::LINE_HEIGHT);
+    });
+    assert_eq!(
+        eval("(set-option 'line-height 0.5)", cx),
+        "1:1: 0.5 is no line height (1 to 4)"
+    );
+    assert_eq!(
+        eval("(set-option 'font-weight 'heavy)", cx),
+        "1:1: heavy is no font weight (100 to 900, thin extra-light light normal medium semibold bold extra-bold black)"
+    );
+    assert_eq!(
+        eval(r#"(set-option 'font-features '("ligatures"))"#, cx),
+        "1:1: \"ligatures\" is no OpenType feature tag"
+    );
+    cx.update(|_, cx| {
+        let settings = cx.global::<crate::Settings>();
+        assert_eq!(settings.line_height, crate::Settings::LINE_HEIGHT);
+        assert_eq!(settings.font_weight, FontWeight::LIGHT);
+    });
     assert_eq!(
         eval(r#"(do (message "size " 18.5) 'ignored)"#, cx),
         "size 18.5"
@@ -706,7 +778,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size font-family line-height font-weight font-features ligatures font-fallbacks terminal-font-family terminal-font-size terminal-line-height lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),

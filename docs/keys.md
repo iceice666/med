@@ -263,7 +263,8 @@ run at startup, or from the command line with `:eval`:
 (bind 'git.files "x" "git.discard")           ; a panel's keys
 (bind 'app "cmd-shift-t" "tree.toggle")       ; a shortcut of the window's
 (unbind 'normal "gt")
-(set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
+(set-option 'font-size 16)                    ; also font-family, the font settings
+                                              ; below, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
                                               ; color-column, wrap, inlay-hints,
@@ -272,6 +273,24 @@ run at startup, or from the command line with `:eval`:
                                               ; git-gutter, undo-file, theme,
                                               ; project-env
 ```
+
+The font of the editor and of the terminal:
+
+```lisp
+(set-option 'font-family "JetBrains Mono")   ; nil for the theme's
+(set-option 'font-size 14)
+(set-option 'line-height 1.5)                ; times the font size, 1 to 4
+(set-option 'font-weight 'medium)            ; or 100 to 900
+(set-option 'font-features '("ss01" ("cv01" 2)))   ; OpenType features
+(set-option 'ligatures false)                ; calt and liga off
+(set-option 'font-fallbacks '("PingFang TC"))      ; for what the font lacks
+(set-option 'terminal-font-family "Iosevka Term")  ; nil for the editor's
+(set-option 'terminal-font-size 13)                ; nil for the editor's
+(set-option 'terminal-line-height 1.4)
+```
+
+The terminal takes the editor's weight, features, ligatures and
+fallbacks. Bold text is drawn at 700 whatever the weight.
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
 goes by the panel's name, or by its name and a part of it (`git.files`).

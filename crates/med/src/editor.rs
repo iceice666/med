@@ -3965,14 +3965,9 @@ impl Editor {
         let flash_target_bg = theme.warning.opacity(0.7);
         let (label_bg, label_fg) = (theme.danger, theme.background);
         let scrollbar_color = theme.scrollbar_thumb;
-        let family = settings
-            .font_family
-            .clone()
-            .unwrap_or_else(|| theme.mono_font_family.clone());
-
-        let base_font = font(family);
+        let base_font = settings.editor_font(&theme.mono_font_family);
         let font_size = px(settings.font_size);
-        let line_height = px((settings.font_size * 1.5).round());
+        let line_height = px((settings.font_size * settings.line_height).round());
         let text_system = window.text_system().clone();
         let plain = |len: usize, color: Hsla| TextRun {
             len,

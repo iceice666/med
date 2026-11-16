@@ -23,7 +23,12 @@
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
-//! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
+//! (set-option 'font-size 16)           ; also font-family, line-height,
+//!                                      ; font-weight, font-features,
+//!                                      ; ligatures, font-fallbacks,
+//!                                      ; terminal-font-family,
+//!                                      ; terminal-font-size,
+//!                                      ; terminal-line-height, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save,
 //!                                      ; tab-width, relative-number,
 //!                                      ; scroll-off, cursor-line,
@@ -76,7 +81,7 @@ use crate::user_panel::UserPanels;
 use crate::workspace::Workspace;
 use crate::{Settings, VimGlobal};
 use gpui::{
-    Action, AnyWindowHandle, App, AppContext as _, Context, Global, KeyBinding,
+    Action, AnyWindowHandle, App, AppContext as _, Context, FontWeight, Global, KeyBinding,
     KeyBindingContextPredicate, NoAction, SharedString, Task, WeakEntity, Window,
 };
 use med_lisp::{Arity, Call, Error, ErrorKind, Interp, Value};
@@ -795,6 +800,109 @@ fn on_buffer(
     }
 }
 
+/// A font size, in points.
+fn font_size(value: &Value) -> Result<f32, Error> {
+    match value.as_float()? {
+        size if size > 0. => Ok(size as f32),
+        _ => Err(failed(format!("{value} is no size for a font"))),
+    }
+}
+
+/// A font's family, or nil for none.
+fn font_family(value: &Value) -> Result<Option<SharedString>, Error> {
+    Ok(match value {
+        Value::Nil => None,
+        family => Some(SharedString::from(family.as_str()?.to_string())),
+    })
+}
+
+/// A row's height as a multiple of the font size, from 1 to 4; nil for
+/// `default`.
+fn line_height(value: &Value, default: f32) -> Result<f32, Error> {
+    match value {
+        Value::Nil => Ok(default),
+        value => match value.as_float()? {
+            height if (1.0..=4.0).contains(&height) => Ok(height as f32),
+            _ => Err(failed(format!("{value} is no line height (1 to 4)"))),
+        },
+    }
+}
+
+/// A weight from 100 to 900, or its name (`'bold`); nil for normal.
+fn font_weight(value: &Value) -> Result<FontWeight, Error> {
+    let named = |name: &str| match name {
+        "thin" => Some(FontWeight::THIN),
+        "extra-light" => Some(FontWeight::EXTRA_LIGHT),
+        "light" => Some(FontWeight::LIGHT),
+        "normal" => Some(FontWeight::NORMAL),
+        "medium" => Some(FontWeight::MEDIUM),
+        "semibold" => Some(FontWeight::SEMIBOLD),
+        "bold" => Some(FontWeight::BOLD),
+        "extra-bold" => Some(FontWeight::EXTRA_BOLD),
+        "black" => Some(FontWeight::BLACK),
+        _ => None,
+    };
+    let weight = match value {
+        Value::Nil => Some(FontWeight::NORMAL),
+        Value::Int(_) | Value::Float(_) => {
+            let weight = value.as_float()?;
+            (100.0..=900.0)
+                .contains(&weight)
+                .then_some(FontWeight(weight as f32))
+        }
+        value => named(&name(value)?),
+    };
+    weight.ok_or_else(|| {
+        failed(format!(
+            "{value} is no font weight (100 to 900, thin extra-light light normal medium semibold bold extra-bold black)"
+        ))
+    })
+}
+
+/// OpenType features: a list of tags (`"ss01"`, turned on) and pairs of a
+/// tag and its value (`("calt" 0)`, `("cv01" 2)`, `("calt" false)`, or as
+/// `cons` makes them).
+fn font_features(value: &Value) -> Result<Vec<(String, u32)>, Error> {
+    let tag = |value: &Value| {
+        let tag = value.as_str()?;
+        match tag.len() == 4 && tag.bytes().all(|b| b.is_ascii_graphic()) {
+            true => Ok(tag.to_string()),
+            false => Err(failed(format!("{value} is no OpenType feature tag"))),
+        }
+    };
+    let setting = |value: &Value| match value {
+        Value::Bool(on) => Ok(*on as u32),
+        Value::Int(n @ 0..=65535) => Ok(*n as u32),
+        other => Err(failed(format!("{other} is no value for a feature"))),
+    };
+    let feature = |value: &Value| match value {
+        Value::Str(_) => Ok((tag(value)?, 1)),
+        Value::Pair(pair) => {
+            // `("cv01" 2)`, or `(cons "cv01" 2)`.
+            let rest = match &pair.cdr {
+                Value::Pair(rest) if matches!(rest.cdr, Value::Nil) => &rest.car,
+                rest => rest,
+            };
+            Ok((tag(&pair.car)?, setting(rest)?))
+        }
+        other => Err(failed(format!("{other} is no font feature"))),
+    };
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        list => list.to_vec()?.iter().map(feature).collect(),
+    }
+}
+
+/// Font families: one, a list of them, or nil for none.
+fn font_fallbacks(value: &Value) -> Result<Vec<SharedString>, Error> {
+    let family = |value: &Value| Ok(SharedString::from(value.as_str()?.to_string()));
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Pair(_) => value.to_vec()?.iter().map(family).collect(),
+        one => Ok(vec![family(one)?]),
+    }
+}
+
 fn flag(value: &Value) -> Result<bool, Error> {
     match value {
         Value::Bool(on) => Ok(*on),
@@ -1094,19 +1202,26 @@ fn define_functions(interp: &mut Interp) {
         let cx = app(call)?;
         let settings = cx.global_mut::<Settings>();
         match option.as_str() {
-            "font-size" => {
-                let size = value.as_float()?;
-                if size.is_nan() || size <= 0. {
-                    return Err(failed(format!("{value} is no size for a font")));
-                }
-                settings.font_size = size as f32;
-            }
+            "font-size" => settings.font_size = font_size(value)?,
             // nil goes back to the theme's font.
-            "font-family" => {
-                settings.font_family = match value {
+            "font-family" => settings.font_family = font_family(value)?,
+            // A multiple of the font size; nil for the default.
+            "line-height" => settings.line_height = line_height(value, Settings::LINE_HEIGHT)?,
+            "font-weight" => settings.font_weight = font_weight(value)?,
+            "font-features" => settings.font_features = font_features(value)?,
+            "ligatures" => settings.ligatures = flag(value)?,
+            "font-fallbacks" => settings.font_fallbacks = font_fallbacks(value)?,
+            // nil for the editor's.
+            "terminal-font-family" => settings.terminal_font_family = font_family(value)?,
+            "terminal-font-size" => {
+                settings.terminal_font_size = match value {
                     Value::Nil => None,
-                    family => Some(SharedString::from(family.as_str()?.to_string())),
+                    size => Some(font_size(size)?),
                 };
+            }
+            "terminal-line-height" => {
+                settings.terminal_line_height =
+                    line_height(value, Settings::TERMINAL_LINE_HEIGHT)?;
             }
             // Read when a window opens: of use in the init file.
             "lsp" => settings.lsp = flag(value)?,
@@ -1167,7 +1282,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
+                     (font-size font-family line-height font-weight font-features ligatures font-fallbacks terminal-font-family terminal-font-size terminal-line-height lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
                 )));
             }
         }

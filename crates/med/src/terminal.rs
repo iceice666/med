@@ -382,13 +382,10 @@ impl TermView {
     ) -> Frame {
         let settings = cx.global::<crate::Settings>();
         let theme = cx.theme();
-        let family = settings
-            .font_family
-            .clone()
-            .unwrap_or_else(|| theme.mono_font_family.clone());
-        let font_size = px(settings.font_size);
-        let line_height = px((settings.font_size * 1.4).round());
-        let base_font = font(family);
+        let points = settings.terminal_font_size();
+        let font_size = px(points);
+        let line_height = px((points * settings.terminal_line_height).round());
+        let base_font = settings.terminal_font(&theme.mono_font_family);
         let palette = palette(cx);
         let selection = rgb_of(theme.selection);
         let text_system = window.text_system().clone();

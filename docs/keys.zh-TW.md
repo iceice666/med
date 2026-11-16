@@ -122,7 +122,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 (bind 'git.files "x" "git.discard")           ; 面板的按鍵
 (bind 'app "cmd-shift-t" "tree.toggle")       ; 視窗的快捷鍵
 (unbind 'normal "gt")
-(set-option 'font-size 16)                    ; 另有 font-family、lsp、key-timeout、
+(set-option 'font-size 16)                    ; 另有 font-family、下方的字型設定、
+                                              ; lsp、key-timeout、
                                               ; auto-pairs、format-on-save、tab-width、
                                               ; relative-number、scroll-off、cursor-line、
                                               ; color-column、wrap、inlay-hints、
@@ -131,6 +132,23 @@ flash.nvim 的其他功能也使用同樣的標記：
                                               ; git-gutter、undo-file、theme、
                                               ; project-env
 ```
+
+編輯器與終端機的字型：
+
+```lisp
+(set-option 'font-family "JetBrains Mono")   ; nil 表示使用主題的字型
+(set-option 'font-size 14)
+(set-option 'line-height 1.5)                ; 字級的倍數，1 到 4
+(set-option 'font-weight 'medium)            ; 或 100 到 900
+(set-option 'font-features '("ss01" ("cv01" 2)))   ; OpenType features
+(set-option 'ligatures false)                ; 關閉 calt 與 liga
+(set-option 'font-fallbacks '("PingFang TC"))      ; 字型缺字時依序使用
+(set-option 'terminal-font-family "Iosevka Term")  ; nil 表示沿用編輯器的
+(set-option 'terminal-font-size 13)                ; nil 表示沿用編輯器的
+(set-option 'terminal-line-height 1.4)
+```
+
+終端機沿用編輯器的字重、features、連字與 fallback 字型。粗體文字不受字重影響，一律以 700 繪製。
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
 
