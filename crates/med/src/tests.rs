@@ -5842,3 +5842,90 @@ fn the_input_method_composes_on_the_command_line(cx: &mut TestAppContext) {
     assert_eq!(editor.read_with(cx, |e, _| e.cmdline_preedit.clone()), None);
     assert_eq!(marked(cx), None);
 }
+
+#[gpui::test]
+fn a_program_bar_draws_the_command_lines_cursor(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler as _;
+    let project = Project::new(&[("a.txt", "a\nb\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let height = cx.update(|window, _| f32::from(window.viewport_size().height));
+    let seen = |cx: &mut VisualTestContext| {
+        cx.simulate_click(point(px(300.), px(height - 13.)), Modifiers::none());
+        cx.run_until_parked();
+        lisp("seen", cx)
+    };
+    lisp("(def seen nil)", cx);
+    lisp(
+        r#"(defpanel 'bar :at 'status
+             (fn (panel)
+               (row :width 'full :height 26
+                    :on-click (fn () (set! seen (list (get panel :cmdline-before)
+                                                      (get panel :cmdline-after)
+                                                      (get panel :cmdline-preedit))))
+                 (row :width 200 (text (or (get panel :cmdline-before) "")))
+                 (caret)
+                 (text (or (get panel :cmdline-after) "") :grow true))))"#,
+        cx,
+    );
+    cx.run_until_parked();
+
+    // Closed, there is no line to be on either side of.
+    assert_eq!(seen(cx), "(nil nil nil)");
+
+    // The line on each side of its cursor.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("ab");
+    cx.simulate_keystrokes("left");
+    assert_eq!(seen(cx), r#"(":a" "b" nil)"#);
+
+    // What is composed is the bar's to show, at the cursor.
+    editor.update_in(cx, |e, window, cx| {
+        e.replace_and_mark_text_in_range(None, "ㄏ", None, window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(seen(cx), r#"(":a" "b" "ㄏ")"#);
+
+    // The input method's window goes where the bar put `(caret)`.
+    let (caret, at) = editor.update_in(cx, |e, window, cx| {
+        let caret = e.cmdline_caret;
+        let at = e.bounds_for_range(2..3, gpui::Bounds::default(), window, cx);
+        (caret, at)
+    });
+    let caret = caret.expect("the bar draws the line's cursor");
+    assert_eq!(at, Some(caret));
+    assert_eq!(f32::from(caret.origin.x), 200.);
+    assert!(f32::from(caret.origin.y) >= height - 26., "{caret:?}");
+    assert_eq!(f32::from(caret.size.width), 0.);
+
+    // Done with the line, the caret is forgotten, and a `(caret)` drawn
+    // with no line open does not bring it back.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(editor.read_with(cx, |e, _| e.cmdline_caret), None);
+}
+
+#[gpui::test]
+fn the_example_status_bar_draws_the_command_line(cx: &mut TestAppContext) {
+    use crate::user_panel::At;
+    use gpui::EntityInputHandler as _;
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let (ws, cx) = open_with(&[STATUSLINE], &project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("ab");
+    cx.simulate_keystrokes("left");
+    editor.update_in(cx, |e, window, cx| {
+        e.replace_and_mark_text_in_range(None, "ㄏ", None, window, cx)
+    });
+    cx.run_until_parked();
+    // Its layout holds, so the bar is still the program's...
+    let bar = cx.update(|_, cx| cx.global::<UserPanels>().bar(At::Status).cloned());
+    assert_eq!(bar.as_deref(), Some("statusline"));
+    // ...and it put the line's cursor where the input method can find it.
+    let caret = editor.read_with(cx, |e, _| e.cmdline_caret);
+    let height = cx.update(|window, _| f32::from(window.viewport_size().height));
+    let caret = caret.expect("the example draws (caret)");
+    assert!(f32::from(caret.origin.y) >= height - 26., "{caret:?}");
+    assert!(f32::from(caret.origin.x) > 0., "{caret:?}");
+}

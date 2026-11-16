@@ -624,6 +624,21 @@ impl Workspace {
                     Value::from(format!("{kind}{text}"))
                 }),
             ),
+        ]);
+        // The command line on each side of its cursor, which `:cmdline`
+        // is the two of, and what the input method is composing there.
+        let (before, after) = match editor.vim.cmdline() {
+            Some((kind, text)) => {
+                let at = editor.vim.cmdline_cursor().unwrap_or(text.len());
+                let (head, tail) = text.split_at(at.min(text.len()));
+                (Value::from(format!("{kind}{head}")), Value::from(tail))
+            }
+            None => (Value::Nil, Value::Nil),
+        };
+        vars.extend([
+            ("cmdline-before", before),
+            ("cmdline-after", after),
+            ("cmdline-preedit", text(editor.cmdline_preedit.clone())),
             ("pending", text(Some(editor.vim.pending_display()))),
             ("recording", text(editor.vim.recording().map(String::from))),
             (
@@ -2418,12 +2433,8 @@ impl Workspace {
                 let caret = canvas(
                     move |bounds, window, cx| {
                         if let Some(editor) = editor_entity {
-                            editor.update(cx, |editor, _| {
-                                if editor.cmdline_caret != Some(bounds) {
-                                    editor.cmdline_caret = Some(bounds);
-                                    window.invalidate_character_coordinates();
-                                }
-                            });
+                            editor
+                                .update(cx, |editor, _| editor.place_cmdline_caret(bounds, window));
                         }
                     },
                     |_, _, _, _| {},

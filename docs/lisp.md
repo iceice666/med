@@ -68,6 +68,8 @@ show, `nil` where there is nothing to show:
 | `:line`, `:col` | where the cursor is, counted from 1 |
 | `:language` | `"rust"`, or `"text"` |
 | `:cmdline` | the command line while it is typed, `":wq"` or `"/foo"` |
+| `:cmdline-before`, `:cmdline-after` | the command line on each side of its cursor, `":w"` and `"q"`; the two make `:cmdline` |
+| `:cmdline-preedit` | what the input method is composing at the cursor, not yet typed |
 | `:message` | what was last said, until the next key |
 | `:diagnostic` | the first line of the diagnostic at the cursor |
 | `:pending` | the keys of a command typed so far, `"2d"` |
@@ -79,6 +81,19 @@ show, `nil` where there is nothing to show:
 With no file open there is an empty `[No Name]` buffer, which the next
 file opened takes the place of: it has a `:mode`, but nothing that comes
 from a file. A status bar that leaves out `:cmdline` has `:` typed blind.
+To draw the command line's cursor, put `(caret)` between
+`:cmdline-before` and the rest: it has no width, but the input method
+puts its window where it is, which with no `(caret)` is the corner of
+the bar.
+
+```lisp
+(row :grow true :nowrap true
+  (text (get panel :cmdline-before))
+  (caret)
+  (text (or (get panel :cmdline-preedit) "") :underline true)
+  (text (str "▏" (get panel :cmdline-after))))
+```
+
 [`examples/statusline.mlisp`](../examples/statusline.mlisp) is the window's own
 status bar, and the colors of the bars are `'status-bar`, `'title-bar`,
 `'title-bar-border` and `'tab-bar`.
@@ -95,14 +110,15 @@ panel is drawn and describes it.
 | `(rows list styles... function)` | a list that scrolls; the function describes a row |
 | `(input name styles...)` | a line to type in |
 | `(markdown value styles...)` | text read as Markdown: headings, lists, code, tables, links |
+| `(caret styles...)` | where a bar draws the command line's cursor, for the input method |
 
 Styles are `:name value` pairs: `width` and `height` (pixels or `'full`),
 `grow` (`true`, or a share of the room next to others that grow), `shrink`,
 `padding-x` `padding-y` `padding-left` `padding-right`, `gap`, `align` and
 `justify` (`'start` `'center` `'end`, and `'between`), `bg`, `color`,
 `border` `border-top` `border-right` `border-bottom` `border-left`,
-`border-color`, `rounded`, `size` (of text), `bold`, `mono`, `nowrap`,
-`clip`; `hover`, a list of styles for under the pointer, as in
+`border-color`, `rounded`, `size` (of text), `bold`, `underline`, `mono`,
+`nowrap`, `clip`; `hover`, a list of styles for under the pointer, as in
 `(list :bg 'list-hover)`; and `on-click`, a command's name or a function. A
 color is one of the theme's (`'sidebar`, `'muted-foreground`,
 `'list-active`, `'warning`…) or `"#rrggbb"`.

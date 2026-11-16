@@ -10,7 +10,8 @@
 ; that fails gives way to the window's bar, which says why.
 ;
 ; Draw `:cmdline` somewhere: it is the command line being typed, and
-; without it `:` is typed blind.
+; without it `:` is typed blind. `statusline-cmdline` draws it the way
+; the window does, with its cursor.
 
 (def statusline-height 26)
 
@@ -27,11 +28,22 @@
   (str (or (get panel :path) (get panel :scratch) "[No Name]")
        (if (get panel :modified) " [+]" "")))
 
+; The command line, with its cursor where it is and what the input
+; method is composing there. `(caret)` shows nothing: it is where the
+; input method puts its window.
+(defn statusline-cmdline (panel)
+  (row :grow true :nowrap true :clip true :align 'center
+    (text (get panel :cmdline-before))
+    (caret :height 14)
+    (when (get panel :cmdline-preedit)
+      (text (get panel :cmdline-preedit) :underline true))
+    (text (str "▏" (get panel :cmdline-after)))))
+
 ; The left of the bar: the command line while it is open, or else the
 ; file and what there is to say about it.
 (defn statusline-left (panel)
   (if (get panel :cmdline)
-    (text (str (get panel :cmdline) "▏") :grow true :nowrap true :clip true)
+    (statusline-cmdline panel)
     (row :grow true :gap 12 :nowrap true :clip true
       (text (statusline-name panel) :nowrap true)
       (text (or (get panel :message) (get panel :diagnostic) "")

@@ -3682,6 +3682,16 @@ impl Editor {
         self.char_to_utf16(range.start)..self.char_to_utf16(range.end)
     }
 
+    /// The command line's cursor was drawn at `bounds`: the input method
+    /// puts its window there, and is told again when that moves. Only
+    /// while `:` is typed, as the caret is forgotten when it is done.
+    pub(crate) fn place_cmdline_caret(&mut self, bounds: Bounds<Pixels>, window: &mut Window) {
+        if self.vim.cmdline().is_some() && self.cmdline_caret != Some(bounds) {
+            self.cmdline_caret = Some(bounds);
+            window.invalidate_character_coordinates();
+        }
+    }
+
     /// While `:` is typed the input method works on the command line, not
     /// the buffer: its text with the composition put in at the cursor, and
     /// where the composition starts, in UTF-16 units of that text.

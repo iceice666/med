@@ -711,6 +711,11 @@ impl PanelView {
             .ok();
     }
 
+    /// The workspace the panel is in.
+    pub(crate) fn workspace(&self) -> WeakEntity<Workspace> {
+        self.workspace.clone()
+    }
+
     /// A node was clicked.
     pub(crate) fn click(&mut self, action: &Click, window: &mut Window, cx: &mut Context<Self>) {
         match action.clone() {

@@ -73,6 +73,9 @@ enum Content {
         text: SharedString,
         scroll: bool,
     },
+    /// Where a bar draws the command line's cursor: nothing to see, but
+    /// the input method puts its window there.
+    Caret,
 }
 
 /// An input as a layout described it. The text in it is the panel's.
@@ -128,6 +131,7 @@ struct Style {
     /// The size of text.
     size: Option<f32>,
     bold: bool,
+    underline: bool,
     /// In the fixed-width font.
     mono: bool,
     nowrap: bool,
@@ -137,7 +141,7 @@ struct Style {
 
 const STYLES: &str = "width height grow shrink padding-x padding-y padding-left padding-right \
      gap align justify bg color border border-top border-right border-bottom border-left \
-     border-color rounded size bold mono nowrap clip";
+     border-color rounded size bold underline mono nowrap clip";
 
 /// Pixels, or `'full` for all of the parent.
 enum Size {
@@ -339,6 +343,7 @@ impl Style {
                 _ => return Err(wrong(key, "a size", value)),
             },
             "bold" => self.bold = value.is_truthy(),
+            "underline" => self.underline = value.is_truthy(),
             "mono" => self.mono = value.is_truthy(),
             "nowrap" => self.nowrap = value.is_truthy(),
             "clip" => self.clip = value.is_truthy(),
@@ -425,7 +430,8 @@ impl Node {
                 children.iter().for_each(|child| child.inputs(into));
             }
             Content::Input(spec) => into.push(spec),
-            Content::Text(_) | Content::Rows { .. } | Content::Markdown { .. } => {}
+            Content::Text(_) | Content::Rows { .. } | Content::Markdown { .. } | Content::Caret => {
+            }
         }
     }
 }
@@ -530,6 +536,20 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         }
         node.content = Content::Markdown { text, scroll };
         Ok(Value::foreign(node))
+    });
+
+    // (caret styles...): where a bar has drawn the command line's cursor,
+    // for the input method to put its window by. It has no width, and is
+    // as tall as what it is in unless its styles say otherwise.
+    interp.define_native("caret", Arity::at_least(0), |_, args| {
+        let mut node = Node::new(Content::Caret);
+        match node.take_styles(args, no_options)? {
+            [] => Ok(Value::foreign(node)),
+            [extra, ..] => Err(Error::new(
+                ErrorKind::Raised,
+                format!("caret: expected a style, got {extra}"),
+            )),
+        }
     });
 
     // (input name styles...): a line to type in, named so that the panel
@@ -739,6 +759,9 @@ impl Style {
         if self.bold {
             el = el.font_weight(FontWeight::SEMIBOLD);
         }
+        if self.underline {
+            el = el.underline();
+        }
         if self.mono {
             el = el.font_family(theme.mono_font_family.clone());
         }
@@ -773,7 +796,7 @@ fn describe(function: &Value, args: &[Value], cx: &mut App) -> Result<Rc<Node>, 
     node_of(&value).ok_or_else(|| {
         Error::new(
             ErrorKind::Type,
-            format!("a layout gives back a row, col, text, rows or input, not {value}"),
+            format!("a layout gives back a row, col, text, rows, input or caret, not {value}"),
         )
     })
 }
@@ -825,6 +848,22 @@ fn build(
         Content::Row(_) => div().flex(),
         Content::Col(_) => div().flex().flex_col(),
         Content::Text(text) => div().child(text.clone()),
+        Content::Caret => {
+            let workspace = view.workspace();
+            let caret = canvas(
+                move |bounds, window, cx| {
+                    let editor = workspace
+                        .upgrade()
+                        .and_then(|workspace| workspace.read(cx).active_editor().cloned());
+                    if let Some(editor) = editor {
+                        editor.update(cx, |editor, _| editor.place_cmdline_caret(bounds, window));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .size_full();
+            div().flex_shrink_0().w(px(0.)).h_full().child(caret)
+        }
         Content::Markdown { text, scroll } => {
             // Its own id, so that two in a panel do not share what they
             // have parsed or how far they are scrolled.
@@ -1062,6 +1101,14 @@ mod tests {
     }
 
     #[test]
+    fn a_caret_is_a_node_with_styles() {
+        let caret = node("(caret :height 14)");
+        assert!(matches!(caret.content, Content::Caret));
+        assert!(matches!(caret.style.height, Some(Size::Pixels(h)) if h == 14.));
+        assert!(node("(text \"x\" :underline true)").style.underline);
+    }
+
+    #[test]
     fn says_what_is_wrong_with_a_layout() {
         assert!(error("(row :colour 'muted)").starts_with("1:1: colour is not a style (width "));
         assert!(
@@ -1097,6 +1144,7 @@ mod tests {
             error("(text \"x\" 5)"),
             "1:1: text: expected a style, got 5"
         );
+        assert_eq!(error("(caret 5)"), "1:1: caret: expected a style, got 5");
         assert_eq!(
             error("(rows nil 5)"),
             "1:1: rows: expected a function for a row, last, got 5"

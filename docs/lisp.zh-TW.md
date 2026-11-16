@@ -49,6 +49,8 @@
 | `:line`、`:col` | 游標位置，從 1 開始計算 |
 | `:language` | `"rust"`，或 `"text"` |
 | `:cmdline` | 輸入中的命令列，例如 `":wq"` 或 `"/foo"` |
+| `:cmdline-before`、`:cmdline-after` | 命令列游標前後的文字，例如 `":w"` 和 `"q"`；兩者合起來就是 `:cmdline` |
+| `:cmdline-preedit` | 輸入法正在游標處組字、尚未送出的文字 |
 | `:message` | 最後一則訊息，直到下一次按鍵 |
 | `:diagnostic` | 游標處診斷的第一行 |
 | `:pending` | 目前已輸入的命令按鍵，例如 `"2d"` |
@@ -57,7 +59,7 @@
 | `:lsp` | 檔案的語言伺服器正在做什麼 |
 | `:branch` | 專案目前所在的分支 |
 
-沒有開啟任何檔案時，會有一個空的 `[No Name]` 緩衝區，下一個開啟的檔案會取代它：它有 `:mode`，但沒有任何來自檔案的資訊。省略 `:cmdline` 的狀態列會讓 `:` 的輸入看不見。[`examples/statusline.mlisp`](../examples/statusline.mlisp) 就是視窗原本的狀態列，各列的顏色是 `'status-bar`、`'title-bar`、`'title-bar-border` 和 `'tab-bar`。
+沒有開啟任何檔案時，會有一個空的 `[No Name]` 緩衝區，下一個開啟的檔案會取代它：它有 `:mode`，但沒有任何來自檔案的資訊。省略 `:cmdline` 的狀態列會讓 `:` 的輸入看不見。要畫出命令列的游標，把 `(caret)` 放在 `:cmdline-before` 與其餘部分之間：它沒有寬度，但輸入法會把候選視窗放在它所在的位置；沒有 `(caret)` 時，候選視窗會在列的角落。範例見英文版文件或 [`examples/statusline.mlisp`](../examples/statusline.mlisp)。[`examples/statusline.mlisp`](../examples/statusline.mlisp) 就是視窗原本的狀態列，各列的顏色是 `'status-bar`、`'title-bar`、`'title-bar-border` 和 `'tab-bar`。
 
 ### 版面
 
@@ -70,8 +72,9 @@
 | `(rows list styles... function)` | 可捲動的清單；函式描述每一列 |
 | `(input name styles...)` | 一行輸入框 |
 | `(markdown value styles...)` | 以 Markdown 解讀的文字：標題、清單、程式碼、表格、連結 |
+| `(caret styles...)` | 列畫出命令列游標的位置，供輸入法使用 |
 
-樣式是 `:name value` 成對的值：`width` 和 `height`（像素或 `'full`）、`grow`（`true`，或與其他同樣會伸展的元素分配剩餘空間時的比例）、`shrink`、`padding-x` `padding-y` `padding-left` `padding-right`、`gap`、`align` 和 `justify`（`'start` `'center` `'end`，以及 `'between`）、`bg`、`color`、`border` `border-top` `border-right` `border-bottom` `border-left`、`border-color`、`rounded`、`size`（文字大小）、`bold`、`mono`、`nowrap`、`clip`；`hover`，滑鼠懸停時套用的樣式清單，例如 `(list :bg 'list-hover)`；以及 `on-click`，一個命令名稱或函式。顏色可以是主題中的顏色（`'sidebar`、`'muted-foreground`、`'list-active`、`'warning`…）或 `"#rrggbb"`。
+樣式是 `:name value` 成對的值：`width` 和 `height`（像素或 `'full`）、`grow`（`true`，或與其他同樣會伸展的元素分配剩餘空間時的比例）、`shrink`、`padding-x` `padding-y` `padding-left` `padding-right`、`gap`、`align` 和 `justify`（`'start` `'center` `'end`，以及 `'between`）、`bg`、`color`、`border` `border-top` `border-right` `border-bottom` `border-left`、`border-color`、`rounded`、`size`（文字大小）、`bold`、`underline`、`mono`、`nowrap`、`clip`；`hover`，滑鼠懸停時套用的樣式清單，例如 `(list :bg 'list-hover)`；以及 `on-click`，一個命令名稱或函式。顏色可以是主題中的顏色（`'sidebar`、`'muted-foreground`、`'list-active`、`'warning`…）或 `"#rrggbb"`。
 
 值為 `nil` 的樣式會被忽略，`nil` 子元素也等於沒有子元素，所以依值而定的內容可以用 `if`、`when` 和 `cond` 撰寫。子元素也可以是字串，或像 `map` 產生的子元素清單。
 
