@@ -160,7 +160,8 @@ async fn scenario(
     }
 
     // 5. Completion: a new line calling `ad…` offers `add`, and accepting
-    //    it inserts the name.
+    //    it inserts the call, as a snippet: its parameters to be filled
+    //    in, the cursor on the first.
     editor.update(cx, |editor, cx| {
         editor.press(Key::Char('o'), cx);
         editor.type_text("x = ad", cx);
@@ -171,15 +172,35 @@ async fn scenario(
             .any(|label| label.contains("add"))
     })
     .await?;
-    editor.update(cx, |editor, cx| {
-        editor.press(Key::Tab, cx);
-        editor.press(Key::Esc, cx);
+    editor.update(cx, |editor, cx| editor.press(Key::Tab, cx));
+    let (line, after) = editor.read_with(cx, |e, _| {
+        let start = e.buf.line_start(6);
+        (
+            e.buf.line_string(6),
+            e.buf
+                .slice_string(e.vim.cursor..start + e.buf.line_string(6).chars().count()),
+        )
     });
-    let line = editor.read_with(cx, |e, _| e.buf.line_string(6));
-    if !line.trim_start().starts_with("x = add") {
-        return Err(format!("completion inserted {line:?}"));
+    if line.trim() != "x = add(int a, int b)" || after != "int a, int b)" {
+        return Err(format!(
+            "completion inserted {line:?}, the cursor before {after:?}"
+        ));
     }
     println!("ok  completion: {:?}", line.trim());
+    // And what the call takes is shown, as if its `(` had been typed.
+    wait_for("the signature after the completion", &editor, cx, |e| {
+        e.signature_text()
+            .is_some_and(|(label, active)| label.contains("add(") && active == Some("int a"))
+    })
+    .await?;
+    println!("ok  signature after the completion");
+    // As it was, for the signature to be asked for as `(` is typed.
+    editor.update(cx, |editor, cx| {
+        editor.press(Key::Esc, cx);
+        editor.feed_keys(keys("cc"), cx);
+        editor.type_text("x = add", cx);
+        editor.press(Key::Esc, cx);
+    });
 
     // 6. Signature help: opening the call shows what it takes, and the
     //    parameter follows the arguments as they are typed.

@@ -1340,6 +1340,27 @@ fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
     assert_eq!(colors(cx).1, background);
 }
 
+/// A completion written as a snippet goes in as its text, with the
+/// cursor at the first place to fill in.
+#[gpui::test]
+fn a_snippet_goes_in_as_its_text(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "x = ad\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    cx.simulate_keystrokes("A");
+    editor.update(cx, |e, _| {
+        e.show_completions(vec![lsp_types::CompletionItem {
+            label: "add".into(),
+            insert_text: Some("add(${1:a}, ${2:b})$0".into()),
+            insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+            ..Default::default()
+        }])
+    });
+    cx.simulate_keystrokes("tab");
+    assert_eq!(text(&ws, cx), "x = add(a, b)\n");
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), "x = add(".len());
+}
+
 /// The places of the name under the cursor stay while the cursor is on
 /// one of them, and go when it leaves them or the text changes.
 #[gpui::test]

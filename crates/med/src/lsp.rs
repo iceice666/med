@@ -164,7 +164,7 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "completion": {
                 "contextSupport": true,
                 "completionItem": {
-                    "snippetSupport": false,
+                    "snippetSupport": true,
                     "documentationFormat": ["plaintext", "markdown"],
                     "insertReplaceSupport": false,
                 },

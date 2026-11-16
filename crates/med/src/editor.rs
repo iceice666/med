@@ -2853,6 +2853,20 @@ impl Editor {
         }));
     }
 
+    /// Open the menu with `items`, as an answer from a server would.
+    #[cfg(test)]
+    pub(crate) fn show_completions(&mut self, items: Vec<lsp::CompletionItem>) {
+        let start = self.word_start(self.vim.cursor);
+        self.completion = Some(CompletionMenu {
+            ranks: vec![0; items.len()],
+            items,
+            filtered: Vec::new(),
+            selected: 0,
+            start,
+        });
+        self.refresh_completion();
+    }
+
     /// Re-filter the open menu against what is typed now; close it when the
     /// cursor has left the word or nothing matches.
     fn refresh_completion(&mut self) {
@@ -2948,6 +2962,21 @@ impl Editor {
             ),
         };
         let start = start.min(cursor);
+        // A snippet is its text, with the cursor at the first place to
+        // fill in.
+        let (text, at) = if item.insert_text_format == Some(lsp::InsertTextFormat::SNIPPET) {
+            let line = self.buf.line_string(self.buf.line_of(start));
+            let indent: String = line
+                .chars()
+                .take_while(|c| matches!(c, ' ' | '\t'))
+                .collect();
+            let unit = self.vim_lang.indent_unit();
+            let expanded = crate::snippet::reindent(crate::snippet::expand(&text), &indent, &unit);
+            (expanded.text, expanded.cursor)
+        } else {
+            let at = text.chars().count();
+            (text, at)
+        };
         // Resolve extra edits (auto-imports) before the buffer shifts.
         let mut extra: Vec<(usize, usize, String)> = item
             .additional_text_edits
@@ -2964,7 +2993,7 @@ impl Editor {
         extra.sort_by_key(|edit| std::cmp::Reverse(edit.0));
 
         self.buf.edit(start..cursor, &text);
-        let mut new_cursor = start + text.chars().count();
+        let mut new_cursor = start + at;
         for (s, e, text) in extra {
             if e <= start {
                 self.buf.edit(s..e, &text);
@@ -2973,6 +3002,15 @@ impl Editor {
         }
         self.vim.cursor = new_cursor;
         self.after_change(cx);
+        // A call put in with the cursor in its parentheses: what it takes.
+        let before = new_cursor.checked_sub(1).map(|at| self.buf.char_at(at));
+        let has_signature = match (&self.lsp, &self.path, before) {
+            (Some(lsp), Some(path), Some(c)) => lsp.read(cx).signature_triggers(path).contains(&c),
+            _ => false,
+        };
+        if has_signature {
+            self.request_signature(cx);
+        }
     }
 
     // ---- input ---------------------------------------------------------
