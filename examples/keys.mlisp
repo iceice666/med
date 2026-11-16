@@ -12,6 +12,8 @@
 ; The language server.
 (bind '(normal visual) "gd" "editor.goto_definition")
 (bind '(normal visual) "gD" "editor.goto_declaration")
+(bind '(normal visual) "gy" "editor.goto_type_definition")
+(bind '(normal visual) "gi" "editor.goto_implementation")
 (bind '(normal visual) "gr" "editor.references")
 (bind '(normal visual) "gh" "editor.hover")
 (bind '(normal visual) "K" "editor.hover")
@@ -67,6 +69,7 @@
 
 ; Leader keys. `space` alone still moves right, after a pause.
 (bind '(normal visual) "<Space>a" "editor.code_action")
+(bind 'normal "<Space>s" "editor.document_symbols")
 (bind 'normal "<Space>=" "editor.format")
 (bind 'normal "<Space>w" "workspace.save")
 (bind 'normal "<Space>q" "workspace.close_tab")

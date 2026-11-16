@@ -9,7 +9,7 @@
 ; the projects opened before, to open one in a window of its own. In the
 ; picker: typing narrows the list, ctrl-n and ctrl-p (or the arrows) move,
 ; enter opens, escape puts it away. `gr` on a name lists its references
-; here.
+; here, and `space s` the symbols of the file.
 
 (def picker-mode 'files)   ; what is picked from: 'files, 'grep, 'list or 'projects
 (def picker-query "")      ; what has been typed
@@ -178,7 +178,8 @@
 (defcommand "picker.close" "Put the picker away"
   (fn () (hide-panel 'picker)))
 
-; The references to a name, when there are several to choose among.
+; The references to a name, its implementations, the symbols of the file:
+; places to choose among.
 (add-hook 'locations
   (fn (places)
     (set! picker-places places)

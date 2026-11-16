@@ -2,7 +2,7 @@
 //! draw it and feed it input.
 
 use crate::commands::{Args, Commands, Handler};
-use crate::lsp::{LspEvent, LspStore, ServerName, uri_to_path};
+use crate::lsp::{LspEvent, LspStore, Place, ServerName, uri_to_path};
 use crate::syntax::{LangInfo, Syntax};
 use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
@@ -116,7 +116,13 @@ pub enum EditorEvent {
         path: PathBuf,
         position: lsp::Position,
     },
-    References(Vec<lsp::Location>),
+    /// Places to choose among: the references to a name, its
+    /// implementations, the symbols of the file. `what` they are, in the
+    /// plural, for a message.
+    Locations {
+        what: &'static str,
+        places: Vec<Place>,
+    },
     /// Edits a language server asked for, in this file or in others.
     WorkspaceEdit(lsp::WorkspaceEdit),
     /// The cursor is about to jump away from this offset.
@@ -2180,19 +2186,28 @@ impl Editor {
     // ---- language server features --------------------------------------
 
     fn goto_definition(&mut self, cx: &mut Context<Self>) {
-        self.goto_location(LspStore::definition, "No definition found", cx);
+        self.goto_location(LspStore::definition, "definitions", cx);
     }
 
     fn goto_declaration(&mut self, cx: &mut Context<Self>) {
-        self.goto_location(LspStore::declaration, "No declaration found", cx);
+        self.goto_location(LspStore::declaration, "declarations", cx);
     }
 
-    /// Ask the language server where the symbol under the cursor is (its
-    /// definition, its declaration) and go there, as a jump.
+    fn goto_type_definition(&mut self, cx: &mut Context<Self>) {
+        self.goto_location(LspStore::type_definition, "type definitions", cx);
+    }
+
+    fn goto_implementation(&mut self, cx: &mut Context<Self>) {
+        self.goto_location(LspStore::implementation, "implementations", cx);
+    }
+
+    /// Ask the language server where something of the symbol under the
+    /// cursor is (its definition, its type, its implementations) and go
+    /// there, as a jump; when there are several, list them to choose from.
     fn goto_location<F>(
         &mut self,
         ask: impl FnOnce(&LspStore, &Path, lsp::Position) -> Option<F>,
-        not_found: &'static str,
+        what: &'static str,
         cx: &mut Context<Self>,
     ) where
         F: Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + 'static,
@@ -2207,27 +2222,32 @@ impl Editor {
         };
         let from = self.vim.cursor;
         self.request_task = Some(cx.spawn(async move |this, cx| {
-            let location = match request.await {
-                Ok(Some(lsp::GotoDefinitionResponse::Scalar(location))) => Some(location),
-                Ok(Some(lsp::GotoDefinitionResponse::Array(locations))) => {
-                    locations.into_iter().next()
-                }
-                Ok(Some(lsp::GotoDefinitionResponse::Link(links))) => {
-                    links.into_iter().next().map(|link| lsp::Location {
-                        uri: link.target_uri,
-                        range: link.target_selection_range,
-                    })
-                }
-                _ => None,
+            let found = match request.await {
+                Ok(Some(response)) => crate::lsp::locations(response),
+                _ => Vec::new(),
             };
-            this.update(cx, |_, cx| {
-                match location.and_then(|l| Some((uri_to_path(&l.uri)?, l.range.start))) {
-                    Some((path, position)) => {
+            this.update(cx, |_, cx| match found.as_slice() {
+                [] => cx.emit(EditorEvent::Message(format!("No {what} found"))),
+                [only] => match uri_to_path(&only.uri) {
+                    Some(path) => {
                         cx.emit(EditorEvent::PushJump(from));
-                        cx.emit(EditorEvent::OpenLocation { path, position });
+                        cx.emit(EditorEvent::OpenLocation {
+                            path,
+                            position: only.range.start,
+                        });
                     }
-                    None => cx.emit(EditorEvent::Message(not_found.into())),
-                }
+                    None => cx.emit(EditorEvent::Message(format!("No {what} found"))),
+                },
+                _ => cx.emit(EditorEvent::Locations {
+                    what,
+                    places: found
+                        .into_iter()
+                        .map(|location| Place {
+                            location,
+                            label: None,
+                        })
+                        .collect(),
+                }),
             })
             .ok();
         }));
@@ -2248,7 +2268,48 @@ impl Editor {
                 if locations.is_empty() {
                     cx.emit(EditorEvent::Message("No references found".into()));
                 } else {
-                    cx.emit(EditorEvent::References(locations));
+                    cx.emit(EditorEvent::Locations {
+                        what: "references",
+                        places: locations
+                            .into_iter()
+                            .map(|location| Place {
+                                location,
+                                label: None,
+                            })
+                            .collect(),
+                    });
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// List the symbols of the file, as the language server sees them, to
+    /// go to one.
+    fn document_symbols(&mut self, cx: &mut Context<Self>) {
+        let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
+            return;
+        };
+        let Some(uri) = crate::lsp::path_to_uri(path) else {
+            return;
+        };
+        let Some(request) = lsp.read(cx).document_symbols(path) else {
+            cx.emit(EditorEvent::Message("No language server".into()));
+            return;
+        };
+        self.request_task = Some(cx.spawn(async move |this, cx| {
+            let places = match request.await {
+                Ok(Some(response)) => crate::lsp::symbol_places(response, &uri),
+                _ => Vec::new(),
+            };
+            this.update(cx, |_, cx| {
+                if places.is_empty() {
+                    cx.emit(EditorEvent::Message("No symbols found".into()));
+                } else {
+                    cx.emit(EditorEvent::Locations {
+                        what: "symbols",
+                        places,
+                    });
                 }
             })
             .ok();
@@ -4396,6 +4457,21 @@ pub(crate) fn register(commands: &mut Commands) {
         "editor.goto_declaration",
         "Go to the declaration of the symbol under the cursor",
         E(|editor, _, cx| editor.goto_declaration(cx)),
+    );
+    commands.register(
+        "editor.goto_type_definition",
+        "Go to the definition of the type of the symbol under the cursor",
+        E(|editor, _, cx| editor.goto_type_definition(cx)),
+    );
+    commands.register(
+        "editor.goto_implementation",
+        "Go to the implementations of the symbol under the cursor",
+        E(|editor, _, cx| editor.goto_implementation(cx)),
+    );
+    commands.register(
+        "editor.document_symbols",
+        "List the symbols of the file",
+        E(|editor, _, cx| editor.document_symbols(cx)),
     );
     commands.register(
         "editor.references",

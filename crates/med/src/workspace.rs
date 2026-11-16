@@ -1868,26 +1868,32 @@ impl Workspace {
             EditorEvent::OpenLocation { path, position } => {
                 self.open_location(path, *position, window, cx)
             }
-            EditorEvent::References(locations) => {
-                let places: Vec<(PathBuf, lsp::Position)> = locations
+            EditorEvent::Locations { what, places } => {
+                let places: Vec<(PathBuf, lsp::Position, Option<String>)> = places
                     .iter()
-                    .filter_map(|location| {
-                        Some((uri_to_path(&location.uri)?, location.range.start))
+                    .filter_map(|place| {
+                        let path = uri_to_path(&place.location.uri)?;
+                        Some((path, place.location.range.start, place.label.clone()))
                     })
                     .collect();
-                // The line of each is shown, when the file is at hand.
-                let list = med_lisp::Value::list(places.iter().map(|(path, start)| {
+                // Each is called by its label, or else by its line when
+                // the file is at hand.
+                let list = med_lisp::Value::list(places.iter().map(|(path, start, label)| {
                     let (line, column) = (start.line as usize, start.character as usize);
-                    crate::host::location(&self.root, path.clone(), line, column)
+                    crate::host::location(&self.root, path.clone(), line, column, label.clone())
                 }));
                 // A program lists them to choose from. With none to, the
                 // first is as good as any.
                 if !script::run_hook("locations", vec![list], window, cx)
-                    && let Some((path, start)) = places.first()
+                    && let Some((path, start, _)) = places.first()
                 {
+                    if let Some(from) = editor.read(cx).path.clone() {
+                        let offset = editor.read(cx).vim.cursor;
+                        self.push_jump(from, offset);
+                    }
                     self.open_location(path, *start, window, cx);
                     let count = places.len();
-                    self.set_message(format!("The first of {count} references"), cx);
+                    self.set_message(format!("The first of {count} {what}"), cx);
                 }
             }
             EditorEvent::WorkspaceEdit(edit) => {

@@ -150,12 +150,21 @@ fn hit_value(hit: Hit) -> Value {
 }
 
 /// A place for the `locations` hook: a line of a file, as `grep` gives
-/// them. `line` and `column` count from 0.
-pub(crate) fn location(root: &Path, path: PathBuf, line: usize, column: usize) -> Value {
-    let text = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| text.lines().nth(line).map(|line| line.trim().to_string()))
-        .unwrap_or_default();
+/// them, its text `label` when there is one. `line` and `column` count
+/// from 0.
+pub(crate) fn location(
+    root: &Path,
+    path: PathBuf,
+    line: usize,
+    column: usize,
+    label: Option<String>,
+) -> Value {
+    let text = label.unwrap_or_else(|| {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| text.lines().nth(line).map(|line| line.trim().to_string()))
+            .unwrap_or_default()
+    });
     let file = path
         .strip_prefix(root)
         .unwrap_or(&path)

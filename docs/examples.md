@@ -57,8 +57,9 @@ all of them straight away, and the key typed then does what it does
 there; `init.mlisp` does so with `g ?` for oil's listings, after their
 keys are bound, as a key bound later is not on the list.
 
-With `picker.mlisp`, `gr` lists the references to choose from; without it,
-`gr` goes to the first.
+With `picker.mlisp`, `gr` lists the references to choose from, `space s`
+the symbols of the file, and `gd`, `gy` and `gi` the places they find
+when there are several; without it, each goes to the first.
 
 With `oil.mlisp` (as oil.nvim), a directory is a tab called
 `oil:///the/directory/` with a name to a line, a directory's with `/`

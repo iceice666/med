@@ -2063,6 +2063,7 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                (unbind 'normal "<Space>q")
                (unbind 'normal "<Space>w")
                (unbind '(normal visual) "<Space>a")
+               (unbind 'normal "<Space>s")
                (unbind 'normal "<Space>=")
                (unbind 'normal "<Space>r")
                (unbind 'normal "<Space>m")

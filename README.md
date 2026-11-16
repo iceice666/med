@@ -10,7 +10,8 @@ English | [繁體中文](README.zh-TW.md)
 - Tree-sitter highlighting for ~35 languages, plus text objects and motions
   that follow the syntax tree (functions, types, arguments, comments)
 - LSP: diagnostics, completion, hover, signature help, go to definition,
-  references, rename, code actions, formatting; servers, their settings
+  declaration, type definition and implementation, references, document
+  symbols, rename, code actions, formatting; servers, their settings
   and several to a file set up from the init file
 - No built-in keys. The vim layout, an oil.nvim-style directory editor,
   the fuzzy finder, a lazygit-style git screen and which-key are Lisp

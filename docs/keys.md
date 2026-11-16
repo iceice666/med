@@ -37,6 +37,8 @@ any case.
 | Key | Action |
 | --- | --- |
 | `gd` / `gr` / `K` | definition / references / hover |
+| `gD` / `gy` / `gi` | declaration / type definition / implementations |
+| `space s` | the symbols of the file, to go to one |
 | `]d` / `[d` | next / previous diagnostic |
 | `]h` / `[h` | next / previous change from HEAD that the gutter marks |
 | `space r` | rename: the new name is typed after `:rename` |

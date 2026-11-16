@@ -235,7 +235,8 @@ for the window it came from; a layout is told its window's project as
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or
 `workspace.sync` was run), `locations` (a list of places to choose
-from, such as the references to a name), `keys-pending` (below),
+from, such as the references to a name, its implementations or the
+symbols of the file), `keys-pending` (below),
 `terminal-exited` (see Terminals), and the ones about the file being
 edited (further below).
 

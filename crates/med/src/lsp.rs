@@ -154,7 +154,10 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "hover": { "contentFormat": ["markdown", "plaintext"] },
             "definition": { "linkSupport": false },
             "declaration": { "linkSupport": false },
+            "typeDefinition": { "linkSupport": false },
+            "implementation": { "linkSupport": false },
             "references": {},
+            "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
             "completion": {
                 "contextSupport": true,
                 "completionItem": {
@@ -783,22 +786,37 @@ impl LspStore {
         })
     }
 
+    /// Ask the first server of `path` that says it can, by `can`, where
+    /// something of the symbol at `position` is: its definition, its type…
+    fn locate<R>(
+        &self,
+        path: &Path,
+        position: lsp::Position,
+        can: fn(&lsp::ServerCapabilities) -> bool,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<R>>
+    where
+        R: lsp::request::Request<
+                Params = lsp::GotoDefinitionParams,
+                Result = Option<lsp::GotoDefinitionResponse>,
+            >,
+    {
+        let server = self.ready_server(path, can)?;
+        Some(server.client.request::<R>(lsp::GotoDefinitionParams {
+            text_document_position_params: Self::position_params(path, position)?,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }))
+    }
+
     pub fn definition(
         &self,
         path: &Path,
         position: lsp::Position,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<>>
     {
-        let server = self.ready_server(path, |c| offers(&c.definition_provider))?;
-        Some(
-            server
-                .client
-                .request::<lsp::request::GotoDefinition>(lsp::GotoDefinitionParams {
-                    text_document_position_params: Self::position_params(path, position)?,
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                }),
-        )
+        self.locate::<lsp::request::GotoDefinition>(path, position, |c| {
+            offers(&c.definition_provider)
+        })
     }
 
     pub fn declaration(
@@ -807,17 +825,60 @@ impl LspStore {
         position: lsp::Position,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<>>
     {
-        let server = self.ready_server(path, |c| {
+        self.locate::<lsp::request::GotoDeclaration>(path, position, |c| {
             !matches!(
                 c.declaration_provider,
                 None | Some(lsp::DeclarationCapability::Simple(false))
             )
-        })?;
+        })
+    }
+
+    /// Where the type of the symbol at `position` is defined.
+    pub fn type_definition(
+        &self,
+        path: &Path,
+        position: lsp::Position,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<>>
+    {
+        self.locate::<lsp::request::GotoTypeDefinition>(path, position, |c| {
+            !matches!(
+                c.type_definition_provider,
+                None | Some(lsp::TypeDefinitionProviderCapability::Simple(false))
+            )
+        })
+    }
+
+    /// Where what is at `position` is implemented: the bodies of a trait's
+    /// or an interface's methods, the types that implement it.
+    pub fn implementation(
+        &self,
+        path: &Path,
+        position: lsp::Position,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<>>
+    {
+        self.locate::<lsp::request::GotoImplementation>(path, position, |c| {
+            !matches!(
+                c.implementation_provider,
+                None | Some(lsp::ImplementationProviderCapability::Simple(false))
+            )
+        })
+    }
+
+    /// The symbols of `path`, as the first server of it that has them
+    /// gives them: a tree, or a list.
+    pub fn document_symbols(
+        &self,
+        path: &Path,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::DocumentSymbolResponse>>> + use<>>
+    {
+        let server = self.ready_server(path, |c| offers(&c.document_symbol_provider))?;
         Some(
             server
                 .client
-                .request::<lsp::request::GotoDeclaration>(lsp::GotoDefinitionParams {
-                    text_document_position_params: Self::position_params(path, position)?,
+                .request::<lsp::request::DocumentSymbolRequest>(lsp::DocumentSymbolParams {
+                    text_document: lsp::TextDocumentIdentifier {
+                        uri: path_to_uri(path)?,
+                    },
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 }),
@@ -1118,6 +1179,122 @@ fn configuration(settings: &Value, params: &Value) -> Value {
     )
 }
 
+/// A place to choose among others, and what to call it in the list:
+/// `None` for the line it is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub location: lsp::Location,
+    pub label: Option<String>,
+}
+
+/// Every place an answer to "where is it" names, in its order, each once.
+pub fn locations(response: lsp::GotoDefinitionResponse) -> Vec<lsp::Location> {
+    let all = match response {
+        lsp::GotoDefinitionResponse::Scalar(location) => vec![location],
+        lsp::GotoDefinitionResponse::Array(locations) => locations,
+        lsp::GotoDefinitionResponse::Link(links) => links
+            .into_iter()
+            .map(|link| lsp::Location {
+                uri: link.target_uri,
+                range: link.target_selection_range,
+            })
+            .collect(),
+    };
+    let mut seen = Vec::with_capacity(all.len());
+    for location in all {
+        if !seen.contains(&location) {
+            seen.push(location);
+        }
+    }
+    seen
+}
+
+/// What a kind of symbol is called.
+fn symbol_kind_name(kind: lsp::SymbolKind) -> &'static str {
+    match kind {
+        lsp::SymbolKind::FILE => "file",
+        lsp::SymbolKind::MODULE => "module",
+        lsp::SymbolKind::NAMESPACE => "namespace",
+        lsp::SymbolKind::PACKAGE => "package",
+        lsp::SymbolKind::CLASS => "class",
+        lsp::SymbolKind::METHOD => "method",
+        lsp::SymbolKind::PROPERTY => "property",
+        lsp::SymbolKind::FIELD => "field",
+        lsp::SymbolKind::CONSTRUCTOR => "constructor",
+        lsp::SymbolKind::ENUM => "enum",
+        lsp::SymbolKind::INTERFACE => "interface",
+        lsp::SymbolKind::FUNCTION => "function",
+        lsp::SymbolKind::VARIABLE => "variable",
+        lsp::SymbolKind::CONSTANT => "constant",
+        lsp::SymbolKind::STRING => "string",
+        lsp::SymbolKind::NUMBER => "number",
+        lsp::SymbolKind::BOOLEAN => "boolean",
+        lsp::SymbolKind::ARRAY => "array",
+        lsp::SymbolKind::OBJECT => "object",
+        lsp::SymbolKind::KEY => "key",
+        lsp::SymbolKind::NULL => "null",
+        lsp::SymbolKind::ENUM_MEMBER => "variant",
+        lsp::SymbolKind::STRUCT => "struct",
+        lsp::SymbolKind::EVENT => "event",
+        lsp::SymbolKind::OPERATOR => "operator",
+        lsp::SymbolKind::TYPE_PARAMETER => "type parameter",
+        _ => "symbol",
+    }
+}
+
+/// The symbols of the file at `uri`, from the top of it down, each called
+/// by its kind and name; one inside another is indented under it.
+pub fn symbol_places(response: lsp::DocumentSymbolResponse, uri: &lsp::Uri) -> Vec<Place> {
+    fn walk(
+        symbols: &mut [lsp::DocumentSymbol],
+        depth: usize,
+        uri: &lsp::Uri,
+        out: &mut Vec<Place>,
+    ) {
+        symbols.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        for symbol in symbols {
+            out.push(Place {
+                location: lsp::Location {
+                    uri: uri.clone(),
+                    range: symbol.selection_range,
+                },
+                label: Some(format!(
+                    "{}{} {}",
+                    "  ".repeat(depth),
+                    symbol_kind_name(symbol.kind),
+                    symbol.name
+                )),
+            });
+            if let Some(children) = &mut symbol.children {
+                walk(children, depth + 1, uri, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    match response {
+        lsp::DocumentSymbolResponse::Nested(mut symbols) => walk(&mut symbols, 0, uri, &mut out),
+        lsp::DocumentSymbolResponse::Flat(mut symbols) => {
+            symbols.sort_by_key(|s| {
+                let start = s.location.range.start;
+                (start.line, start.character)
+            });
+            out.extend(symbols.into_iter().map(|symbol| {
+                let name = match &symbol.container_name {
+                    Some(container) if !container.is_empty() => {
+                        format!("{container}.{}", symbol.name)
+                    }
+                    _ => symbol.name,
+                };
+                Place {
+                    label: Some(format!("{} {name}", symbol_kind_name(symbol.kind))),
+                    location: symbol.location,
+                }
+            }));
+        }
+    }
+    out
+}
+
 /// The edits a server asked for, file by file. Creating, renaming and
 /// deleting files is left out: only text is edited.
 pub fn edits_by_file(edit: lsp::WorkspaceEdit) -> Vec<(PathBuf, Vec<lsp::TextEdit>)> {
@@ -1271,6 +1448,115 @@ mod tests {
                 (2, "flex".to_string()),
             ]
         );
+    }
+
+    fn range(line: u32, character: u32) -> lsp::Range {
+        let at = lsp::Position { line, character };
+        lsp::Range { start: at, end: at }
+    }
+
+    /// Every place, from any of the three shapes of answer, in its order
+    /// and each once; a link goes to the name it targets.
+    #[test]
+    fn locations_of_every_shape() {
+        let uri: lsp::Uri = "file:///p/a.rs".parse().unwrap();
+        let at = |line| lsp::Location {
+            uri: uri.clone(),
+            range: range(line, 0),
+        };
+        assert_eq!(
+            locations(lsp::GotoDefinitionResponse::Scalar(at(1))),
+            [at(1)]
+        );
+        assert_eq!(
+            locations(lsp::GotoDefinitionResponse::Array(vec![
+                at(3),
+                at(1),
+                at(3)
+            ])),
+            [at(3), at(1)]
+        );
+        let link = lsp::LocationLink {
+            origin_selection_range: None,
+            target_uri: uri.clone(),
+            target_range: range(4, 0),
+            target_selection_range: range(5, 2),
+        };
+        assert_eq!(
+            locations(lsp::GotoDefinitionResponse::Link(vec![link])),
+            [lsp::Location {
+                uri: uri.clone(),
+                range: range(5, 2)
+            }]
+        );
+    }
+
+    /// A tree of symbols is listed from the top of the file down, each
+    /// under the one it is in, at its name; a flat list says what each is
+    /// in.
+    #[test]
+    fn symbols_of_a_file() {
+        let uri: lsp::Uri = "file:///p/a.rs".parse().unwrap();
+        #[allow(deprecated)]
+        let symbol = |name: &str, kind, line, children| lsp::DocumentSymbol {
+            name: name.into(),
+            detail: None,
+            kind,
+            tags: None,
+            deprecated: None,
+            range: range(line, 0),
+            selection_range: range(line, 4),
+            children,
+        };
+        let tree = vec![
+            symbol("main", lsp::SymbolKind::FUNCTION, 9, None),
+            symbol(
+                "Point",
+                lsp::SymbolKind::STRUCT,
+                1,
+                Some(vec![
+                    symbol("y", lsp::SymbolKind::FIELD, 3, None),
+                    symbol("x", lsp::SymbolKind::FIELD, 2, None),
+                ]),
+            ),
+        ];
+        let places = symbol_places(lsp::DocumentSymbolResponse::Nested(tree), &uri);
+        let listed: Vec<_> = places
+            .iter()
+            .map(|p| (p.label.as_deref().unwrap(), p.location.range.start.line))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("struct Point", 1),
+                ("  field x", 2),
+                ("  field y", 3),
+                ("function main", 9),
+            ]
+        );
+        assert_eq!(places[0].location.range, range(1, 4));
+
+        #[allow(deprecated)]
+        let flat = |name: &str, container: Option<&str>, line| lsp::SymbolInformation {
+            name: name.into(),
+            kind: lsp::SymbolKind::METHOD,
+            tags: None,
+            deprecated: None,
+            location: lsp::Location {
+                uri: uri.clone(),
+                range: range(line, 0),
+            },
+            container_name: container.map(Into::into),
+        };
+        let places = symbol_places(
+            lsp::DocumentSymbolResponse::Flat(vec![
+                flat("draw", Some("Shape"), 7),
+                flat("new", None, 2),
+            ]),
+            &uri,
+        );
+        let labels: Vec<_> = places.iter().map(|p| p.label.clone().unwrap()).collect();
+        assert_eq!(labels, ["method new", "method Shape.draw"]);
     }
 
     /// Each item asked for gets its section of the settings, or all of them.

@@ -7,7 +7,7 @@
 use gpui::{AppContext as _, AsyncApp, Entity};
 use med::commands::{Args, Commands, Handler};
 use med::editor::{Editor, EditorEvent};
-use med::lsp::LspStore;
+use med::lsp::{LspStore, Place};
 use med_vim::Key;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -69,6 +69,7 @@ fn run(editor: &Entity<Editor>, cx: &mut AsyncApp, name: &str, arg: &str) {
 async fn scenario(
     editor: Entity<Editor>,
     jumps: Rc<RefCell<Vec<(PathBuf, u32, u32)>>>,
+    symbols: Rc<RefCell<Vec<Place>>>,
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
     // 1. Diagnostics: the semicolon missing from line 6, which clangd
@@ -289,6 +290,39 @@ async fn scenario(
         )
     })?;
     println!("ok  code action: {:?}", titles[fix]);
+
+    // 10. Document symbols: both functions, from the top down, at their
+    //     names, wherever formatting left them.
+    let line_of = |needle: &str| {
+        editor.read_with(cx, |e, _| {
+            (0..e.buf.line_count()).find(|line| e.buf.line_string(*line).contains(needle))
+        })
+    };
+    let expected = [
+        ("function sum".to_string(), line_of("int sum(")),
+        ("function main".to_string(), line_of("int main(")),
+    ];
+    run(&editor, cx, "editor.document_symbols", "");
+    for _ in 0..200 {
+        if !symbols.borrow().is_empty() {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    let found: Vec<(String, Option<usize>)> = symbols
+        .borrow()
+        .iter()
+        .map(|place| {
+            let label = place.label.clone().unwrap_or_default();
+            (label, Some(place.location.range.start.line as usize))
+        })
+        .collect();
+    if found != expected {
+        return Err(format!("document symbols {found:?}, not {expected:?}"));
+    }
+    println!("ok  document symbols: {found:?}");
     Ok(())
 }
 
@@ -319,6 +353,8 @@ fn main() {
 
         let jumps = Rc::new(RefCell::new(Vec::new()));
         let seen = jumps.clone();
+        let symbols = Rc::new(RefCell::new(Vec::new()));
+        let listed = symbols.clone();
         cx.subscribe(
             &editor,
             move |editor, event: &EditorEvent, cx| match event {
@@ -326,6 +362,10 @@ fn main() {
                     seen.borrow_mut()
                         .push((path.clone(), position.line, position.character));
                 }
+                EditorEvent::Locations {
+                    what: "symbols",
+                    places,
+                } => *listed.borrow_mut() = places.clone(),
                 // What a workspace does with them, for the one file there is.
                 EditorEvent::WorkspaceEdit(edit) => {
                     for (_, edits) in med::lsp::edits_by_file(edit.clone()) {
@@ -338,7 +378,7 @@ fn main() {
         .detach();
 
         cx.spawn(async move |cx| {
-            let result = scenario(editor, jumps, cx).await;
+            let result = scenario(editor, jumps, symbols, cx).await;
             let _ = std::fs::remove_dir_all(&cleanup);
             match result {
                 Ok(()) => {
