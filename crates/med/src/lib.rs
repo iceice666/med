@@ -28,7 +28,7 @@ pub mod user_panel;
 pub mod workspace;
 
 use commands::RunCommand;
-use gpui::component::TitleBar;
+use gpui::component::{ActiveTheme as _, TitleBar};
 use gpui::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -160,6 +160,13 @@ impl Settings {
 }
 
 impl Global for Settings {}
+
+/// The editor's font, for the fixed-width text outside it: popups, panels
+/// and the status bar.
+pub fn mono_font(cx: &App) -> Font {
+    cx.global::<Settings>()
+        .editor_font(&cx.theme().mono_font_family)
+}
 
 /// Vim state shared by every editor: registers, last search, last change.
 pub struct VimGlobal(pub med_vim::Shared);

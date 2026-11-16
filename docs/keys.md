@@ -290,7 +290,9 @@ The font of the editor and of the terminal:
 ```
 
 The terminal takes the editor's weight, features, ligatures and
-fallbacks. Bold text is drawn at 700 whatever the weight.
+fallbacks. Bold text is drawn at 700 whatever the weight. Popups, the
+status bar and the fixed-width text of panels take the editor's font too,
+at sizes of their own.
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
 goes by the panel's name, or by its name and a part of it (`git.files`).

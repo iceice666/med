@@ -677,7 +677,8 @@ impl Vars {
 // ---- drawing -----------------------------------------------------------
 
 impl Style {
-    fn apply<E: Styled>(&self, mut el: E, theme: &Theme) -> E {
+    fn apply<E: Styled>(&self, mut el: E, cx: &App) -> E {
+        let theme = cx.theme();
         let color = |color: Color| match color {
             Color::Theme(get) => get(theme),
             Color::Fixed(color) => color,
@@ -753,6 +754,10 @@ impl Style {
         if let Some(radius) = self.rounded {
             el = el.rounded(px(radius));
         }
+        // Before the weight: the font has one of its own.
+        if self.mono {
+            el = el.font(crate::mono_font(cx));
+        }
         if let Some(size) = self.size {
             el = el.text_size(px(size));
         }
@@ -761,9 +766,6 @@ impl Style {
         }
         if self.underline {
             el = el.underline();
-        }
-        if self.mono {
-            el = el.font_family(theme.mono_font_family.clone());
         }
         if self.nowrap {
             el = el.whitespace_nowrap();
@@ -834,11 +836,10 @@ fn build(
     row: Option<usize>,
     cx: &Context<PanelView>,
 ) -> AnyElement {
-    let theme = cx.theme();
     let mut el = match &node.content {
         Content::Rows { .. } => return build_rows(node, view, draw, cx),
         Content::Input(spec) => {
-            let el = node.style.apply(div(), theme);
+            let el = node.style.apply(div(), cx);
             return match view.input(&spec.name) {
                 Some(state) => el.child(Input::new(state).appearance(false)),
                 None => el.child("an input cannot be in a row of a list"),
@@ -876,9 +877,9 @@ fn build(
             }
         }
     };
-    el = node.style.apply(el, theme);
+    el = node.style.apply(el, cx);
     if let Some(hover) = &node.hover {
-        el = el.hover(|style| hover.apply(style, theme));
+        el = el.hover(|style| hover.apply(style, cx));
     }
     if let Content::Row(children) | Content::Col(children) = &node.content {
         el = el.children(
@@ -945,7 +946,7 @@ fn build_rows(node: &Node, view: &PanelView, draw: &Draw, cx: &Context<PanelView
         let handle = view.list_scroll(index, *reveal, *top);
         uniform_list(("rows", index), values.len(), rows).track_scroll(&handle)
     };
-    node.style.apply(list, cx.theme()).into_any_element()
+    node.style.apply(list, cx).into_any_element()
 }
 
 // ---- the layouts in use ------------------------------------------------

@@ -2415,13 +2415,13 @@ impl Workspace {
         let theme = cx.theme();
         let (popover, popover_foreground) = (theme.popover, theme.popover_foreground);
         let (border, muted, accent) = (theme.border, theme.muted_foreground, theme.primary);
-        let mono = theme.mono_font_family.clone();
+        let mono = crate::mono_font(cx);
         let code = move |text: &'static str| {
             div()
                 .px_1()
                 .rounded_sm()
                 .bg(accent.opacity(0.12))
-                .font_family(mono.clone())
+                .font(mono.clone())
                 .child(text)
         };
         let panel = div()
@@ -2465,7 +2465,7 @@ impl Workspace {
                             .border_color(accent.opacity(0.5))
                             .bg(accent.opacity(0.08))
                             .text_size(px(15.))
-                            .font_family(theme.mono_font_family.clone())
+                            .font(crate::mono_font(cx))
                             .child(":install_default_config"),
                     )
                     .child("It writes the example configuration there, vim's keys and the rest, and runs it."),
@@ -2522,7 +2522,7 @@ impl Workspace {
             .border_t_1()
             .border_color(border)
             .text_size(px(12.))
-            .font_family(theme.mono_font_family.clone());
+            .font(crate::mono_font(cx));
         if let Some(terminal) = self.active_item().and_then(Item::live_terminal) {
             let title = terminal.read(cx).title();
             return bar

@@ -148,7 +148,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 (set-option 'terminal-line-height 1.4)
 ```
 
-終端機沿用編輯器的字重、features、連字與 fallback 字型。粗體文字不受字重影響，一律以 700 繪製。
+終端機沿用編輯器的字重、features、連字與 fallback 字型。粗體文字不受字重影響，一律以 700 繪製。Popup、狀態列與面板中的等寬文字也使用編輯器的字型，但字級各自固定。
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
 

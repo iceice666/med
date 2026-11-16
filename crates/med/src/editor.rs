@@ -4864,7 +4864,7 @@ impl Editor {
                         .rounded_md()
                         .shadow_md()
                         .text_size(px(12.))
-                        .font_family(theme.mono_font_family.clone())
+                        .font(crate::mono_font(cx))
                         .overflow_hidden()
                         .children(rows),
                 ),
@@ -4955,7 +4955,7 @@ impl Editor {
                             .rounded_md()
                             .shadow_md()
                             .text_size(px(12.))
-                            .font_family(theme.mono_font_family.clone())
+                            .font(crate::mono_font(cx))
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .child(before)
