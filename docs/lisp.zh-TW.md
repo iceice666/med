@@ -105,6 +105,7 @@
 | 函式 | 給出 |
 | --- | --- |
 | `(current-file)`、`(project-root)` | 編輯器目前的位置 |
+| `(buffer-language)` | 目前顯示的分頁的語言，名稱與狀態列相同：`"rust"`，沒有語言時為 `"text"` |
 | `(open-file path [line [column]])` | 在分頁中開啟檔案，並跳到某個位置（從 1 開始計算） |
 | `(list-dir path [all])` | 目錄的內容：`((:name :path :dir)...)`，除非指定 `all`，否則不含 git 忽略的項目 |
 | `(path-name p)`、`(path-parent p)`、`(path-join a b...)` | 路徑的各部分 |

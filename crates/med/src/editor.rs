@@ -223,8 +223,12 @@ pub struct Editor {
     pub lang: Option<&'static LangInfo>,
     vim_lang: med_vim::Lang,
     /// The tab width the file's language and indentation give; the
-    /// `tab-width` option, where set, is the one `vim_lang` has.
+    /// `tab-width` option, the tab's own or every tab's, where set, is the
+    /// one `vim_lang` has.
     file_tab_width: usize,
+    /// This tab's own values of the options that can have one, over the
+    /// ones `set-option` gives every tab.
+    pub options: BufferOptions,
     syntax: Option<Syntax>,
     lsp: Option<Entity<LspStore>>,
     lsp_version: i32,
@@ -314,11 +318,14 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// The `tab-width` option where it is set, else the file's own.
-fn tab_width(file: usize, cx: &App) -> usize {
-    cx.try_global::<Settings>()
-        .and_then(|s| s.tab_width)
-        .unwrap_or(file)
+/// A tab's own values of options, from `set-buffer-option`; `None` where
+/// it goes by the one of every tab. Auto-pairs is the vim engine's,
+/// [`Vim::auto_pairs`](med_vim::Vim::auto_pairs).
+#[derive(Clone, Debug, Default)]
+pub struct BufferOptions {
+    pub tab_width: Option<usize>,
+    pub relative_number: Option<bool>,
+    pub format_on_save: Option<bool>,
 }
 
 /// What the gutter shows for a line, right-aligned to `digits`: its number,
@@ -507,6 +514,7 @@ impl Editor {
             lang: None,
             vim_lang: med_vim::Lang::default(),
             file_tab_width: med_vim::Lang::default().tab_width,
+            options: BufferOptions::default(),
             syntax: None,
             lsp,
             lsp_version: 0,
@@ -577,7 +585,7 @@ impl Editor {
             .or(self.lang.map(|l| l.tab_width))
             .unwrap_or(4);
         self.vim_lang = med_vim::Lang {
-            tab_width: tab_width(self.file_tab_width, cx),
+            tab_width: self.tab_width(cx),
             expand_tab: detected
                 .map(|d| d.0)
                 .or(self.lang.map(|l| l.expand_tab))
@@ -855,12 +863,32 @@ impl Editor {
             .min_by_key(|d| d.severity)
     }
 
+    /// Columns to an indent: this tab's `tab-width`, else every tab's,
+    /// else what the file's language and indentation say.
+    fn tab_width(&self, cx: &App) -> usize {
+        self.options
+            .tab_width
+            .or_else(|| cx.try_global::<Settings>().and_then(|s| s.tab_width))
+            .unwrap_or(self.file_tab_width)
+    }
+
+    pub(crate) fn format_on_save(&self, cx: &App) -> bool {
+        self.options.format_on_save.unwrap_or_else(|| {
+            cx.try_global::<Settings>()
+                .is_some_and(|s| s.format_on_save)
+        })
+    }
+
+    pub(crate) fn relative_number(&self, cx: &App) -> bool {
+        self.options.relative_number.unwrap_or_else(|| {
+            cx.try_global::<Settings>()
+                .is_some_and(|s| s.relative_number)
+        })
+    }
+
     pub fn save(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let path = self.path.clone().context("No file name")?;
-        if cx
-            .try_global::<Settings>()
-            .is_some_and(|s| s.format_on_save)
-        {
+        if self.format_on_save(cx) {
             self.format_now(cx);
         }
         if let Some(parent) = path.parent() {
@@ -971,7 +999,7 @@ impl Editor {
             top: self.scroll_top.max(0.) as usize,
             height: self.visible_lines.max(1),
         };
-        self.vim_lang.tab_width = tab_width(self.file_tab_width, cx);
+        self.vim_lang.tab_width = self.tab_width(cx);
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
         let syntax = &mut self.syntax;
         cx.update_global::<VimGlobal, R>(|global, cx| {
@@ -1461,7 +1489,7 @@ impl Editor {
         cx: &App,
     ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::TextEdit>>>> + use<>> {
         let (lsp, path) = (self.lsp.as_ref()?, self.path.as_ref()?);
-        let width = tab_width(self.file_tab_width, cx);
+        let width = self.tab_width(cx);
         lsp.read(cx)
             .formatting(path, width as u32, self.vim_lang.expand_tab)
     }
@@ -1994,6 +2022,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Frame {
         let settings = cx.global::<Settings>().clone();
+        let relative_number = self.relative_number(cx);
         let theme = cx.theme();
         let (bg, fg, muted) = (theme.background, theme.foreground, theme.muted_foreground);
         let selection_bg = theme.selection;
@@ -2438,7 +2467,7 @@ impl Editor {
             }
 
             // Gutter: line number, tinted by the worst diagnostic.
-            let number = line_number(line, cursor_line, settings.relative_number, digits);
+            let number = line_number(line, cursor_line, relative_number, digits);
             let worst = severity_at.iter().copied().filter(|s| *s > 0).min();
             let color = match worst {
                 Some(severity) => diag_colors[(severity - 1) as usize],
@@ -2751,7 +2780,7 @@ impl Frame {
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // `set-option` refreshes the windows: a new tab width shows at once.
-        self.vim_lang.tab_width = tab_width(self.file_tab_width, cx);
+        self.vim_lang.tab_width = self.tab_width(cx);
         let mut key_context = KeyContext::default();
         key_context.add("Editor");
         key_context.set(

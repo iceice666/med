@@ -590,6 +590,9 @@ pub struct Vim {
     /// The buffers' key tables this one is in, most specific first: looked
     /// up before the mode's own table (see [`Keymap`]).
     pub tables: Vec<String>,
+    /// Whether brackets and quotes close as they are typed here, over
+    /// [`Shared::auto_pairs`]; `None` to go by that.
+    pub auto_pairs: Option<bool>,
     /// Char offset of the cursor.
     pub cursor: usize,
     /// The other end of the visual selection.
@@ -666,6 +669,7 @@ impl Vim {
         Self {
             mode: Mode::Normal,
             tables: Vec::new(),
+            auto_pairs: None,
             cursor: 0,
             anchor: 0,
             goal_col: None,
@@ -2843,7 +2847,7 @@ impl Vim {
     /// A key with no binding in insert mode: typed text inserts itself.
     fn insert_default(&mut self, key: Key, cx: &mut Ctx<'_>) {
         if let Key::Char(c) = key
-            && cx.shared.auto_pairs
+            && self.auto_pairs.unwrap_or(cx.shared.auto_pairs)
             && self.auto_pair(c, cx)
         {
             return;
@@ -2903,7 +2907,8 @@ impl Vim {
                 };
                 // Between a pair with nothing in it: both go.
                 let pair = (buf.char_at(self.cursor - 1), buf.char_at(self.cursor));
-                let end = if cx.shared.auto_pairs && cx.lang.pairs.contains(&pair) {
+                let auto_pairs = self.auto_pairs.unwrap_or(cx.shared.auto_pairs);
+                let end = if auto_pairs && cx.lang.pairs.contains(&pair) {
                     self.cursor + 1
                 } else {
                     self.cursor

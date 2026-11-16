@@ -786,6 +786,105 @@ fn the_relative_number_option(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_tab_has_options_of_its_own(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.mlisp", "(a\n  b)\n"), ("b.mlisp", "(b\n  c)\n")]);
+    let (ws, cx) = open(&project, &["a.mlisp"], cx);
+    assert_eq!(eval_in(&ws, "(buffer-language)", cx), r#""mlisp""#);
+
+    // This tab's width is 4, over the language's 2 and over every tab's 8.
+    assert_eq!(lisp("(set-option 'tab-width 8)", cx), "nil");
+    assert_eq!(eval_in(&ws, "(set-buffer-option 'tab-width 4)", cx), "nil");
+    cx.simulate_keystrokes("o tab x escape");
+    assert_eq!(text(&ws, cx), "(a\n    x\n  b)\n");
+    // Brackets close as they are typed, but not in this tab.
+    assert_eq!(
+        eval_in(&ws, "(set-buffer-option 'auto-pairs false)", cx),
+        "nil"
+    );
+    cx.simulate_keystrokes("u o ( escape");
+    assert_eq!(text(&ws, cx), "(a\n(\n  b)\n");
+    cx.simulate_keystrokes("u");
+
+    // Another tab goes by every tab's.
+    cx.simulate_keystrokes(": e space b . m l i s p enter");
+    assert_eq!(active_file(&ws, cx), Some(project.path("b.mlisp")));
+    cx.simulate_keystrokes("o tab x escape");
+    assert_eq!(text(&ws, cx), "(b\n        x\n  c)\n");
+    cx.simulate_keystrokes("u o ( escape");
+    assert_eq!(text(&ws, cx), "(b\n()\n  c)\n");
+
+    // The first keeps its own, until they are reset.
+    cx.simulate_keystrokes(": e space a . m l i s p enter");
+    cx.simulate_keystrokes("o tab x escape");
+    assert_eq!(text(&ws, cx), "(a\n    x\n  b)\n");
+    assert_eq!(eval_in(&ws, "(reset-buffer-option 'tab-width)", cx), "nil");
+    assert_eq!(eval_in(&ws, "(reset-buffer-option 'auto-pairs)", cx), "nil");
+    cx.simulate_keystrokes("u o tab ( escape");
+    assert_eq!(text(&ws, cx), "(a\n        ()\n  b)\n");
+
+    // The ones shown as it is drawn, and read as it is saved.
+    let options = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            (editor.relative_number(cx), editor.format_on_save(cx))
+        })
+    };
+    assert_eq!(lisp("(set-option 'relative-number true)", cx), "nil");
+    assert_eq!(options(&ws, cx), (true, false));
+    eval_in(&ws, "(set-buffer-option 'relative-number false)", cx);
+    eval_in(&ws, "(set-buffer-option 'format-on-save true)", cx);
+    assert_eq!(options(&ws, cx), (false, true));
+    cx.simulate_keystrokes(": e space b . m l i s p enter");
+    assert_eq!(options(&ws, cx), (true, false));
+
+    // Only the options a file can have its own of, with values they take.
+    for (bad, said) in [
+        (
+            "(set-buffer-option 'font-size 16)",
+            "not an option a tab has",
+        ),
+        ("(reset-buffer-option 'lsp)", "not an option a tab has"),
+        ("(set-buffer-option 'tab-width 0)", "no width for a tab"),
+        ("(set-buffer-option 'tab-width nil)", "expected"),
+        (
+            "(set-buffer-option 'relative-number 1)",
+            "expected true or false",
+        ),
+    ] {
+        let message = eval_in(&ws, bad, cx);
+        assert!(message.contains(said), "{bad}: {message}");
+    }
+    // A program with no workspace, as the init file, has no tab to change.
+    let none = cx.update(|_, cx| crate::script::eval("(set-buffer-option 'tab-width 4)", cx));
+    assert!(none.unwrap_err().to_string().contains("there is no tab up"));
+}
+
+#[gpui::test]
+fn the_init_file_gives_options_by_language(cx: &mut TestAppContext) {
+    // As the docs have it: a hook of the init file's, told of every file
+    // that comes up, the first one too.
+    let project = Project::new(&[("a.mlisp", "(a\n  b)\n"), ("b.txt", "bee\n")]);
+    let init = r#"
+        (def languages nil)
+        (add-hook 'buffer-entered
+          (fn (path)
+            (set! languages (cons (buffer-language) languages))
+            (when (= (buffer-language) "mlisp")
+              (set-buffer-option 'tab-width 3))))"#;
+    let (ws, cx) = open_with(&[init], &project, &["a.mlisp"], cx);
+    cx.simulate_keystrokes("o tab x escape");
+    assert_eq!(text(&ws, cx), "(a\n   x\n  b)\n");
+
+    // A file with no language is "text", as the status bar has it, and
+    // keeps every tab's width: 4 here, as the file is indented by nothing.
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    assert_eq!(lisp("languages", cx), r#"("text" "mlisp")"#);
+    assert_eq!(message(&ws, cx), "");
+    cx.simulate_keystrokes("o tab x escape");
+    assert_eq!(text(&ws, cx), "bee\n    x\n");
+}
+
+#[gpui::test]
 fn scripts_define_commands(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
     let (ws, cx) = open(&project, &["a.txt", "b.txt", "c.txt"], cx);

@@ -174,6 +174,24 @@ A key a table binds is run at once, even where the mode's table has
 longer bindings that start with it. `:workspace.reload_init` runs the file
 again; what is wrong with it is said in the status bar, with the line.
 
+A tab can have options of its own as well: `tab-width`,
+`relative-number`, `format-on-save` and `auto-pairs` (the others are the
+window's or the application's). Its own value goes before the one
+`set-option` gives every tab, until it is reset. With `buffer-entered`,
+which is told of every file that comes up, and `buffer-language`, an
+option can go by the language:
+
+```lisp
+(set-buffer-option 'tab-width 8)            ; the tab up's own
+(reset-buffer-option 'tab-width)            ; back to set-option's
+(buffer-language)                           ; => "markdown", "text" for none
+
+(add-hook 'buffer-entered
+  (fn (path)
+    (when (= (buffer-language) "sql")
+      (set-buffer-option 'format-on-save false))))
+```
+
 A command can be written there too. It is a function of no arguments, and
 from then on a name like any other: for keys, for the command line, and
 for `run`, which runs a command by any name the command line knows it by.

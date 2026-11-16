@@ -108,6 +108,19 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 分頁的表所綁定的鍵會立即執行，即使模式的表中有以它開頭的較長綁定。`:workspace.reload_init` 會重新執行該檔案；檔案中的錯誤會連同行號顯示在狀態列。
 
+分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save` 與 `auto-pairs`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
+
+```lisp
+(set-buffer-option 'tab-width 8)            ; 目前顯示的分頁自己的值
+(reset-buffer-option 'tab-width)            ; 回到 set-option 的值
+(buffer-language)                           ; => "markdown"，沒有語言時為 "text"
+
+(add-hook 'buffer-entered
+  (fn (path)
+    (when (= (buffer-language) "sql")
+      (set-buffer-option 'format-on-save false))))
+```
+
 命令也可以寫在那裡。命令是一個不帶引數的函式，從此就是一個和其他名稱無異的名稱：可用於按鍵、命令列，以及 `run`，後者以命令列認得的任何名稱執行命令。
 
 ```lisp

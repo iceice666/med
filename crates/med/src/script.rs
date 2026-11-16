@@ -13,6 +13,11 @@
 //! (bind 'listing "<CR>" "user.open")   ; in normal mode there; also
 //!                                      ; listing.visual, .operator, .insert
 //! (set-buffer-keys '(listing))         ; the tab up is in it
+//! (set-buffer-option 'tab-width 8)     ; the tab up's own; also
+//!                                      ; relative-number, format-on-save,
+//!                                      ; auto-pairs
+//! (reset-buffer-option 'tab-width)     ; back to set-option's
+//! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save,
@@ -715,6 +720,41 @@ fn milliseconds(value: &Value) -> Result<Duration, Error> {
 }
 
 /// An option that is on or off.
+/// Columns to a tab, as `tab-width` takes them.
+fn tab_width(value: &Value) -> Result<usize, Error> {
+    match value.as_int()? {
+        n @ 1..=16 => Ok(n as usize),
+        _ => Err(failed(format!("{value} is no width for a tab"))),
+    }
+}
+
+fn no_buffer_option(option: &str) -> Error {
+    failed(format!(
+        "{option} is not an option a tab has its own of \
+         (tab-width relative-number format-on-save auto-pairs)"
+    ))
+}
+
+/// Change the tab up, for `set-buffer-option` and the like.
+fn on_buffer(
+    cx: &mut App,
+    function: &str,
+    change: Box<dyn FnOnce(&mut crate::editor::Editor)>,
+) -> Result<Value, Error> {
+    let done = in_workspace(cx, |workspace, _, cx| {
+        let editor = workspace.active_editor()?.clone();
+        editor.update(cx, |editor, cx| {
+            change(editor);
+            cx.notify();
+        });
+        Some(())
+    });
+    match done.flatten() {
+        Some(()) => Ok(Value::Nil),
+        None => Err(failed(format!("{function}: there is no tab up"))),
+    }
+}
+
 fn flag(value: &Value) -> Result<bool, Error> {
     match value {
         Value::Bool(on) => Ok(*on),
@@ -1044,10 +1084,7 @@ fn define_functions(interp: &mut Interp) {
             "tab-width" => {
                 settings.tab_width = match value {
                     Value::Nil => None,
-                    width => match width.as_int()? {
-                        n @ 1..=16 => Some(n as usize),
-                        _ => return Err(failed(format!("{value} is no width for a tab"))),
-                    },
+                    width => Some(tab_width(width)?),
                 };
             }
             // Each line's number its distance from the cursor's.
@@ -1068,6 +1105,58 @@ fn define_functions(interp: &mut Interp) {
         }
         cx.refresh_windows();
         Ok(Value::Nil)
+    });
+
+    // (set-buffer-option name value): the tab up's own value of an
+    // option, over the one `set-option` gives every tab.
+    interp.define_native("set-buffer-option", 2, |call, args| {
+        let (option, value) = (name(&args[0])?, &args[1]);
+        let set: Box<dyn FnOnce(&mut crate::editor::Editor)> = match option.as_str() {
+            "tab-width" => {
+                let width = tab_width(value)?;
+                Box::new(move |editor| editor.options.tab_width = Some(width))
+            }
+            "relative-number" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.options.relative_number = Some(on))
+            }
+            "format-on-save" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.options.format_on_save = Some(on))
+            }
+            "auto-pairs" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.vim.auto_pairs = Some(on))
+            }
+            other => return Err(no_buffer_option(other)),
+        };
+        on_buffer(app(call)?, "set-buffer-option", set)
+    });
+
+    // (reset-buffer-option name): the tab up goes by `set-option` again.
+    interp.define_native("reset-buffer-option", 1, |call, args| {
+        let option = name(&args[0])?;
+        let reset: Box<dyn FnOnce(&mut crate::editor::Editor)> = match option.as_str() {
+            "tab-width" => Box::new(|editor| editor.options.tab_width = None),
+            "relative-number" => Box::new(|editor| editor.options.relative_number = None),
+            "format-on-save" => Box::new(|editor| editor.options.format_on_save = None),
+            "auto-pairs" => Box::new(|editor| editor.vim.auto_pairs = None),
+            other => return Err(no_buffer_option(other)),
+        };
+        on_buffer(app(call)?, "reset-buffer-option", reset)
+    });
+
+    // (buffer-language): the language of the tab up, as the status bar
+    // names it ("rust", "markdown", "text" for none); nil for no tab.
+    interp.define_native("buffer-language", 0, |call, _| {
+        let cx = app(call)?;
+        let language = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| {
+                Some(workspace.active_editor()?.read(cx).language_name())
+            };
+            origin.workspace.read_with(cx, read).ok().flatten()
+        });
+        Ok(language.map_or(Value::Nil, Value::from))
     });
 
     // (defcommand name description function): the function takes no

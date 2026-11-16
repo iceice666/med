@@ -164,6 +164,7 @@ at once.
 | Function | Gives |
 | --- | --- |
 | `(current-file)`, `(project-root)` | where the editor is |
+| `(buffer-language)` | the language of the tab up, as the status bar names it: `"rust"`, `"text"` for none |
 | `(open-file path [line [column]])` | the file in a tab, at a place counted from 1 |
 | `(list-dir path [all])` | what is in a directory: `((:name :path :dir)...)`, without what git ignores unless `all` |
 | `(path-name p)`, `(path-parent p)`, `(path-join a b...)` | parts of paths |
