@@ -159,6 +159,13 @@ server says it has more; until then they go with the text as it is
 edited. They are not shown where lines wrap. A tab can have its own,
 with `set-buffer-option`.
 
+Where the language server can tell what each token is (a parameter, a
+type, a macro), it is drawn as the server says, over what the syntax
+tree makes of it. The tokens are asked for when the text has been still
+for a moment, only what changed when the server can say so.
+`(set-option 'semantic-tokens false)` leaves the colors to the syntax
+tree; a tab can have its own.
+
 `(set-option 'theme "Catppuccin Mocha")` gives the window that theme's
 colors, the text's and the syntax's, whatever the system's appearance;
 `'("Catppuccin Latte" "Catppuccin Mocha")`, a light theme and a dark
@@ -236,7 +243,8 @@ run at startup, or from the command line with `:eval`:
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
                                               ; color-column, wrap, inlay-hints,
-                                              ; indent-guides, sticky-scroll,
+                                              ; semantic-tokens, indent-guides,
+                                              ; sticky-scroll,
                                               ; git-gutter, undo-file, theme,
                                               ; project-env
 ```
@@ -265,8 +273,8 @@ again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
 `relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
-`cursor-line`, `color-column`, `wrap`, `inlay-hints`, `indent-guides`,
-`sticky-scroll` and `git-gutter` (the others are the window's or the application's). Its own value goes before the one `set-option` gives
+`cursor-line`, `color-column`, `wrap`, `inlay-hints`, `semantic-tokens`,
+`indent-guides`, `sticky-scroll` and `git-gutter` (the others are the window's or the application's). Its own value goes before the one `set-option` gives
 every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:

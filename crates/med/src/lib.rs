@@ -67,6 +67,9 @@ pub struct Settings {
     /// Show what the language server says inline of the text, a type or
     /// a parameter's name, where lines do not wrap.
     pub inlay_hints: bool,
+    /// Draw each token as the language server tells what it is, over what
+    /// the syntax tree makes of it.
+    pub semantic_tokens: bool,
     /// Draw a line down each step of the lines' indents, vim's
     /// indent-blankline.
     pub indent_guides: bool,
@@ -239,6 +242,7 @@ pub fn init(cx: &mut App) {
         color_columns: Vec::new(),
         wrap: false,
         inlay_hints: false,
+        semantic_tokens: true,
         indent_guides: false,
         sticky_scroll: false,
         // Turned on by `run`: tests must not start git for every file.

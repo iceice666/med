@@ -2,7 +2,9 @@
 //! draw it and feed it input.
 
 use crate::commands::{Args, Commands, Handler};
-use crate::lsp::{LspEvent, LspStore, Place, ServerName, uri_to_path};
+use crate::lsp::{
+    LspEvent, LspStore, Place, SemanticAnswer, SemanticTokens, ServerName, uri_to_path,
+};
 use crate::syntax::{LangInfo, Syntax};
 use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
@@ -322,6 +324,16 @@ pub struct Editor {
     doc_highlights: Vec<(Range<usize>, bool)>,
     highlights_asked: Option<(u64, usize)>,
     highlights_task: Option<Task<()>>,
+    /// The tokens the language server tells apart, each a char range and
+    /// the highlight it is drawn as, in order; the numbers they were read
+    /// from, as the server last sent them, and which of its answers that
+    /// was; the version of the text they were last asked for, and the
+    /// asking.
+    semantic_spans: Vec<(Range<usize>, &'static str)>,
+    semantic_data: Vec<u32>,
+    semantic_result: Option<(ServerName, String)>,
+    tokens_asked: Option<u64>,
+    tokens_task: Option<Task<()>>,
     /// What programs marked on the text, by the group they gave.
     decorations: Vec<(SharedString, Vec<Decoration>)>,
     completion: Option<CompletionMenu>,
@@ -430,6 +442,7 @@ pub struct BufferOptions {
     pub color_columns: Option<Vec<usize>>,
     pub wrap: Option<bool>,
     pub inlay_hints: Option<bool>,
+    pub semantic_tokens: Option<bool>,
     pub indent_guides: Option<bool>,
     pub sticky_scroll: Option<bool>,
     pub git_gutter: Option<bool>,
@@ -885,6 +898,11 @@ impl Editor {
             doc_highlights: Vec::new(),
             highlights_asked: None,
             highlights_task: None,
+            semantic_spans: Vec::new(),
+            semantic_data: Vec::new(),
+            semantic_result: None,
+            tokens_asked: None,
+            tokens_task: None,
             decorations: Vec::new(),
             completion: None,
             completion_task: None,
@@ -923,6 +941,10 @@ impl Editor {
                         }
                         LspEvent::InlayHintsRefresh => {
                             this.hints_asked = None;
+                            cx.notify();
+                        }
+                        LspEvent::SemanticTokensRefresh => {
+                            this.tokens_asked = None;
                             cx.notify();
                         }
                         _ => {}
@@ -1685,6 +1707,128 @@ impl Editor {
             .collect()
     }
 
+    // ---- the tokens the language server tells apart ----------------------
+
+    pub(crate) fn semantic_tokens_on(&self, cx: &App) -> bool {
+        self.options.semantic_tokens.unwrap_or_else(|| {
+            cx.try_global::<Settings>()
+                .is_none_or(|s| s.semantic_tokens)
+        })
+    }
+
+    /// Ask the server what each token of the text is, once the text has
+    /// been still a moment, if it is not known for this version of it:
+    /// only what changed, when the server can say so.
+    pub fn request_tokens(&mut self, cx: &mut Context<Self>) {
+        if !self.semantic_tokens_on(cx) {
+            self.semantic_spans.clear();
+            return;
+        }
+        let version = self.buf.version();
+        if self.tokens_task.is_some() || self.tokens_asked == Some(version) || self.lsp.is_none() {
+            return;
+        }
+        self.tokens_asked = Some(version);
+        self.tokens_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            let request = this.update(cx, |this, cx| {
+                if this.buf.version() != version {
+                    return None;
+                }
+                let (lsp, path) = (this.lsp.as_ref()?, this.path.as_ref()?);
+                let previous = this
+                    .semantic_result
+                    .as_ref()
+                    .map(|(server, id)| (&**server, id.as_str()));
+                lsp.read(cx).semantic_tokens(path, previous)
+            });
+            // Changed meanwhile, or no server to ask yet: later, still
+            // only what changed since the last answer.
+            let Some(request) = request.ok().flatten() else {
+                this.update(cx, |this, _| {
+                    this.tokens_task = None;
+                    this.tokens_asked = None;
+                })
+                .ok();
+                return;
+            };
+            let answer = request.await.ok();
+            this.update(cx, |this, cx| {
+                this.tokens_task = None;
+                match answer {
+                    Some(answer) => {
+                        if this.take_tokens(version, answer) {
+                            cx.notify();
+                        }
+                    }
+                    // No answer: all of them, later.
+                    None => {
+                        this.semantic_result = None;
+                        this.tokens_asked = None;
+                    }
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Take a server's answer about the tokens of `version` of the text.
+    /// What it sent is kept whatever the text is now, as what it says
+    /// next is of that; where the tokens are is only worked out if the
+    /// text is still that version.
+    pub(crate) fn take_tokens(&mut self, version: u64, answer: SemanticAnswer) -> bool {
+        let SemanticAnswer {
+            server,
+            legend,
+            tokens,
+        } = answer;
+        let result_id = match tokens {
+            SemanticTokens::All { result_id, data } => {
+                self.semantic_data = data;
+                result_id
+            }
+            SemanticTokens::Changes { result_id, edits } => {
+                crate::lsp::apply_token_edits(&mut self.semantic_data, &edits);
+                result_id
+            }
+            SemanticTokens::None => {
+                self.semantic_result = None;
+                self.tokens_asked = None;
+                return false;
+            }
+        };
+        self.semantic_result = result_id.map(|id| (server, id));
+        if self.buf.version() != version {
+            return false;
+        }
+        let tokens = crate::lsp::decode_tokens(&self.semantic_data);
+        self.semantic_spans = tokens
+            .iter()
+            .filter_map(|token| {
+                let name = crate::lsp::token_highlight(&legend, token)?;
+                let at = |character| lsp::Position {
+                    line: token.line,
+                    character,
+                };
+                let start = self.offset_from_lsp(at(token.start));
+                let end = self.offset_from_lsp(at(token.start + token.length));
+                (start < end).then_some((start..end, name))
+            })
+            .collect();
+        true
+    }
+
+    /// The tokens the server told apart, each as its text and the
+    /// highlight it is drawn as.
+    pub fn semantic_token_texts(&self) -> Vec<(String, &'static str)> {
+        self.semantic_spans
+            .iter()
+            .map(|(range, name)| (self.buf.slice_string(range.clone()), *name))
+            .collect()
+    }
+
     // ---- the places of the name under the cursor -------------------------
 
     /// Ask the server where else the name under the cursor is, once the
@@ -2175,6 +2319,20 @@ impl Editor {
                         shift_range(&mut d.start, &mut d.end, edit);
                     }
                 }
+                // A token the edit touches is no longer known; those
+                // after it move with the text.
+                let delta = edit.new_end_char as isize - edit.old_end_char as isize;
+                self.semantic_spans.retain_mut(|(range, _)| {
+                    if range.end <= edit.start_char {
+                        true
+                    } else if range.start >= edit.old_end_char {
+                        range.start = (range.start as isize + delta) as usize;
+                        range.end = (range.end as isize + delta) as usize;
+                        true
+                    } else {
+                        false
+                    }
+                });
             }
             if let (Some(lsp), Some(path)) = (&self.lsp, &self.path) {
                 self.lsp_version += 1;
@@ -3351,7 +3509,7 @@ impl Editor {
 
         let byte_start = buf.char_to_byte(buf.line_start(first));
         let byte_end = buf.char_to_byte(buf.line_end(last - 1));
-        let (captures, styles) = match &self.syntax {
+        let (mut captures, mut styles) = match &self.syntax {
             Some(syntax) => (
                 syntax.captures(buf, byte_start..byte_end),
                 syntax
@@ -3362,6 +3520,32 @@ impl Editor {
             ),
             None => (Vec::new(), Vec::new()),
         };
+        // The tokens the language server told apart, over the syntax
+        // tree's: drawn after its captures, they win.
+        let char_start = buf.line_start(first);
+        let char_end = buf.line_end(last - 1);
+        let mut token_styles: Vec<(&str, u32)> = Vec::new();
+        for (range, name) in &self.semantic_spans {
+            if range.end <= char_start || range.start >= char_end {
+                continue;
+            }
+            let index = match token_styles.iter().find(|(known, _)| known == name) {
+                Some((_, index)) => *index,
+                None => {
+                    let Some(style) = highlight.style(name) else {
+                        continue;
+                    };
+                    let index = styles.len() as u32;
+                    styles.push(Some(style));
+                    token_styles.push((name, index));
+                    index
+                }
+            };
+            captures.push(crate::syntax::Capture {
+                range: buf.char_to_byte(range.start)..buf.char_to_byte(range.end),
+                index,
+            });
+        }
 
         let focused = self.focus_handle.is_focused(window);
         let mode = self.vim.mode;
@@ -4312,6 +4496,7 @@ impl Render for Editor {
         self.vim_lang.tab_width = self.tab_width(cx);
         self.vim_lang.wrap = self.wrap_cells;
         self.request_hints(cx);
+        self.request_tokens(cx);
         self.request_highlights(cx);
         self.request_git_diff(cx);
         let mut key_context = KeyContext::default();

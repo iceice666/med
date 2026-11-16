@@ -706,7 +706,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints indent-guides sticky-scroll git-gutter undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1359,6 +1359,78 @@ fn a_snippet_goes_in_as_its_text(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("tab");
     assert_eq!(text(&ws, cx), "x = add(a, b)\n");
     assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), "x = add(".len());
+}
+
+/// The tokens a language server tells apart are drawn where it says, a
+/// change sent as only what changed; an edit takes away those it
+/// touches and moves those after it.
+#[gpui::test]
+fn semantic_tokens_follow_the_text(cx: &mut TestAppContext) {
+    use crate::lsp::{SemanticAnswer, SemanticTokens};
+    let project = Project::new(&[("a.txt", "let point = Point::new();\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let legend = std::sync::Arc::new(lsp_types::SemanticTokensLegend {
+        token_types: vec![
+            lsp_types::SemanticTokenType::VARIABLE,
+            lsp_types::SemanticTokenType::STRUCT,
+            lsp_types::SemanticTokenType::FUNCTION,
+        ],
+        token_modifiers: Vec::new(),
+    });
+    let answer = |tokens| SemanticAnswer {
+        server: "ra".into(),
+        legend: legend.clone(),
+        tokens,
+    };
+    let texts = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.semantic_token_texts());
+    editor.update(cx, |e, _| {
+        let version = e.buf.version();
+        let all = SemanticTokens::All {
+            result_id: Some("1".into()),
+            data: vec![0, 4, 5, 0, 0, 0, 8, 5, 1, 0, 0, 7, 3, 2, 0],
+        };
+        assert!(e.take_tokens(version, answer(all)));
+    });
+    assert_eq!(
+        texts(cx),
+        [
+            ("point".to_string(), "variable"),
+            ("Point".to_string(), "type"),
+            ("new".to_string(), "function"),
+        ]
+    );
+
+    // Only what changed: one number of the last token taken away, which
+    // leaves it short of its five, so it goes.
+    editor.update(cx, |e, _| {
+        let version = e.buf.version();
+        let changes = SemanticTokens::Changes {
+            result_id: Some("2".into()),
+            edits: vec![lsp_types::SemanticTokensEdit {
+                start: 13,
+                delete_count: 1,
+                data: None,
+            }],
+        };
+        assert!(e.take_tokens(version, answer(changes)));
+    });
+    assert_eq!(texts(cx).len(), 2);
+
+    // `let` becomes `const`: nothing is touched but the tokens move.
+    cx.simulate_keystrokes("c w");
+    cx.simulate_input("const");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        texts(cx),
+        [
+            ("point".to_string(), "variable"),
+            ("Point".to_string(), "type"),
+        ]
+    );
+    // Changing a name takes its token away.
+    cx.simulate_keystrokes("w x");
+    assert_eq!(texts(cx), [("Point".to_string(), "type")]);
 }
 
 /// The places of the name under the cursor stay while the cursor is on

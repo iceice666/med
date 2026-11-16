@@ -420,6 +420,57 @@ async fn scenario(
         return Err(format!("workspace symbols for sum: {found:?}"));
     }
     println!("ok  workspace symbols: {found:?}");
+
+    // 14. Semantic tokens: `sum` is a function where it is called, and
+    //     after an edit, asked again (only what changed, as clangd can
+    //     say), a new variable is one.
+    let tokens_with = |editor: &Entity<Editor>, cx: &mut AsyncApp, text: &str, kind: &str| {
+        editor.update(cx, |editor, cx| editor.request_tokens(cx));
+        editor.read_with(cx, |e, _| {
+            e.semantic_token_texts()
+                .iter()
+                .any(|(token, drawn)| token == text && *drawn == kind)
+        })
+    };
+    let mut seen = false;
+    for _ in 0..200 {
+        seen = tokens_with(&editor, cx, "sum", "function");
+        if seen {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    if !seen {
+        let texts = editor.read_with(cx, |e, _| e.semantic_token_texts());
+        return Err(format!("no function sum among the tokens: {texts:?}"));
+    }
+    editor.update(cx, |editor, cx| {
+        editor.feed_keys(keys(&format!("{}G", main + 2)), cx);
+        editor.press(Key::Char('O'), cx);
+        editor.type_text("int fre", cx);
+        // Asked while still being typed: the asking finds the text changed,
+        // and the next one is still of what changed since.
+        editor.request_tokens(cx);
+        editor.type_text("sh = 1;", cx);
+        editor.press(Key::Esc, cx);
+    });
+    let mut seen = false;
+    for _ in 0..200 {
+        seen = tokens_with(&editor, cx, "fresh", "variable");
+        if seen {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    if !seen {
+        let texts = editor.read_with(cx, |e, _| e.semantic_token_texts());
+        return Err(format!("no variable fresh among the tokens: {texts:?}"));
+    }
+    println!("ok  semantic tokens");
     Ok(())
 }
 

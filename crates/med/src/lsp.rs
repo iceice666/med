@@ -75,6 +75,9 @@ struct Server {
     signature_triggers: Vec<char>,
     /// Whether the server says what it knows inline, as inlay hints.
     inlay_hints: bool,
+    /// What it calls the kinds of token it can tell apart, and whether it
+    /// can say only what changed of them, when it can tell them at all.
+    semantic: Option<(Arc<lsp::SemanticTokensLegend>, bool)>,
     status: Option<String>,
     _reader: Task<()>,
 }
@@ -89,6 +92,8 @@ pub enum LspEvent {
     Status,
     /// A server has other inlay hints to give, for any of its files.
     InlayHintsRefresh,
+    /// A server sees the tokens of its files otherwise now.
+    SemanticTokensRefresh,
 }
 
 pub struct LspStore {
@@ -128,6 +133,7 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "applyEdit": true,
             "workspaceEdit": { "documentChanges": true },
             "inlayHint": { "refreshSupport": true },
+            "semanticTokens": { "refreshSupport": true },
             "symbol": {},
         },
         "textDocument": {
@@ -161,6 +167,25 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
             "documentHighlight": {},
             "callHierarchy": {},
+            "semanticTokens": {
+                "requests": { "full": { "delta": true } },
+                "tokenTypes": [
+                    "namespace", "type", "class", "enum", "interface", "struct",
+                    "typeParameter", "parameter", "variable", "property",
+                    "enumMember", "event", "function", "method", "macro",
+                    "keyword", "modifier", "comment", "string", "number",
+                    "regexp", "operator", "decorator", "label",
+                ],
+                "tokenModifiers": [
+                    "declaration", "definition", "readonly", "static",
+                    "deprecated", "abstract", "async", "modification",
+                    "documentation", "defaultLibrary",
+                ],
+                "formats": ["relative"],
+                "overlappingTokenSupport": false,
+                "multilineTokenSupport": false,
+                "augmentsSyntaxTokens": true,
+            },
             "completion": {
                 "contextSupport": true,
                 "completionItem": {
@@ -289,6 +314,7 @@ impl LspStore {
                 triggers: Vec::new(),
                 signature_triggers: Vec::new(),
                 inlay_hints: false,
+                semantic: None,
                 status: Some("starting".into()),
                 _reader: reader,
             },
@@ -332,6 +358,7 @@ impl LspStore {
             .map(|chars| chars.iter().filter_map(|s| s.chars().next()).collect())
             .unwrap_or_default();
         server.inlay_hints = offers(&caps.inlay_hint_provider);
+        server.semantic = semantic_caps(caps);
         server.caps = result.capabilities;
         server.ready = true;
         server.status = None;
@@ -426,6 +453,10 @@ impl LspStore {
                     }
                     "workspace/inlayHint/refresh" => {
                         cx.emit(LspEvent::InlayHintsRefresh);
+                        Ok(Value::Null)
+                    }
+                    "workspace/semanticTokens/refresh" => {
+                        cx.emit(LspEvent::SemanticTokensRefresh);
                         Ok(Value::Null)
                     }
                     "workspace/workspaceFolders" => Ok(json!([{
@@ -1244,6 +1275,82 @@ impl LspStore {
         })
     }
 
+    /// The tokens of `path` as the first server of it that can tell them
+    /// sees them: only what changed since `previous`, the answer it gave
+    /// last, when that server can say so, or else all of them.
+    pub fn semantic_tokens(
+        &self,
+        path: &Path,
+        previous: Option<(&str, &str)>,
+    ) -> Option<impl Future<Output = anyhow::Result<SemanticAnswer>> + use<>> {
+        let server = self
+            .ready_servers(path)
+            .find(|server| server.semantic.is_some())?;
+        let (legend, delta) = server.semantic.clone()?;
+        let text_document = lsp::TextDocumentIdentifier {
+            uri: path_to_uri(path)?,
+        };
+        let name = server.config.name.clone();
+        let since = previous
+            .filter(|(of, _)| delta && *of == &*name)
+            .map(|(_, result_id)| result_id.to_string());
+        let client = server.client.clone();
+        Some(async move {
+            let tokens = match since {
+                Some(previous_result_id) => {
+                    let answer = client
+                        .request::<lsp::request::SemanticTokensFullDeltaRequest>(
+                            lsp::SemanticTokensDeltaParams {
+                                text_document,
+                                previous_result_id,
+                                work_done_progress_params: Default::default(),
+                                partial_result_params: Default::default(),
+                            },
+                        )
+                        .await?;
+                    match answer {
+                        Some(lsp::SemanticTokensFullDeltaResult::Tokens(tokens)) => {
+                            SemanticTokens::All {
+                                result_id: tokens.result_id,
+                                data: flatten_tokens(&tokens.data),
+                            }
+                        }
+                        Some(lsp::SemanticTokensFullDeltaResult::TokensDelta(delta)) => {
+                            SemanticTokens::Changes {
+                                result_id: delta.result_id,
+                                edits: delta.edits,
+                            }
+                        }
+                        _ => SemanticTokens::None,
+                    }
+                }
+                None => {
+                    let answer = client
+                        .request::<lsp::request::SemanticTokensFullRequest>(
+                            lsp::SemanticTokensParams {
+                                text_document,
+                                work_done_progress_params: Default::default(),
+                                partial_result_params: Default::default(),
+                            },
+                        )
+                        .await?;
+                    match answer {
+                        Some(lsp::SemanticTokensResult::Tokens(tokens)) => SemanticTokens::All {
+                            result_id: tokens.result_id,
+                            data: flatten_tokens(&tokens.data),
+                        },
+                        _ => SemanticTokens::None,
+                    }
+                }
+            };
+            Ok(SemanticAnswer {
+                server: name,
+                legend,
+                tokens,
+            })
+        })
+    }
+
     /// What the server says inline of the text in `range`.
     pub fn inlay_hints(
         &self,
@@ -1299,6 +1406,148 @@ fn configuration(settings: &Value, params: &Value) -> Value {
             .map(|item| lsp_config::section(settings, item["section"].as_str()))
             .collect(),
     )
+}
+
+// ---- semantic tokens ---------------------------------------------------
+
+/// What a server that tells tokens apart said it calls them, and whether
+/// it can say only what changed: only when it can tell those of a whole
+/// file.
+fn semantic_caps(caps: &lsp::ServerCapabilities) -> Option<(Arc<lsp::SemanticTokensLegend>, bool)> {
+    let options = match caps.semantic_tokens_provider.as_ref()? {
+        lsp::SemanticTokensServerCapabilities::SemanticTokensOptions(options) => options,
+        lsp::SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(options) => {
+            &options.semantic_tokens_options
+        }
+    };
+    let delta = match options.full.as_ref()? {
+        lsp::SemanticTokensFullOptions::Bool(false) => return None,
+        lsp::SemanticTokensFullOptions::Bool(true) => false,
+        lsp::SemanticTokensFullOptions::Delta { delta } => delta.unwrap_or(false),
+    };
+    Some((Arc::new(options.legend.clone()), delta))
+}
+
+/// A server's answer about the tokens of a file.
+pub struct SemanticAnswer {
+    pub server: ServerName,
+    pub legend: Arc<lsp::SemanticTokensLegend>,
+    pub tokens: SemanticTokens,
+}
+
+pub enum SemanticTokens {
+    /// All of them, five numbers each, as the server sends them.
+    All {
+        result_id: Option<String>,
+        data: Vec<u32>,
+    },
+    /// What changed since the answer asked about.
+    Changes {
+        result_id: Option<String>,
+        edits: Vec<lsp::SemanticTokensEdit>,
+    },
+    /// Nothing that can be used: they are to be asked for again.
+    None,
+}
+
+fn flatten_tokens(tokens: &[lsp::SemanticToken]) -> Vec<u32> {
+    tokens
+        .iter()
+        .flat_map(|t| {
+            [
+                t.delta_line,
+                t.delta_start,
+                t.length,
+                t.token_type,
+                t.token_modifiers_bitset,
+            ]
+        })
+        .collect()
+}
+
+/// Make what changed of the numbers a server sent: each edit is of the
+/// numbers as they were, so the last is made first.
+pub fn apply_token_edits(data: &mut Vec<u32>, edits: &[lsp::SemanticTokensEdit]) {
+    let mut edits: Vec<&lsp::SemanticTokensEdit> = edits.iter().collect();
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
+    for edit in edits {
+        let start = (edit.start as usize).min(data.len());
+        let end = (start + edit.delete_count as usize).min(data.len());
+        let inserted = edit.data.as_deref().map(flatten_tokens).unwrap_or_default();
+        data.splice(start..end, inserted);
+    }
+}
+
+/// One token, where it is: its line, the UTF-16 column it starts at, and
+/// how long it is in UTF-16 units; its kind and modifiers as numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub line: u32,
+    pub start: u32,
+    pub length: u32,
+    pub kind: u32,
+    pub modifiers: u32,
+}
+
+/// The tokens the numbers a server sent stand for, each placed relative
+/// to the one before it.
+pub fn decode_tokens(data: &[u32]) -> Vec<Token> {
+    let (mut line, mut start) = (0u32, 0u32);
+    data.as_chunks::<5>()
+        .0
+        .iter()
+        .map(|t| {
+            if t[0] > 0 {
+                line += t[0];
+                start = t[1];
+            } else {
+                start += t[1];
+            }
+            Token {
+                line,
+                start,
+                length: t[2],
+                kind: t[3],
+                modifiers: t[4],
+            }
+        })
+        .collect()
+}
+
+/// The highlight a kind of token is drawn as, by the names the theme
+/// knows tree-sitter's captures by; none for what is better left to the
+/// syntax tree.
+pub fn token_highlight(legend: &lsp::SemanticTokensLegend, token: &Token) -> Option<&'static str> {
+    let kind = legend.token_types.get(token.kind as usize)?.as_str();
+    let has =
+        |modifier: &str| {
+            legend.token_modifiers.iter().enumerate().any(|(bit, m)| {
+                m.as_str() == modifier && bit < 32 && token.modifiers & (1 << bit) != 0
+            })
+        };
+    Some(match kind {
+        "type" | "class" | "interface" | "struct" | "typeParameter" | "typeAlias" | "union"
+        | "trait" | "builtinType" | "selfTypeKeyword" => "type",
+        "enum" => "enum",
+        "enumMember" => "variant",
+        "parameter" | "variable" if has("readonly") && has("static") => "constant",
+        "parameter" | "variable" | "constParameter" => "variable",
+        "selfKeyword" => "variable.special",
+        "property" | "event" => "property",
+        "function" | "method" | "macro" => "function",
+        "keyword" | "modifier" => "keyword",
+        "comment" if has("documentation") => "comment.doc",
+        "comment" => "comment",
+        "string" => "string",
+        "number" => "number",
+        "boolean" => "boolean",
+        "regexp" => "string.regex",
+        "escapeSequence" | "formatSpecifier" => "string.escape",
+        "operator" => "operator",
+        "decorator" | "attribute" | "builtinAttribute" | "derive" => "attribute",
+        "label" | "lifetime" => "label",
+        _ => return None,
+    })
 }
 
 /// A place to choose among others, and what to call it in the list:
@@ -1837,6 +2086,90 @@ mod tests {
         assert_eq!(outgoing[0].label.as_deref(), Some("function add"));
         assert_eq!(outgoing[0].location.uri.as_str(), "file:///p/add.c");
         assert_eq!(outgoing[0].location.range, range(0, 3));
+    }
+
+    /// Each token is placed relative to the one before it: on the same
+    /// line, from its start; on a later one, from the start of the line.
+    #[test]
+    fn tokens_are_placed_from_the_one_before() {
+        let data = [0, 4, 3, 1, 0, 0, 5, 2, 0, 1, 2, 1, 4, 2, 0];
+        let placed: Vec<_> = decode_tokens(&data)
+            .iter()
+            .map(|t| (t.line, t.start, t.length, t.kind, t.modifiers))
+            .collect();
+        assert_eq!(placed, [(0, 4, 3, 1, 0), (0, 9, 2, 0, 1), (2, 1, 4, 2, 0)]);
+        // A last token cut short is no token.
+        assert_eq!(decode_tokens(&data[..13]).len(), 2);
+    }
+
+    /// What changed is made last first, as each edit is of the numbers
+    /// as they were.
+    #[test]
+    fn what_changed_of_the_tokens_is_made() {
+        let token = |n| lsp::SemanticToken {
+            delta_line: n,
+            delta_start: n,
+            length: n,
+            token_type: n,
+            token_modifiers_bitset: n,
+        };
+        let mut data: Vec<u32> = (0..15).collect();
+        let edits = [
+            lsp::SemanticTokensEdit {
+                start: 0,
+                delete_count: 5,
+                data: Some(vec![token(9)]),
+            },
+            lsp::SemanticTokensEdit {
+                start: 10,
+                delete_count: 5,
+                data: None,
+            },
+        ];
+        apply_token_edits(&mut data, &edits);
+        assert_eq!(data, [9, 9, 9, 9, 9, 5, 6, 7, 8, 9]);
+        // Past the end, an edit adds at the end.
+        apply_token_edits(
+            &mut data,
+            &[lsp::SemanticTokensEdit {
+                start: 99,
+                delete_count: 5,
+                data: Some(vec![token(1)]),
+            }],
+        );
+        assert_eq!(data.len(), 15);
+    }
+
+    /// A kind of token is drawn as the capture the theme knows for it, its
+    /// modifiers telling some apart; one better left to the syntax tree is
+    /// not drawn at all.
+    #[test]
+    fn tokens_are_drawn_as_captures() {
+        let legend = lsp::SemanticTokensLegend {
+            token_types: ["struct", "variable", "comment", "punctuation", "method"]
+                .into_iter()
+                .map(lsp::SemanticTokenType::new)
+                .collect(),
+            token_modifiers: ["readonly", "static", "documentation"]
+                .into_iter()
+                .map(lsp::SemanticTokenModifier::new)
+                .collect(),
+        };
+        let token = |kind, modifiers| Token {
+            line: 0,
+            start: 0,
+            length: 1,
+            kind,
+            modifiers,
+        };
+        let drawn = |kind, modifiers| token_highlight(&legend, &token(kind, modifiers));
+        assert_eq!(drawn(0, 0), Some("type"));
+        assert_eq!(drawn(1, 0), Some("variable"));
+        assert_eq!(drawn(1, 0b011), Some("constant"));
+        assert_eq!(drawn(2, 0b100), Some("comment.doc"));
+        assert_eq!(drawn(3, 0), None);
+        assert_eq!(drawn(4, 0), Some("function"));
+        assert_eq!(drawn(9, 0), None);
     }
 
     /// Each item asked for gets its section of the settings, or all of them.
