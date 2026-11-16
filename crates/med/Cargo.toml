@@ -13,6 +13,7 @@ med-vim = { path = "../med-vim" }
 med-lsp = { path = "../med-lsp" }
 med-git = { path = "../med-git" }
 med-lisp = { path = "../med-lisp" }
+med-term = { path = "../med-term" }
 gpui.workspace = true
 anyhow.workspace = true
 futures.workspace = true

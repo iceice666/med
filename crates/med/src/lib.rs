@@ -15,6 +15,7 @@ pub mod panel;
 pub mod script;
 pub mod search;
 pub mod syntax;
+pub mod terminal;
 #[cfg(test)]
 mod tests;
 pub mod user_panel;

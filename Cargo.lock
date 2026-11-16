@@ -3985,6 +3985,7 @@ dependencies = [
  "med-git",
  "med-lisp",
  "med-lsp",
+ "med-term",
  "med-vim",
  "nucleo-matcher",
  "regex",

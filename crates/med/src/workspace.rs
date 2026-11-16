@@ -7,6 +7,7 @@ use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::env::{self, EnvCell, ProjectEnv};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::pane::{Axis, Direction, Layout, PaneId};
+use crate::terminal::{TermView, TermViewEvent};
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
 use crate::{help, script};
 use gpui::component::{ActiveTheme as _, TitleBar};
@@ -47,12 +48,117 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
 }
 
-/// A pane of the window: tabs of editors, one of them shown. A tab is in
-/// one pane only, so that a file has one buffer.
+/// A pane of the window: tabs of editors and terminals, one of them
+/// shown. A tab is in one pane only, so that a file has one buffer.
 struct Pane {
     id: PaneId,
-    tabs: Vec<Entity<Editor>>,
+    tabs: Vec<Item>,
     active: usize,
+}
+
+/// What a tab has.
+#[derive(Clone)]
+pub(crate) enum Item {
+    Editor(Entity<Editor>),
+    Terminal {
+        view: Entity<TermView>,
+        /// In normal mode: a copy of what went by, in an editor, which the
+        /// tab shows and the keys go to instead.
+        normal: Option<Entity<Editor>>,
+    },
+}
+
+/// A tab is the same tab whatever mode its terminal is in.
+impl PartialEq for Item {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Item::Editor(a), Item::Editor(b)) => a == b,
+            (Item::Terminal { view: a, .. }, Item::Terminal { view: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Item {
+    fn terminal_of(view: Entity<TermView>) -> Self {
+        Item::Terminal { view, normal: None }
+    }
+
+    /// The editor of the tab: its own, or its terminal's in normal mode.
+    pub(crate) fn editor(&self) -> Option<&Entity<Editor>> {
+        match self {
+            Item::Editor(editor) => Some(editor),
+            Item::Terminal { normal, .. } => normal.as_ref(),
+        }
+    }
+
+    pub(crate) fn terminal(&self) -> Option<&Entity<TermView>> {
+        match self {
+            Item::Terminal { view, .. } => Some(view),
+            Item::Editor(_) => None,
+        }
+    }
+
+    /// A terminal taking the keys itself, not in normal mode.
+    fn live_terminal(&self) -> Option<&Entity<TermView>> {
+        match self {
+            Item::Terminal { view, normal: None } => Some(view),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn title(&self, cx: &App) -> String {
+        match self {
+            Item::Editor(editor) => editor.read(cx).title(),
+            Item::Terminal { view, .. } => view.read(cx).title(),
+        }
+    }
+
+    /// Unsaved work: a terminal's copy is never that.
+    fn is_dirty(&self, cx: &App) -> bool {
+        match self {
+            Item::Editor(editor) => editor.read(cx).is_dirty(),
+            Item::Terminal { .. } => false,
+        }
+    }
+
+    /// The empty buffer there for want of a file.
+    fn is_pristine(&self, cx: &App) -> bool {
+        match self {
+            Item::Editor(editor) => editor.read(cx).is_pristine(),
+            Item::Terminal { .. } => false,
+        }
+    }
+
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            Item::Editor(editor)
+            | Item::Terminal {
+                normal: Some(editor),
+                ..
+            } => editor.read(cx).focus_handle(cx),
+            Item::Terminal { view, normal: None } => view.read(cx).focus_handle(cx),
+        }
+    }
+
+    /// Its tab is going.
+    fn close(&self, cx: &mut App) {
+        match self {
+            Item::Editor(editor) => editor.update(cx, |editor, cx| editor.close(cx)),
+            Item::Terminal { view, .. } => view.update(cx, |terminal, _| terminal.close()),
+        }
+    }
+
+    fn view(&self) -> AnyElement {
+        match self {
+            Item::Editor(editor)
+            | Item::Terminal {
+                normal: Some(editor),
+                ..
+            } => editor.clone().into_any_element(),
+            Item::Terminal { view, normal: None } => view.clone().into_any_element(),
+        }
+    }
 }
 
 /// What a program is told of a pane: see `(panes)`.
@@ -186,8 +292,14 @@ impl Workspace {
         this
     }
 
-    /// The editor the keys go to: the tab shown in the focused pane.
+    /// The editor the keys go to: the tab shown in the focused pane, if
+    /// it is an editor.
     pub(crate) fn active_editor(&self) -> Option<&Entity<Editor>> {
+        self.active_item().and_then(Item::editor)
+    }
+
+    /// The tab shown in the focused pane.
+    pub(crate) fn active_item(&self) -> Option<&Item> {
         let pane = self.pane();
         pane.tabs.get(pane.active)
     }
@@ -201,23 +313,31 @@ impl Workspace {
     }
 
     /// The tabs of the focused pane.
-    pub(crate) fn tabs(&self) -> &[Entity<Editor>] {
+    pub(crate) fn tabs(&self) -> &[Item] {
         &self.pane().tabs
     }
 
-    /// The tabs of every pane.
-    fn all_tabs(&self) -> impl Iterator<Item = &Entity<Editor>> {
-        self.panes.iter().flat_map(|pane| pane.tabs.iter())
+    /// The editors of every pane.
+    fn all_editors(&self) -> impl Iterator<Item = &Entity<Editor>> {
+        self.panes
+            .iter()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Item::editor))
+    }
+
+    /// Where the editor's tab is that `which` is true of, as (pane, tab):
+    /// the focused pane's first.
+    fn find_tab(&self, cx: &App, which: impl Fn(&Editor) -> bool) -> Option<(usize, usize)> {
+        self.find_item(|item| item.editor().is_some_and(|editor| which(editor.read(cx))))
     }
 
     /// Where the tab is that `which` is true of, as (pane, tab): the
     /// focused pane's first.
-    fn find_tab(&self, cx: &App, which: impl Fn(&Editor) -> bool) -> Option<(usize, usize)> {
+    fn find_item(&self, which: impl Fn(&Item) -> bool) -> Option<(usize, usize)> {
         let order = std::iter::once(self.focused)
             .chain((0..self.panes.len()).filter(|index| *index != self.focused));
         order.into_iter().find_map(|pane| {
             let tabs = &self.panes[pane].tabs;
-            let tab = tabs.iter().position(|tab| which(tab.read(cx)))?;
+            let tab = tabs.iter().position(&which)?;
             Some((pane, tab))
         })
     }
@@ -227,7 +347,7 @@ impl Workspace {
     }
 
     fn any_dirty(&self, cx: &App) -> bool {
-        self.all_tabs().any(|tab| tab.read(cx).is_dirty())
+        self.all_editors().any(|tab| tab.read(cx).is_dirty())
     }
 
     /// False (with an explanation in the status bar) while there is unsaved
@@ -278,7 +398,7 @@ impl Workspace {
     }
 
     fn sync_with_disk(&mut self, window: &Window, cx: &mut Context<Self>) {
-        for tab in self.all_tabs().cloned().collect::<Vec<_>>() {
+        for tab in self.all_editors().cloned().collect::<Vec<_>>() {
             tab.update(cx, |editor, cx| editor.reload_if_changed(cx));
         }
         self.files_changed(window, cx);
@@ -308,8 +428,8 @@ impl Workspace {
     }
 
     pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.active_editor() {
-            Some(editor) => editor.read(cx).focus_handle(cx).focus(window, cx),
+        match self.active_item() {
+            Some(item) => item.focus_handle(cx).focus(window, cx),
             None => self.focus_handle.focus(window, cx),
         }
         cx.notify();
@@ -381,7 +501,7 @@ impl Workspace {
         } else {
             self.env.set(ProjectEnv::inherited());
         }
-        for editor in self.all_tabs().cloned().collect::<Vec<_>>() {
+        for editor in self.all_editors().cloned().collect::<Vec<_>>() {
             editor.update(cx, |editor, cx| editor.reopen_in_lsp(cx));
         }
         self.set_message(
@@ -400,6 +520,9 @@ impl Workspace {
 
     /// The window's title: what is being edited, and the editor's name.
     fn title(&self, cx: &App) -> String {
+        if let Some(terminal) = self.active_item().and_then(Item::live_terminal) {
+            return format!("{} — med", terminal.read(cx).title());
+        }
         let Some(editor) = self.active_editor().map(|editor| editor.read(cx)) else {
             return "med".to_string();
         };
@@ -493,8 +616,8 @@ impl Workspace {
             return;
         }
         pane.active = index.min(pane.tabs.len() - 1);
-        let editor = pane.tabs[pane.active].clone();
-        editor.read(cx).focus_handle(cx).focus(window, cx);
+        let item = pane.tabs[pane.active].clone();
+        item.focus_handle(cx).focus(window, cx);
         window.set_window_title(&self.title(cx));
         self.editor_changed(window, cx);
         cx.notify();
@@ -605,7 +728,7 @@ impl Workspace {
         {
             let index = self.bring_tab(pane, tab, window, cx);
             self.activate(index, window, cx);
-            return self.tabs().get(index).cloned();
+            return self.tabs().get(index).and_then(Item::editor).cloned();
         }
         let text = match std::fs::read(&path) {
             Ok(bytes) => match String::from_utf8(bytes) {
@@ -661,7 +784,9 @@ impl Workspace {
                 self.pane().active
             }
         };
-        let editor = self.tabs()[index].clone();
+        let Some(editor) = self.tabs()[index].editor().cloned() else {
+            return;
+        };
         editor.update(cx, |editor, cx| {
             if let Some(on_save) = on_save
                 && let Some(scratch) = &mut editor.scratch
@@ -684,7 +809,7 @@ impl Workspace {
         };
         if let Some(preview) = &active.read(cx).preview {
             match active.read(cx).preview_source() {
-                Some(source) => self.follow(&source, window, cx),
+                Some(source) => self.follow(&Item::Editor(source), window, cx),
                 None => {
                     let path = preview.source_path.clone();
                     self.open_path(&path, window, cx);
@@ -710,22 +835,197 @@ impl Workspace {
             // Where it is, in whichever pane: beside the file, it stays.
             Some((pane, tab)) => {
                 let preview = self.panes[pane].tabs[tab].clone();
-                preview.update(cx, |preview, cx| preview.link_preview(&active, cx));
+                if let Some(editor) = preview.editor() {
+                    editor.update(cx, |preview, cx| preview.link_preview(&active, cx));
+                }
                 self.follow(&preview, window, cx);
             }
             None => {
                 let preview = cx.new(|cx| Editor::preview_of(&active, path, cx));
                 self.watch(&preview, window, cx);
-                self.split_with(Axis::Row, preview, window, cx);
-                self.follow(&active, window, cx);
+                self.split_with(Axis::Row, Item::Editor(preview), window, cx);
+                self.follow(&Item::Editor(active), window, cx);
             }
+        }
+    }
+
+    /// `:terminal`: from a terminal, back to the pane before; else to the
+    /// terminal there is, or a new one in a pane split off below, in the
+    /// project's root and its environment. Given `command`, or with
+    /// `new`, a new one, running `command` if given rather than the shell.
+    fn terminal(
+        &mut self,
+        command: Option<String>,
+        new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if command.is_none() && !new {
+            if self
+                .active_item()
+                .is_some_and(|item| item.terminal().is_some())
+            {
+                self.leave_terminal(window, cx);
+                return;
+            }
+            let running = self.find_item(|item| {
+                item.terminal()
+                    .is_some_and(|terminal| terminal.read(cx).is_running())
+            });
+            if let Some((pane, tab)) = running {
+                // To the terminal itself, out of normal mode.
+                self.terminal_insert(pane, tab, window, cx);
+                return;
+            }
+        }
+        // Not to be waited for here: direnv evaluating a flake can take
+        // minutes.
+        let env = match self.env.get() {
+            Some(env) => env,
+            None => {
+                self.set_message(
+                    "The project environment is still loading: this terminal has med's",
+                    cx,
+                );
+                Arc::new(ProjectEnv::inherited())
+            }
+        };
+        let vars: HashMap<String, String> = env
+            .vars()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        let shell = vars.get("SHELL").cloned();
+        let (program, args) = match &command {
+            Some(command) => (
+                Some(shell.unwrap_or_else(|| "/bin/sh".to_string())),
+                vec!["-c".to_string(), command.clone()],
+            ),
+            None => (shell, Vec::new()),
+        };
+        let options = med_term::Options {
+            program,
+            args,
+            cwd: Some(self.root.clone()),
+            env: vars,
+            // Sized when it is first drawn.
+            cols: 80,
+            rows: 24,
+        };
+        let (terminal, events) = match med_term::Terminal::spawn(options) {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                self.set_message(format!("Could not start a terminal: {error:#}"), cx);
+                return;
+            }
+        };
+        let view = cx.new(|cx| TermView::new(terminal, events, command, cx));
+        self._subscriptions
+            .push(cx.subscribe_in(&view, window, Self::on_terminal_event));
+        self.split_with(Axis::Column, Item::terminal_of(view), window, cx);
+    }
+
+    fn on_terminal_event(
+        &mut self,
+        terminal: &Entity<TermView>,
+        event: &TermViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let item = Item::terminal_of(terminal.clone());
+        match event {
+            TermViewEvent::KeyPress => {
+                self.message = None;
+                if self.active_item() != Some(&item) {
+                    self.follow(&item, window, cx);
+                }
+            }
+            TermViewEvent::Normal => {
+                if let Some((pane, tab)) = self.find_item(|tab| *tab == item) {
+                    self.terminal_normal(pane, tab, window, cx);
+                }
+            }
+            TermViewEvent::Close => {
+                if let Some((pane, tab)) = self.find_item(|tab| *tab == item) {
+                    self.focused = pane;
+                    self.close_tab(tab, true, window, cx);
+                }
+            }
+            TermViewEvent::Changed => {
+                if self.active_item() == Some(&item) {
+                    window.set_window_title(&self.title(cx));
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// The terminal of tab `tab` of pane `pane` to normal mode: the tab
+    /// shows, and the keys go to, a copy of what went by, in an editor,
+    /// its cursor where the terminal's is, or at the top of what was
+    /// being looked at.
+    fn terminal_normal(
+        &mut self,
+        pane: usize,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.panes[pane].tabs[tab].terminal().cloned() else {
+            return;
+        };
+        let history = view.read(cx).history();
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::new(None, &history.text, None, cx);
+            // Nowhere to be written, and never unsaved.
+            editor.scratch = Some(Scratch {
+                name: SharedString::from(view.read(cx).title()),
+                on_save: None,
+            });
+            editor
+        });
+        self.watch(&editor, window, cx);
+        editor.update(cx, |editor, cx| {
+            editor.goto_line_col(history.line, history.col, cx)
+        });
+        if let Item::Terminal { normal, .. } = &mut self.panes[pane].tabs[tab] {
+            *normal = Some(editor);
+        }
+        self.focused = pane;
+        self.activate(tab, window, cx);
+    }
+
+    /// The terminal of tab `tab` of pane `pane`, out of normal mode if it
+    /// was in it, gets the keys.
+    fn terminal_insert(
+        &mut self,
+        pane: usize,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Item::Terminal { normal, .. } = &mut self.panes[pane].tabs[tab] {
+            *normal = None;
+        }
+        self.focused = pane;
+        self.activate(tab, window, cx);
+    }
+
+    /// Out of a terminal, to the pane before, or with no other pane, the
+    /// tab before.
+    fn leave_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes.len() > 1 {
+            self.cycle_pane(-1, window, cx);
+        } else if self.tabs().len() > 1 {
+            self.cycle_tab(-1, window, cx);
+        } else {
+            self.set_message("There is nowhere else to go: :vsplit, or :e a file", cx);
         }
     }
 
     /// A file or directory was moved from `from` to `to`: the tabs that
     /// had it, or something in it, have the new path.
     pub(crate) fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
-        for tab in self.all_tabs().cloned().collect::<Vec<_>>() {
+        for tab in self.all_editors().cloned().collect::<Vec<_>>() {
             let moved = tab.read(cx).path.as_deref().and_then(|path| {
                 let rest = path.strip_prefix(from).ok()?;
                 Some(match rest.as_os_str().is_empty() {
@@ -773,12 +1073,12 @@ impl Workspace {
 
     fn add_tab(&mut self, editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
         self.watch(&editor, window, cx);
-        let index = self.place_tab(editor, cx);
+        let index = self.place_tab(Item::Editor(editor), cx);
         self.activate(index, window, cx);
     }
 
     /// Put a tab in the focused pane, after the one shown, and say where.
-    fn place_tab(&mut self, editor: Entity<Editor>, cx: &App) -> usize {
+    fn place_tab(&mut self, item: Item, cx: &App) -> usize {
         // The empty buffer there for want of a file gives way to the first
         // thing opened, as in vim.
         let pristine = self
@@ -786,11 +1086,11 @@ impl Workspace {
             .is_some_and(|tab| tab.read(cx).is_pristine());
         let pane = self.pane_mut();
         if pristine {
-            pane.tabs[pane.active] = editor;
+            pane.tabs[pane.active] = item;
             return pane.active;
         }
         let index = (pane.active + 1).min(pane.tabs.len());
-        pane.tabs.insert(index, editor);
+        pane.tabs.insert(index, item);
         index
     }
 
@@ -809,15 +1109,15 @@ impl Workspace {
             return tab;
         }
         let other = &mut self.panes[pane];
-        let editor = other.tabs.remove(tab);
+        let item = other.tabs.remove(tab);
         if tab < other.active || other.active >= other.tabs.len() {
             other.active = other.active.saturating_sub(1);
         }
         if other.tabs.is_empty() {
             let empty = self.empty_editor(window, cx);
-            self.panes[pane].tabs.push(empty);
+            self.panes[pane].tabs.push(Item::Editor(empty));
         }
-        self.place_tab(editor, cx)
+        self.place_tab(item, cx)
     }
 
     // ---- panes ---------------------------------------------------------
@@ -833,24 +1133,18 @@ impl Workspace {
     /// of it, or below it, and has the keys.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let editor = self.empty_editor(window, cx);
-        self.split_with(axis, editor, window, cx);
+        self.split_with(axis, Item::Editor(editor), window, cx);
     }
 
-    /// Split the focused pane, the new one having `editor`, which has been
+    /// Split the focused pane, the new one having `item`, which has been
     /// watched, and the keys.
-    fn split_with(
-        &mut self,
-        axis: Axis,
-        editor: Entity<Editor>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn split_with(&mut self, axis: Axis, item: Item, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.next_pane;
         self.next_pane += 1;
         self.layout.split(self.pane().id, axis, id);
         self.panes.push(Pane {
             id,
-            tabs: vec![editor],
+            tabs: vec![item],
             active: 0,
         });
         self.focus_pane(self.panes.len() - 1, window, cx);
@@ -922,15 +1216,15 @@ impl Workspace {
 
     /// Tabs of a pane that is gone, at the end of the focused pane's; its
     /// empty buffers are dropped.
-    fn adopt(&mut self, tabs: Vec<Entity<Editor>>, cx: &App) {
-        let kept = tabs.into_iter().filter(|tab| !tab.read(cx).is_pristine());
+    fn adopt(&mut self, tabs: Vec<Item>, cx: &App) {
+        let kept = tabs.into_iter().filter(|tab| !tab.is_pristine(cx));
         self.pane_mut().tabs.extend(kept);
     }
 
-    /// An editor of another pane had a key: that pane has the keys now.
-    fn follow(&mut self, editor: &Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) {
+    /// A tab of another pane had a key: that pane has the keys now.
+    fn follow(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
         let found = self.panes.iter().enumerate().find_map(|(pane, at)| {
-            let tab = at.tabs.iter().position(|tab| tab == editor)?;
+            let tab = at.tabs.iter().position(|tab| tab == item)?;
             Some((pane, tab))
         });
         if let Some((pane, tab)) = found {
@@ -943,7 +1237,7 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn find_editor(&self, path: &Path, cx: &App) -> Option<Entity<Editor>> {
         let (pane, tab) = self.find_tab(cx, |editor| editor.path.as_deref() == Some(path))?;
-        Some(self.panes[pane].tabs[tab].clone())
+        self.panes[pane].tabs[tab].editor().cloned()
     }
 
     /// The panes, from the top left, each as what it shows, for `(panes)`.
@@ -954,7 +1248,8 @@ impl Workspace {
             .filter_map(|id| self.pane_index(*id))
             .map(|index| {
                 let pane = &self.panes[index];
-                let editor = pane.tabs.get(pane.active).map(|tab| tab.read(cx));
+                let editor = pane.tabs.get(pane.active).and_then(Item::editor);
+                let editor = editor.map(|tab| tab.read(cx));
                 PaneInfo {
                     focused: index == self.focused,
                     scratch: editor.and_then(|e| e.scratch.as_ref().map(|s| s.name.clone())),
@@ -1007,14 +1302,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(editor) = self.tabs().get(index).cloned() else {
+        let Some(item) = self.tabs().get(index).cloned() else {
             return true;
         };
-        if !force && editor.read(cx).is_dirty() {
+        if !force && item.is_dirty(cx) {
             self.set_message("No write since last change (add ! to override)", cx);
             return false;
         }
-        editor.update(cx, |editor, cx| editor.close(cx));
+        item.close(cx);
         let pane = self.pane_mut();
         pane.tabs.remove(index);
         if pane.tabs.is_empty() {
@@ -1148,8 +1443,11 @@ impl Workspace {
                 self.message = None;
                 // Clicked into, an editor of another pane has the keys:
                 // what programs act on is that pane's.
-                if self.active_editor() != Some(editor) {
-                    self.follow(editor, window, cx);
+                if self.active_editor() != Some(editor)
+                    && let Some((pane, tab)) = self.find_item(|tab| tab.editor() == Some(editor))
+                {
+                    self.focused = pane;
+                    self.activate(tab, window, cx);
                 }
             }
             EditorEvent::Pending(pending) => {
@@ -1157,6 +1455,16 @@ impl Workspace {
                 script::keys_pending(pending.unwrap_or(med_lisp::Value::Nil), window, cx);
             }
             EditorEvent::Changed => {
+                // A terminal's copy put into insert mode: the terminal
+                // has the keys again, as in vim.
+                if editor.read(cx).vim.mode == Mode::Insert
+                    && let Some((pane, tab)) = self.find_item(|tab| {
+                        matches!(tab, Item::Terminal { normal: Some(copy), .. } if copy == editor)
+                    })
+                {
+                    self.terminal_insert(pane, tab, window, cx);
+                    return;
+                }
                 cx.notify();
                 if self.active_editor() == Some(editor) {
                     self.editor_changed(window, cx);
@@ -1213,7 +1521,7 @@ impl Workspace {
         let mut failed = None;
         for (path, edits) in crate::lsp::edits_by_file(edit) {
             let open = self
-                .all_tabs()
+                .all_editors()
                 .find(|tab| tab.read(cx).path.as_deref() == Some(path.as_path()))
                 .cloned();
             let applied = match open {
@@ -1344,8 +1652,26 @@ impl Workspace {
         match cx.global::<Commands>().handler(name) {
             Some(Handler::Workspace(run)) => run(self, args, window, cx),
             Some(Handler::Editor(run)) => {
-                if let Some(editor) = self.active_editor().cloned() {
+                let item = self.active_item().cloned();
+                if let Some(editor) = item.as_ref().and_then(Item::editor) {
                     editor.update(cx, |editor, cx| run(editor, args, cx));
+                } else if let Some(terminal) = item.as_ref().and_then(Item::terminal) {
+                    // Of what an editor does, a terminal only copies what
+                    // the mouse selected, and pastes.
+                    match name {
+                        "editor.paste" => {
+                            if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                                terminal.update(cx, |terminal, _| terminal.paste(&text));
+                            }
+                        }
+                        "editor.copy" => {
+                            let copied = terminal.update(cx, |terminal, cx| terminal.copy(cx));
+                            if !copied {
+                                self.set_message("Nothing is selected", cx);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             Some(Handler::Script(function)) => {
@@ -1424,7 +1750,7 @@ impl Workspace {
         let pane = &self.panes[index];
         let muted = cx.theme().muted_foreground;
         let center = match pane.tabs.get(pane.active) {
-            Some(editor) => div().flex_1().min_h_0().child(editor.clone()),
+            Some(item) => div().flex_1().min_h_0().child(item.view()),
             None => div()
                 .flex_1()
                 .flex()
@@ -1491,7 +1817,6 @@ impl Workspace {
                     .iter()
                     .enumerate()
                     .map(|(index, tab)| {
-                        let editor = tab.read(cx);
                         let active = index == shown;
                         div()
                             .id(("tab", index))
@@ -1512,7 +1837,7 @@ impl Workspace {
                                 go(this);
                                 this.activate(index, window, cx);
                             }))
-                            .child(editor.title())
+                            .child(tab.title(cx))
                             .child(
                                 div()
                                     .id(("tab-close", index))
@@ -1524,7 +1849,7 @@ impl Workspace {
                                         go(this);
                                         this.close_tab(index, false, window, cx);
                                     }))
-                                    .child(if editor.is_dirty() { "●" } else { "×" }),
+                                    .child(if tab.is_dirty(cx) { "●" } else { "×" }),
                             )
                     }),
             )
@@ -1589,6 +1914,34 @@ impl Workspace {
             .border_color(border)
             .text_size(px(12.))
             .font_family(theme.mono_font_family.clone());
+        if let Some(terminal) = self.active_item().and_then(Item::live_terminal) {
+            let title = terminal.read(cx).title();
+            return bar
+                .child(
+                    div()
+                        .px_2()
+                        .rounded_sm()
+                        .bg(theme.success)
+                        .text_color(theme.background)
+                        .child("TERMINAL"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_color(muted)
+                        .child(self.message.clone().unwrap_or_else(|| {
+                            format!("{title}  ·  ctrl-\\ ctrl-n: normal mode").into()
+                        })),
+                )
+                .children(
+                    self.branch
+                        .as_ref()
+                        .map(|name| div().text_color(theme.success).child(format!(" {name}"))),
+                );
+        }
         let Some(editor) = self.active_editor().map(|e| e.read(cx)) else {
             return bar.child(
                 div()
@@ -1873,7 +2226,7 @@ pub(crate) fn register(commands: &mut Commands) {
         "Write every changed file",
         W(|ws, _, _, cx| {
             let mut saved = 0;
-            for tab in ws.all_tabs().cloned().collect::<Vec<_>>() {
+            for tab in ws.all_editors().cloned().collect::<Vec<_>>() {
                 let file = tab.read(cx).scratch.is_none();
                 if file && tab.read(cx).is_dirty() && tab.update(cx, |e, cx| e.save(cx)).is_ok() {
                     saved += 1;
@@ -2059,6 +2412,14 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.markdown_preview",
         "Show the Markdown file being edited rendered, in a pane split off to the right; from there, go back",
         W(|ws, _, window, cx| ws.markdown_preview(window, cx)),
+    );
+    commands.register(
+        "workspace.terminal",
+        "Go to the terminal, or open one in a pane split off below; from there, go back. Given a command, run it in a new one; with !, a new shell",
+        W(|ws, args, window, cx| {
+            let command = Some(args.arg.trim().to_string()).filter(|arg| !arg.is_empty());
+            ws.terminal(command, args.bang, window, cx);
+        }),
     );
     commands.register(
         "workspace.install_default_config",

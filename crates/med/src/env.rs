@@ -55,6 +55,13 @@ impl ProjectEnv {
         }
     }
 
+    /// Every variable, as text: what is not UTF-8 is left out.
+    pub fn vars(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.vars
+            .iter()
+            .filter_map(|(name, value)| Some((name.to_str()?, value.to_str()?)))
+    }
+
     pub fn get(&self, name: &str) -> Option<&OsStr> {
         self.vars.get(OsStr::new(name)).map(OsString::as_os_str)
     }

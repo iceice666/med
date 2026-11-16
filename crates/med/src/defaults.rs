@@ -34,6 +34,7 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["rename"], "editor.rename"),
     (&["format", "fmt"], "editor.format"),
     (&["preview"], "workspace.markdown_preview"),
+    (&["term", "terminal"], "workspace.terminal"),
     (&["vs", "vsplit"], "workspace.split_right"),
     (&["sp", "split"], "workspace.split_down"),
     (&["clo", "close"], "workspace.close_pane"),

@@ -1200,6 +1200,7 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                (unbind 'normal "<Space>=")
                (unbind 'normal "<Space>r")
                (unbind 'normal "<Space>m")
+               (unbind 'normal "<Space>t")
                (bind 'normal "<Space>f" "user.find")
                (bind 'normal "<Space>gg" "user.find")
                (bind-keys 'normal "<Space>y" "y$"))"#,
@@ -2896,7 +2897,7 @@ fn dirty(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
 
 fn tab_titles(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
     workspace.read_with(cx, |ws, cx| {
-        ws.tabs().iter().map(|tab| tab.read(cx).title()).collect()
+        ws.tabs().iter().map(|tab| tab.title(cx)).collect()
     })
 }
 
@@ -4302,4 +4303,122 @@ fn two_listings_side_by_side_by_keys(cx: &mut TestAppContext) {
     assert_eq!(panes(&ws, cx), [format!("{root}*"), sub.clone()]);
     let there = eval_here(&ws, "(with-pane 1 (fn () (lines (buffer-text))))", cx);
     assert_eq!(there, r#"("y.txt" "z.txt")"#);
+}
+
+/// The terminal shown in the focused pane, if one is.
+fn active_terminal(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> Option<Entity<crate::terminal::TermView>> {
+    workspace.read_with(cx, |ws, _| {
+        ws.active_item().and_then(|item| item.terminal().cloned())
+    })
+}
+
+/// Run until `done` says so of the terminal shown, which is told what
+/// its program does from a thread of its own.
+fn wait_for_terminal(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+    done: impl Fn(&crate::terminal::TermView) -> bool,
+) {
+    let terminal = active_terminal(workspace, cx).expect("a terminal is shown");
+    for _ in 0..500 {
+        cx.executor().advance_clock(Duration::from_millis(10));
+        cx.run_until_parked();
+        if terminal.read_with(cx, |terminal, _| done(terminal)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the terminal never got there");
+}
+
+#[gpui::test]
+fn a_terminal_runs_in_a_pane_of_its_own(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+
+    // A command, in the project's root, in a pane below; the keys go to it.
+    cx.simulate_keystrokes(": t e r m i n a l space p w d enter");
+    let panes = |cx: &mut VisualTestContext| ws.read_with(cx, |ws, cx| ws.pane_infos(cx).len());
+    assert_eq!(panes(cx), 2);
+    assert!(active_terminal(&ws, cx).is_some());
+    assert_eq!(active_file(&ws, cx), None, "a terminal is no editor");
+    wait_for_terminal(&ws, cx, |terminal| !terminal.is_running());
+    let terminal = active_terminal(&ws, cx).unwrap();
+    let screen = terminal.read_with(cx, |terminal, _| terminal.screen());
+    assert_eq!(screen.line_text(0), project.0.display().to_string());
+    assert_eq!(tab_titles(&ws, cx), ["pwd [exited]"]);
+
+    // Done, a key closes it, and its pane with it.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(panes(cx), 1);
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+}
+
+/// Whether the terminal shown takes the keys itself: not in normal mode.
+fn terminal_live(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
+    workspace.read_with(cx, |ws, _| {
+        let item = ws.active_item();
+        item.is_some_and(|item| item.terminal().is_some() && item.editor().is_none())
+    })
+}
+
+#[gpui::test]
+fn a_terminal_has_a_normal_mode_as_in_vim(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    cx.simulate_keystrokes(": t e r m i n a l space c a t enter");
+    assert!(terminal_live(&ws, cx));
+
+    // Typed text, and keys that are no text, go to the program: `cat`
+    // has the line back.
+    cx.simulate_input("héllo 中文");
+    cx.simulate_keystrokes("enter");
+    wait_for_terminal(&ws, cx, |terminal| {
+        // Once as the pty echoes it, once as `cat` writes it.
+        let screen = terminal.screen();
+        let lines = (0..screen.rows).filter(|line| screen.line_text(*line) == "héllo 中文");
+        lines.count() == 2
+    });
+
+    // `ctrl-\ ctrl-n`: normal mode, in the same tab, in a copy of what
+    // went by, the cursor where the terminal's is.
+    cx.simulate_keystrokes("ctrl-\\ ctrl-n");
+    assert!(active_terminal(&ws, cx).is_some(), "the same tab");
+    assert!(!terminal_live(&ws, cx));
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert_eq!(text(&ws, cx), "héllo 中文\nhéllo 中文\n");
+    // The empty line the terminal's cursor is on ends the text, as the
+    // end of a file does: the cursor is on the line before.
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    cx.simulate_keystrokes("k");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    assert!(!dirty(&ws, cx));
+
+    // `i`: the terminal has the keys again.
+    cx.simulate_keystrokes("i");
+    assert!(terminal_live(&ws, cx));
+
+    // From normal mode, the keys of a pane: `ctrl-w k` to the file above;
+    // `space t`, back to the terminal, out of normal mode.
+    cx.simulate_keystrokes("ctrl-\\ ctrl-n ctrl-w k");
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    cx.simulate_keystrokes("space t");
+    assert!(terminal_live(&ws, cx));
+    let panes = ws.read_with(cx, |ws, cx| ws.pane_infos(cx).len());
+    assert_eq!(panes, 2, "no new terminal");
+
+    // `ctrl-d` ends `cat`; what it wrote can still be read.
+    cx.simulate_keystrokes("ctrl-d");
+    wait_for_terminal(&ws, cx, |terminal| !terminal.is_running());
+    cx.simulate_keystrokes("ctrl-\\ ctrl-n");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert!(text(&ws, cx).starts_with("héllo 中文\n"));
+    // Back to the terminal, a key closes it.
+    cx.simulate_keystrokes("i enter");
+    let panes = ws.read_with(cx, |ws, cx| ws.pane_infos(cx).len());
+    assert_eq!(panes, 1);
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
 }

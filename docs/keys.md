@@ -46,6 +46,7 @@ clipboard.
 | `ctrl-w c` / `:close`, `ctrl-w o` / `:only` | close the pane / every other pane: their tabs go to the pane left with the keys |
 | `space w` / `⌘S`, `space q` / `⌘W` | save, close tab |
 | `space m`, `:preview` | a Markdown file rendered, in a pane split off to the right that follows it as it is typed, the keys staying with the file; again, to the preview and back |
+| `space t`, `:terminal` | a shell in the project's root and environment, in a pane split off below; again, to it, if it is still running. `:terminal cmd` runs `cmd` in a new one, `:terminal!` starts another shell. In it every key goes to the program but ⌘ ones; the wheel and `shift-pageup` / `shift-pagedown` scroll back through what went by, a drag of the mouse selects (twice, words; three times, lines) and `⌘C` copies it. `ctrl-\ ctrl-n` is normal mode: what went by, copied into an editor, to move about, search, yank, and to go to another pane from; it is not kept up to date, and changes to it go nowhere. `i`, `a` or anything else that inserts goes back to the program. Once the program is done, a key closes the tab, and normal mode still reads what it wrote |
 
 Surround, as in nvim-surround: `ys` and a motion or text object, then the
 delimiter (`ysiw)`, `yss"` for the line), `ds"` to take one away, `cs"'`
