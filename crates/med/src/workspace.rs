@@ -2381,6 +2381,7 @@ impl Workspace {
                         .map(|name| div().text_color(theme.success).child(format!(" {name}"))),
                 );
         }
+        let editor_entity = self.active_editor().cloned();
         let Some(editor) = self.active_editor().map(|e| e.read(cx)) else {
             return bar.child(
                 div()
@@ -2412,11 +2413,40 @@ impl Workspace {
             Some((kind, text)) => {
                 let at = editor.vim.cmdline_cursor().unwrap_or(text.len());
                 let (head, tail) = text.split_at(at);
+                // Where the cursor is drawn is where the input method puts
+                // its window; it is told again when that moves.
+                let caret = canvas(
+                    move |bounds, window, cx| {
+                        if let Some(editor) = editor_entity {
+                            editor.update(cx, |editor, _| {
+                                if editor.cmdline_caret != Some(bounds) {
+                                    editor.cmdline_caret = Some(bounds);
+                                    window.invalidate_character_coordinates();
+                                }
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .w(px(0.))
+                .h(px(14.));
                 div()
                     .flex_1()
                     .min_w_0()
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
                     .text_color(fg)
-                    .child(format!("{kind}{head}▏{tail}"))
+                    .child(format!("{kind}{head}"))
+                    .child(caret)
+                    .children(
+                        editor
+                            .cmdline_preedit
+                            .clone()
+                            .map(|preedit| div().underline().child(preedit)),
+                    )
+                    .child(format!("▏{tail}"))
             }
             None => {
                 let hint = self

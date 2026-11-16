@@ -5775,3 +5775,70 @@ fn a_program_names_a_language_and_its_servers(cx: &mut TestAppContext) {
     let dart = cx.update(|_, cx| crate::lsp_config::servers_for("dart", cx));
     assert!(dart.is_empty());
 }
+
+#[gpui::test]
+fn the_input_method_composes_on_the_command_line(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler as _;
+    let project = Project::new(&[("a.txt", "a\nb\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let cmdline = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |e, _| e.vim.cmdline().map(|(_, t)| t.to_string()))
+    };
+    let marked = |cx: &mut VisualTestContext| {
+        editor.update_in(cx, |e, window, cx| e.marked_text_range(window, cx))
+    };
+
+    cx.simulate_keystrokes(":");
+    // A wide char already on the line: offsets are UTF-16 units, not bytes.
+    editor.update_in(cx, |e, window, cx| {
+        e.replace_text_in_range(None, "s/a/你", window, cx)
+    });
+    assert_eq!(cmdline(cx).as_deref(), Some("s/a/你"));
+
+    // Composing shows on the line but is not on it yet.
+    editor.update_in(cx, |e, window, cx| {
+        e.replace_and_mark_text_in_range(None, "ㄏ", None, window, cx)
+    });
+    assert_eq!(cmdline(cx).as_deref(), Some("s/a/你"));
+    assert_eq!(marked(cx), Some(5..6));
+    let (selected, all) = editor.update_in(cx, |e, window, cx| {
+        let selected = e.selected_text_range(false, window, cx).unwrap().range;
+        let all = e.text_for_range(0..100, &mut None, window, cx);
+        (selected, all)
+    });
+    assert_eq!(selected, 6..6);
+    assert_eq!(all.as_deref(), Some("s/a/你ㄏ"));
+
+    // The input method's window goes where the line's cursor is drawn, at
+    // the bottom of the window, not where the buffer's cursor is.
+    cx.run_until_parked();
+    let (caret, at) = editor.update_in(cx, |e, window, cx| {
+        let caret = e.cmdline_caret;
+        let at = e.bounds_for_range(5..6, gpui::Bounds::default(), window, cx);
+        (caret, at)
+    });
+    let caret = caret.expect("the status bar draws the line's cursor");
+    assert_eq!(at, Some(caret));
+    let buffer_cell = editor.read_with(cx, |e, _| e.cell_origin(0)).unwrap();
+    assert!(caret.origin.y > buffer_cell.y, "{caret:?} {buffer_cell:?}");
+
+    // Committed, it goes on the line, and runs with it.
+    editor.update_in(cx, |e, window, cx| {
+        e.replace_text_in_range(None, "好", window, cx)
+    });
+    assert_eq!(cmdline(cx).as_deref(), Some("s/a/你好"));
+    assert_eq!(marked(cx), None);
+    cx.simulate_keystrokes("enter");
+    assert_eq!(text(&ws, cx), "你好\nb\n");
+
+    // A composition left when the line closes is gone with it.
+    cx.simulate_keystrokes(":");
+    editor.update_in(cx, |e, window, cx| {
+        e.replace_and_mark_text_in_range(None, "ㄋ", None, window, cx)
+    });
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert_eq!(editor.read_with(cx, |e, _| e.cmdline_preedit.clone()), None);
+    assert_eq!(marked(cx), None);
+}

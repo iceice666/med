@@ -276,6 +276,12 @@ pub struct Editor {
     metrics: Option<Metrics>,
     /// IME composition in progress, as a char range of the buffer.
     marked: Option<Range<usize>>,
+    /// IME composition on the `:` line, not yet given to it: it goes in at
+    /// the line's cursor.
+    pub(crate) cmdline_preedit: Option<String>,
+    /// Where the status bar last drew the `:` line's cursor, in window
+    /// coordinates: where the input method puts its window.
+    pub(crate) cmdline_caret: Option<Bounds<Pixels>>,
     diagnostics: Vec<Diag>,
     /// What the language server says inline of the text, in order; the
     /// version of the text they were last asked for, and the asking.
@@ -738,6 +744,8 @@ impl Editor {
             visible_lines: 0,
             metrics: None,
             marked: None,
+            cmdline_preedit: None,
+            cmdline_caret: None,
             diagnostics: Vec::new(),
             inlay_hints: Vec::new(),
             hints_asked: None,
@@ -1772,9 +1780,12 @@ impl Editor {
     /// screen, repaint.
     fn after_change(&mut self, cx: &mut Context<Self>) {
         self.keep_preview_text(cx);
-        // What `Tab` went through was for the command line just closed.
+        // What `Tab` went through, and what was being composed, were for
+        // the command line just closed.
         if self.vim.cmdline().is_none() {
             self.cmdline_completion = None;
+            self.cmdline_preedit = None;
+            self.cmdline_caret = None;
         }
         // Marks follow the edits made here as they do the engine's own.
         self.vim.sync(&self.buf);
@@ -3670,6 +3681,40 @@ impl Editor {
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
         self.char_to_utf16(range.start)..self.char_to_utf16(range.end)
     }
+
+    /// While `:` is typed the input method works on the command line, not
+    /// the buffer: its text with the composition put in at the cursor, and
+    /// where the composition starts, in UTF-16 units of that text.
+    fn cmdline_composed(&self) -> Option<(String, usize)> {
+        if self.vim.mode != Mode::Command {
+            return None;
+        }
+        let (_, text) = self.vim.cmdline()?;
+        let at = self
+            .vim
+            .cmdline_cursor()
+            .unwrap_or(text.len())
+            .min(text.len());
+        let (head, tail) = text.split_at(at);
+        let preedit = self.cmdline_preedit.as_deref().unwrap_or_default();
+        Some((format!("{head}{preedit}{tail}"), utf16_len(head)))
+    }
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// The byte offset in `text` that `units` UTF-16 units in come to.
+fn byte_of_utf16(text: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (at, c) in text.char_indices() {
+        if seen >= units {
+            return at;
+        }
+        seen += c.len_utf16();
+    }
+    text.len()
 }
 
 impl EntityInputHandler for Editor {
@@ -3680,6 +3725,12 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
+        if let Some((line, _)) = self.cmdline_composed() {
+            let start = byte_of_utf16(&line, range_utf16.start);
+            let end = byte_of_utf16(&line, range_utf16.end).max(start);
+            adjusted_range.replace(utf16_len(&line[..start])..utf16_len(&line[..end]));
+            return Some(line[start..end].to_string());
+        }
         let range = self.range_from_utf16(&range_utf16);
         adjusted_range.replace(self.range_to_utf16(&range));
         Some(self.buf.slice_string(range))
@@ -3691,6 +3742,13 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        if let Some((_, at)) = self.cmdline_composed() {
+            let caret = at + utf16_len(self.cmdline_preedit.as_deref().unwrap_or_default());
+            return Some(UTF16Selection {
+                range: caret..caret,
+                reversed: false,
+            });
+        }
         let cursor = self.vim.cursor;
         Some(UTF16Selection {
             range: self.range_to_utf16(&(cursor..cursor)),
@@ -3699,11 +3757,22 @@ impl EntityInputHandler for Editor {
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        if let Some((_, at)) = self.cmdline_composed() {
+            let preedit = self.cmdline_preedit.as_deref()?;
+            return Some(at..at + utf16_len(preedit));
+        }
         self.marked.as_ref().map(|range| self.range_to_utf16(range))
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.marked = None;
+        // Composition on the `:` line is kept as it stands, as it is in
+        // the buffer.
+        if let Some(preedit) = self.cmdline_preedit.take()
+            && self.vim.mode == Mode::Command
+        {
+            self.type_text(&preedit, cx);
+        }
         cx.notify();
     }
 
@@ -3730,7 +3799,11 @@ impl EntityInputHandler for Editor {
                 self.marked = None;
                 self.type_text(text, cx);
             }
-            Mode::Command => self.type_text(text, cx),
+            Mode::Command => {
+                // What is committed takes the composition's place.
+                self.cmdline_preedit = None;
+                self.type_text(text, cx);
+            }
             _ => {}
         }
     }
@@ -3743,6 +3816,12 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.vim.mode == Mode::Command {
+            // Shown on the `:` line, and given to it only when committed.
+            self.cmdline_preedit = (!new_text.is_empty()).then(|| new_text.to_string());
+            cx.notify();
+            return;
+        }
         if self.vim.mode != Mode::Insert {
             return;
         }
@@ -3776,10 +3855,17 @@ impl EntityInputHandler for Editor {
     fn bounds_for_range(
         &mut self,
         range_utf16: Range<usize>,
-        _element_bounds: Bounds<Pixels>,
+        element_bounds: Bounds<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        if self.cmdline_composed().is_some() {
+            // Never the buffer's cursor: the window would sit up in the
+            // text, or in the corner of the screen when that is out of view.
+            return Some(self.cmdline_caret.unwrap_or_else(|| {
+                Bounds::new(element_bounds.bottom_left(), size(px(1.), px(0.)))
+            }));
+        }
         let m = self.metrics.as_ref()?;
         let offset = self.utf16_to_char(range_utf16.start);
         let origin = self.cell_origin(offset)?;
@@ -3792,6 +3878,9 @@ impl EntityInputHandler for Editor {
         window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
+        if self.cmdline_composed().is_some() {
+            return None;
+        }
         self.offset_at(point, window)
             .map(|offset| self.char_to_utf16(offset))
     }
