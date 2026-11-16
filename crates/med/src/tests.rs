@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -882,6 +882,57 @@ fn the_init_file_gives_options_by_language(cx: &mut TestAppContext) {
     assert_eq!(message(&ws, cx), "");
     cx.simulate_keystrokes("o tab x escape");
     assert_eq!(text(&ws, cx), "bee\n    x\n");
+}
+
+#[gpui::test]
+fn the_view_keeps_lines_about_the_cursor(cx: &mut TestAppContext) {
+    let text: String = (0..200).map(|n| format!("{n}\n")).collect();
+    let project = Project::new(&[("a.txt", text.as_str())]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let view = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            let line = editor.buf.line_of(editor.vim.cursor);
+            let (top, visible) = editor.view();
+            (top, visible, line)
+        })
+    };
+    let (_, visible, _) = view(&ws, cx);
+    assert!(visible >= 12, "{visible} lines on screen");
+    assert_eq!(lisp("(set-option 'scroll-off 5)", cx), "nil");
+
+    // Down to the last line on screen: the view goes on, 5 lines past it.
+    let keys = |count: usize, key: &str| {
+        let digits: Vec<String> = count.to_string().chars().map(String::from).collect();
+        format!("{} {key}", digits.join(" "))
+    };
+    cx.simulate_keystrokes(&keys(visible - 1, "j"));
+    assert_eq!(view(&ws, cx), (5, visible, visible - 1));
+
+    // `ctrl-e` takes the cursor along 5 lines below the top, and `L` stops
+    // 5 above the bottom: neither has the view scroll back.
+    cx.simulate_keystrokes("g g ctrl-e");
+    assert_eq!(view(&ws, cx), (1, visible, 6));
+    cx.simulate_keystrokes("shift-l");
+    assert_eq!(view(&ws, cx), (1, visible, visible - 5));
+    cx.simulate_keystrokes("shift-h");
+    assert_eq!(view(&ws, cx), (1, visible, 6));
+
+    // This tab's own: none at all.
+    eval_in(&ws, "(set-buffer-option 'scroll-off 0)", cx);
+    cx.simulate_keystrokes("shift-l");
+    assert_eq!(view(&ws, cx), (1, visible, visible));
+    eval_in(&ws, "(reset-buffer-option 'scroll-off)", cx);
+    cx.simulate_keystrokes("shift-l");
+    assert_eq!(view(&ws, cx), (1, visible, visible - 5));
+
+    for bad in ["-1", "1000", "true"] {
+        let source = format!("(set-option 'scroll-off {bad})");
+        assert!(
+            cx.update(|_, cx| crate::script::eval(&source, cx)).is_err(),
+            "{bad}"
+        );
+    }
 }
 
 #[gpui::test]

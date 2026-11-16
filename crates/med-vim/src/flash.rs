@@ -227,7 +227,11 @@ mod tests {
     fn flash(text: &str, pattern: &str, cursor: usize) -> Flash {
         let buf = Buffer::new(text);
         let mut flash = Flash::new(Kind::Text, 0);
-        let viewport = Viewport { top: 0, height: 10 };
+        let viewport = Viewport {
+            top: 0,
+            height: 10,
+            scroll_off: 0,
+        };
         for c in pattern.chars() {
             flash.pattern.push(c);
             flash.update(&buf, viewport, cursor);
@@ -271,7 +275,11 @@ mod tests {
     #[test]
     fn a_place_keeps_its_label() {
         let buf = Buffer::new("fox foo fog\n");
-        let viewport = Viewport { top: 0, height: 10 };
+        let viewport = Viewport {
+            top: 0,
+            height: 10,
+            scroll_off: 0,
+        };
         let mut found = Flash::new(Kind::Text, 0);
         found.pattern = "fo".into();
         found.update(&buf, viewport, 11);
@@ -287,13 +295,29 @@ mod tests {
         let buf = Buffer::new("ab\nab\nab\nab\n");
         let mut found = Flash::new(Kind::Text, 0);
         found.pattern = "ab".into();
-        found.update(&buf, Viewport { top: 1, height: 2 }, 0);
+        found.update(
+            &buf,
+            Viewport {
+                top: 1,
+                height: 2,
+                scroll_off: 0,
+            },
+            0,
+        );
         assert_eq!(
             found.matches.iter().map(|m| m.start).collect::<Vec<_>>(),
             [3, 6]
         );
         // The place the cursor is at is left out.
-        found.update(&buf, Viewport { top: 0, height: 4 }, 3);
+        found.update(
+            &buf,
+            Viewport {
+                top: 0,
+                height: 4,
+                scroll_off: 0,
+            },
+            3,
+        );
         assert_eq!(
             found.matches.iter().map(|m| m.start).collect::<Vec<_>>(),
             [0, 6, 9]

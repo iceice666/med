@@ -9,6 +9,7 @@ struct Harness {
     lang: Lang,
     effects: Vec<Effect>,
     syntax: Option<Box<dyn SyntaxTree>>,
+    viewport: Viewport,
 }
 
 fn syntax_of(syntax: &mut Option<Box<dyn SyntaxTree>>) -> Option<&mut dyn SyntaxTree> {
@@ -38,6 +39,11 @@ impl Harness {
             },
             effects: Vec::new(),
             syntax: None,
+            viewport: Viewport {
+                top: 0,
+                height: 10,
+                scroll_off: 0,
+            },
         }
     }
 
@@ -47,7 +53,7 @@ impl Harness {
                 buf: &mut self.buf,
                 shared: &mut self.shared,
                 clipboard: &mut self.clipboard,
-                viewport: Viewport { top: 0, height: 10 },
+                viewport: self.viewport,
                 lang: &self.lang,
                 syntax: syntax_of(&mut self.syntax),
             };
@@ -62,7 +68,7 @@ impl Harness {
             buf: &mut self.buf,
             shared: &mut self.shared,
             clipboard: &mut self.clipboard,
-            viewport: Viewport { top: 0, height: 10 },
+            viewport: self.viewport,
             lang: &self.lang,
             syntax: syntax_of(&mut self.syntax),
         };
@@ -335,6 +341,32 @@ fn comments() {
 }
 
 #[test]
+fn screen_motions_keep_the_scroll_margin() {
+    let text: String = (0..30).map(|n| format!("{n}\n")).collect();
+    let line = |h: &Harness| h.buf.line_of(h.vim.cursor);
+    let at = |top: usize, keys: &str| {
+        let mut h = Harness::new(&text);
+        h.viewport = Viewport {
+            top,
+            height: 10,
+            scroll_off: 2,
+        };
+        h.vim.cursor = h.buf.line_start(top + 4);
+        h.keys(keys);
+        line(&h)
+    };
+    // Lines 10 to 19 on screen: `H` and `L` stop two lines in.
+    assert_eq!(at(10, "H"), 12);
+    assert_eq!(at(10, "L"), 17);
+    // A count further in than that goes there.
+    assert_eq!(at(10, "4H"), 13);
+    assert_eq!(at(10, "4L"), 16);
+    // An edge that is the file's own: the view can go no further.
+    assert_eq!(at(0, "H"), 0);
+    assert_eq!(at(20, "L"), 29);
+}
+
+#[test]
 fn search() {
     check("|a\nfoo\nb\nfoo", "/foo<cr>", "a\n|foo\nb\nfoo");
     check("|a\nfoo\nb\nfoo", "/foo<cr>n", "a\nfoo\nb\n|foo");
@@ -488,7 +520,11 @@ fn typed_text_and_paste() {
         buf: &mut h.buf,
         shared: &mut h.shared,
         clipboard: &mut h.clipboard,
-        viewport: Viewport { top: 0, height: 10 },
+        viewport: Viewport {
+            top: 0,
+            height: 10,
+            scroll_off: 0,
+        },
         lang: &h.lang,
         syntax: None,
     };
@@ -809,7 +845,11 @@ fn insert_mode_mappings() {
         buf: &mut h.buf,
         shared: &mut h.shared,
         clipboard: &mut h.clipboard,
-        viewport: Viewport { top: 0, height: 10 },
+        viewport: Viewport {
+            top: 0,
+            height: 10,
+            scroll_off: 0,
+        },
         lang: &h.lang,
         syntax: None,
     };
@@ -993,7 +1033,11 @@ fn auto_pairs() {
         buf: &mut h.buf,
         shared: &mut h.shared,
         clipboard: &mut h.clipboard,
-        viewport: Viewport { top: 0, height: 10 },
+        viewport: Viewport {
+            top: 0,
+            height: 10,
+            scroll_off: 0,
+        },
         lang: &h.lang,
         syntax: None,
     };

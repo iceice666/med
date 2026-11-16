@@ -15,14 +15,14 @@
 //! (set-buffer-keys '(listing))         ; the tab up is in it
 //! (set-buffer-option 'tab-width 8)     ; the tab up's own; also
 //!                                      ; relative-number, format-on-save,
-//!                                      ; auto-pairs
+//!                                      ; auto-pairs, scroll-off
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save,
 //!                                      ; tab-width, relative-number,
-//!                                      ; project-env
+//!                                      ; scroll-off, project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -720,6 +720,15 @@ fn milliseconds(value: &Value) -> Result<Duration, Error> {
 }
 
 /// An option that is on or off.
+/// Lines to keep about the cursor, as `scroll-off` takes them: 999 or so
+/// keeps it in the middle, as in vim.
+fn scroll_off(value: &Value) -> Result<usize, Error> {
+    match value.as_int()? {
+        n @ 0..=999 => Ok(n as usize),
+        _ => Err(failed(format!("{value} is no number of lines to keep"))),
+    }
+}
+
 /// Columns to a tab, as `tab-width` takes them.
 fn tab_width(value: &Value) -> Result<usize, Error> {
     match value.as_int()? {
@@ -731,7 +740,7 @@ fn tab_width(value: &Value) -> Result<usize, Error> {
 fn no_buffer_option(option: &str) -> Error {
     failed(format!(
         "{option} is not an option a tab has its own of \
-         (tab-width relative-number format-on-save auto-pairs)"
+         (tab-width relative-number format-on-save auto-pairs scroll-off)"
     ))
 }
 
@@ -1089,6 +1098,7 @@ fn define_functions(interp: &mut Interp) {
             }
             // Each line's number its distance from the cursor's.
             "relative-number" => settings.relative_number = flag(value)?,
+            "scroll-off" => settings.scroll_off = scroll_off(value)?,
             // Read when a window opens, as `lsp` is.
             "project-env" => settings.project_env = flag(value)?,
             // Close brackets and quotes as they are typed.
@@ -1099,7 +1109,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off project-env)"
                 )));
             }
         }
@@ -1124,6 +1134,10 @@ fn define_functions(interp: &mut Interp) {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.options.format_on_save = Some(on))
             }
+            "scroll-off" => {
+                let lines = scroll_off(value)?;
+                Box::new(move |editor| editor.options.scroll_off = Some(lines))
+            }
             "auto-pairs" => {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.vim.auto_pairs = Some(on))
@@ -1140,6 +1154,7 @@ fn define_functions(interp: &mut Interp) {
             "tab-width" => Box::new(|editor| editor.options.tab_width = None),
             "relative-number" => Box::new(|editor| editor.options.relative_number = None),
             "format-on-save" => Box::new(|editor| editor.options.format_on_save = None),
+            "scroll-off" => Box::new(|editor| editor.options.scroll_off = None),
             "auto-pairs" => Box::new(|editor| editor.vim.auto_pairs = None),
             other => return Err(no_buffer_option(other)),
         };

@@ -92,6 +92,9 @@ impl Mode {
 pub struct Viewport {
     pub top: usize,
     pub height: usize,
+    /// Lines the view keeps between the cursor and its top and bottom,
+    /// vim's `scrolloff`, as many as fit: `H` and `L` stop that far in.
+    pub scroll_off: usize,
 }
 
 /// Per-language editing settings.
@@ -1768,9 +1771,18 @@ impl Vim {
             Motion::ScreenTop | Motion::ScreenMid | Motion::ScreenBot => {
                 let top = cx.viewport.top.min(last);
                 let bottom = (top + cx.viewport.height.saturating_sub(1)).min(last);
+                // Short of the edges by the scroll margin, but for an edge
+                // that is the file's own: the view goes no further there.
+                let off = cx.viewport.scroll_off;
                 let row = match motion {
-                    Motion::ScreenTop => (top + n - 1).min(bottom),
-                    Motion::ScreenBot => bottom.saturating_sub(n - 1).max(top),
+                    Motion::ScreenTop => {
+                        let off = if top == 0 { 0 } else { off };
+                        (top + (n - 1).max(off)).min(bottom)
+                    }
+                    Motion::ScreenBot => {
+                        let off = if bottom == last { 0 } else { off };
+                        bottom.saturating_sub((n - 1).max(off)).max(top)
+                    }
                     _ => top + (bottom - top) / 2,
                 };
                 out(fnb(row), false, true)

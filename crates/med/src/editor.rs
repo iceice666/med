@@ -17,8 +17,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Lines kept between the cursor and the top/bottom edge.
-const SCROLL_OFF: usize = 3;
 const COMPLETION_ROWS: usize = 10;
 
 /// How long writing a file waits for the language server to format it.
@@ -326,6 +324,7 @@ pub struct BufferOptions {
     pub tab_width: Option<usize>,
     pub relative_number: Option<bool>,
     pub format_on_save: Option<bool>,
+    pub scroll_off: Option<usize>,
 }
 
 /// What the gutter shows for a line, right-aligned to `digits`: its number,
@@ -863,6 +862,22 @@ impl Editor {
             .min_by_key(|d| d.severity)
     }
 
+    /// The first line on screen, and how many there are room for.
+    #[cfg(test)]
+    pub(crate) fn view(&self) -> (usize, usize) {
+        (self.scroll_top as usize, self.visible_lines)
+    }
+
+    /// Lines between the cursor and the edges of the view: the
+    /// `scroll-off` option, no more than fit with the cursor between.
+    fn scroll_margin(&self, cx: &App) -> usize {
+        let wanted = self.options.scroll_off.unwrap_or_else(|| {
+            cx.try_global::<Settings>()
+                .map_or(Settings::SCROLL_OFF, |s| s.scroll_off)
+        });
+        wanted.min(self.visible_lines.max(1).saturating_sub(1) / 2)
+    }
+
     /// Columns to an indent: this tab's `tab-width`, else every tab's,
     /// else what the file's language and indentation say.
     fn tab_width(&self, cx: &App) -> usize {
@@ -998,6 +1013,7 @@ impl Editor {
         let viewport = Viewport {
             top: self.scroll_top.max(0.) as usize,
             height: self.visible_lines.max(1),
+            scroll_off: self.scroll_margin(cx),
         };
         self.vim_lang.tab_width = self.tab_width(cx);
         let (vim, buf, lang) = (&mut self.vim, &mut self.buf, &self.vim_lang);
@@ -1112,7 +1128,7 @@ impl Editor {
         for effect in effects {
             match effect {
                 Effect::Ex(command) => cx.emit(EditorEvent::Ex(command)),
-                Effect::Scroll(scroll) => self.scroll(scroll),
+                Effect::Scroll(scroll) => self.scroll(scroll, cx),
                 Effect::Jump { from } => cx.emit(EditorEvent::PushJump(from)),
                 Effect::Command { name, count } => {
                     let args = Args {
@@ -1133,7 +1149,7 @@ impl Editor {
         }
     }
 
-    fn scroll(&mut self, scroll: Scroll) {
+    fn scroll(&mut self, scroll: Scroll, cx: &App) {
         let line = self.buf.line_of(self.vim.cursor) as f32;
         let visible = self.visible_lines.max(1) as f32;
         match scroll {
@@ -1144,11 +1160,20 @@ impl Editor {
                 let max = self.buf.last_line() as f32;
                 self.scroll_top = (self.scroll_top.round() + n as f32).clamp(0., max);
                 // `ctrl-e`/`ctrl-y`: the cursor is dragged along if the view
-                // would leave it behind.
+                // would leave it behind, or nearer its edge than the scroll
+                // margin, where the edge is not the file's.
+                let last = self.buf.last_line();
                 let top = self.scroll_top as usize;
                 let bottom = top + self.visible_lines.max(1) - 1;
+                let margin = self.scroll_margin(cx);
+                let low = if top == 0 { top } else { top + margin };
+                let high = if bottom >= last {
+                    last
+                } else {
+                    bottom - margin
+                };
                 let cursor_line = self.buf.line_of(self.vim.cursor);
-                let target = cursor_line.clamp(top, bottom.min(self.buf.last_line()));
+                let target = cursor_line.clamp(low.min(high), high);
                 if target != cursor_line {
                     let col = self.buf.offset_to_point(self.vim.cursor).col;
                     let offset = self.buf.point_to_offset(med_core::Point::new(target, col));
@@ -1209,7 +1234,7 @@ impl Editor {
             self.completion = None;
             self.signature = None;
         }
-        self.ensure_cursor_visible();
+        self.ensure_cursor_visible(cx);
         self.follow_cursor_in_preview(cx);
         self.report_pending(cx);
         cx.emit(EditorEvent::Changed);
@@ -1231,10 +1256,10 @@ impl Editor {
         col
     }
 
-    fn ensure_cursor_visible(&mut self) {
+    fn ensure_cursor_visible(&mut self, cx: &App) {
         let line = self.buf.line_of(self.vim.cursor);
         let visible = self.visible_lines.max(1);
-        let margin = SCROLL_OFF.min(visible.saturating_sub(1) / 2);
+        let margin = self.scroll_margin(cx);
         let top = self.scroll_top;
         if (line as f32) < top + margin as f32 {
             self.scroll_top = line.saturating_sub(margin) as f32;
@@ -2082,7 +2107,7 @@ impl Editor {
         });
         self.scroll_top = self.scroll_top.clamp(0., (line_count - 1) as f32);
         if first_layout {
-            self.ensure_cursor_visible();
+            self.ensure_cursor_visible(cx);
         }
         let buf = &self.buf;
 

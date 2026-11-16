@@ -48,6 +48,9 @@ pub struct Settings {
     /// Number the lines by how far each is from the cursor's, as vim's
     /// `relativenumber` with `number`: the cursor's line keeps its own.
     pub relative_number: bool,
+    /// Lines kept between the cursor and the top and bottom of the view,
+    /// vim's `scrolloff`; as many as fit where the view is shorter.
+    pub scroll_off: usize,
     /// Work out each project's environment (login shell, direnv) for its
     /// language servers and programs, rather than use med's own.
     pub project_env: bool,
@@ -58,6 +61,7 @@ pub struct Settings {
 
 impl Settings {
     pub const KEY_TIMEOUT: Duration = Duration::from_millis(1000);
+    pub const SCROLL_OFF: usize = 3;
 }
 
 impl Global for Settings {}
@@ -195,6 +199,7 @@ pub fn init(cx: &mut App) {
         format_on_save: false,
         tab_width: None,
         relative_number: false,
+        scroll_off: Settings::SCROLL_OFF,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
         // Turned on by `run` too: tests must not write to $HOME.

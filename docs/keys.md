@@ -93,6 +93,12 @@ indented with tabs keep them, that many columns wide.
 from the cursor's, the count `j` or `k` takes to get there, as vim's
 `relativenumber` with `number`: the cursor's line keeps its own number.
 
+The view keeps 3 lines between the cursor and its top and bottom, as
+vim's `scrolloff`, and `H`, `L`, `ctrl-e` and `ctrl-y` keep to that
+too, but at the start and end of the file. `(set-option 'scroll-off 5)`
+makes it 5; 0 lets the cursor go to the edge, and 999 keeps it in the
+middle.
+
 Where a file has a syntax tree:
 
 | Key | Action |
@@ -149,7 +155,7 @@ run at startup, or from the command line with `:eval`:
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
-                                              ; relative-number, project-env
+                                              ; relative-number, scroll-off, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -175,11 +181,11 @@ longer bindings that start with it. `:workspace.reload_init` runs the file
 again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
-`relative-number`, `format-on-save` and `auto-pairs` (the others are the
-window's or the application's). Its own value goes before the one
-`set-option` gives every tab, until it is reset. With `buffer-entered`,
-which is told of every file that comes up, and `buffer-language`, an
-option can go by the language:
+`relative-number`, `format-on-save`, `auto-pairs` and `scroll-off` (the
+others are the window's or the application's). Its own value goes before
+the one `set-option` gives every tab, until it is reset. With
+`buffer-entered`, which is told of every file that comes up, and
+`buffer-language`, an option can go by the language:
 
 ```lisp
 (set-buffer-option 'tab-width 8)            ; the tab up's own
