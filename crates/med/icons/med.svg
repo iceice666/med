@@ -1,0 +1,15 @@
+<!-- med's icon: the name set as one line of text, with a vim block cursor on
+     the "m" (m + ed, "My EDitor"). To make the PNG again:
+     resvg -w 512 med.svg med.png -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect x="50" y="50" width="412" height="412" rx="92" fill="#1f2430"/>
+  <g transform="translate(256 256) scale(0.94) translate(-256 -256)"
+     fill="none" stroke-width="24" stroke-linejoin="round">
+    <rect x="80" y="148" width="144" height="216" rx="14" fill="#e5c07b"/>
+    <path stroke="#1f2430" d="M108 344V224M108 258A22 22 0 0 1 152 258V344M152 258A22 22 0 0 1 196 258V344"/>
+    <g stroke="#d8dee9">
+      <path d="M252 284H316V268A32 32 0 0 0 252 268V300A32 32 0 0 0 304.6 324.5"/>
+      <path d="M420 168V344M420 268A32 32 0 0 0 356 268V300A32 32 0 0 0 420 300"/>
+    </g>
+  </g>
+</svg>

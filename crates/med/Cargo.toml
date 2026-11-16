@@ -57,7 +57,7 @@ identifier = "dev.med.editor"
 authors = ["Brian Duan"]
 category = "DeveloperTool"
 binaries = [{ path = "med", main = true }]
-# A placeholder; the AppImage cannot be made without a square icon.
+# Drawn in icons/med.svg; the AppImage cannot be made without a square icon.
 icons = ["icons/med.png"]
 # The licences of the crates med is built from, made fresh each time (needs
 # cargo-about). It lands in med.app/Contents/Resources, and in
