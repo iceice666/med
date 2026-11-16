@@ -97,6 +97,26 @@ async fn scenario(
     .await?;
     println!("ok  diagnostic cleared after the edit");
 
+    // 2b. Inlay hints: the names of `add`'s parameters, where it is called.
+    editor.update(cx, |editor, _| editor.options.inlay_hints = Some(true));
+    let mut hints = Vec::new();
+    for _ in 0..200 {
+        editor.update(cx, |editor, cx| editor.request_hints(cx));
+        hints = editor.read_with(cx, |e, _| e.inlay_hint_texts());
+        if hints.iter().any(|h| h.contains("a:")) && hints.iter().any(|h| h.contains("b:")) {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    if !(hints.iter().any(|h| h.contains("a:")) && hints.iter().any(|h| h.contains("b:"))) {
+        return Err(format!(
+            "no parameter names among the inlay hints: {hints:?}"
+        ));
+    }
+    println!("ok  inlay hints: {hints:?}");
+
     // 3. Hover on `add` in the call.
     editor.update(cx, |editor, cx| editor.feed_keys(keys("k0faK"), cx));
     wait_for("hover", &editor, cx, |e| {

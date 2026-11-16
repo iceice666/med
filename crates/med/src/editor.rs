@@ -51,6 +51,31 @@ pub(crate) struct Decoration {
 }
 
 /// Keep `start..end` on its text through an edit.
+/// What a language server says inline of the text, before the char at
+/// `offset`: a type, a parameter's name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlayHint {
+    pub offset: usize,
+    pub text: String,
+}
+
+/// A hint's label as it is shown: its parts, with the blanks it asks for
+/// either side, on one line and not too long.
+fn hint_text(hint: &lsp::InlayHint) -> String {
+    let label = match &hint.label {
+        lsp::InlayHintLabel::String(text) => text.clone(),
+        lsp::InlayHintLabel::LabelParts(parts) => parts.iter().map(|p| p.value.as_str()).collect(),
+    };
+    let mut text: String = label.chars().filter(|c| !c.is_control()).take(80).collect();
+    if hint.padding_left == Some(true) {
+        text.insert(0, ' ');
+    }
+    if hint.padding_right == Some(true) {
+        text.push(' ');
+    }
+    text
+}
+
 fn shift_range(start: &mut usize, end: &mut usize, edit: &med_core::Edit) {
     let delta = edit.new_end_char as isize - edit.old_end_char as isize;
     let shift = |offset: usize| (offset as isize + delta).max(0) as usize;
@@ -247,6 +272,13 @@ pub struct Editor {
     /// IME composition in progress, as a char range of the buffer.
     marked: Option<Range<usize>>,
     diagnostics: Vec<Diag>,
+    /// What the language server says inline of the text, in order; the
+    /// version of the text they were last asked for, and the asking.
+    inlay_hints: Vec<InlayHint>,
+    hints_asked: Option<u64>,
+    hints_task: Option<Task<()>>,
+    /// Whether they are drawn, as the view was last laid out.
+    show_hints: bool,
     /// What programs marked on the text, by the group they gave.
     decorations: Vec<(SharedString, Vec<Decoration>)>,
     completion: Option<CompletionMenu>,
@@ -347,6 +379,7 @@ pub struct BufferOptions {
     pub cursor_line: Option<bool>,
     pub color_columns: Option<Vec<usize>>,
     pub wrap: Option<bool>,
+    pub inlay_hints: Option<bool>,
 }
 
 /// Where the `color-column` columns are drawn: each a cell wide, down the
@@ -497,6 +530,23 @@ fn insert_labels(display: &mut String, offsets: &mut [u32], labels: &[(usize, ch
     before
 }
 
+/// Put text into a line's display text, between its characters, as
+/// [`insert_labels`] puts labels: before the column each is at, in order.
+/// What comes back is how many bytes of it there are before each column.
+fn insert_texts(display: &mut String, offsets: &mut [u32], texts: &[(usize, &str)]) -> Vec<u32> {
+    let mut before = vec![0; offsets.len()];
+    for &(col, text) in texts.iter().rev() {
+        let col = col.min(offsets.len() - 1);
+        display.insert_str((offsets[col] - before[col]) as usize, text);
+        let len = text.len() as u32;
+        before[col] += len;
+        for offset in &mut offsets[col..] {
+            *offset += len;
+        }
+    }
+    before
+}
+
 /// What is closed as it is opened in the file at `path`: everything a
 /// language has in pairs, which a `'` is not where it marks a lifetime or
 /// quotes a form.
@@ -621,6 +671,10 @@ impl Editor {
             metrics: None,
             marked: None,
             diagnostics: Vec::new(),
+            inlay_hints: Vec::new(),
+            hints_asked: None,
+            hints_task: None,
+            show_hints: false,
             decorations: Vec::new(),
             completion: None,
             completion_task: None,
@@ -642,12 +696,22 @@ impl Editor {
         if let Some(lsp) = this.lsp.clone() {
             this._subscriptions
                 .push(cx.subscribe(&lsp, |this, store, event: &LspEvent, cx| {
-                    if let LspEvent::Diagnostics(path) = event
-                        && this.path.as_deref() == Some(path.as_path())
-                    {
-                        let diagnostics = store.read(cx).diagnostics(path).to_vec();
-                        this.set_diagnostics(&diagnostics);
-                        cx.notify();
+                    match event {
+                        LspEvent::Diagnostics(path)
+                            if this.path.as_deref() == Some(path.as_path()) =>
+                        {
+                            let diagnostics = store.read(cx).diagnostics(path).to_vec();
+                            this.set_diagnostics(&diagnostics);
+                            // The server has been through the file: what it
+                            // says inline may be more now.
+                            this.hints_asked = None;
+                            cx.notify();
+                        }
+                        LspEvent::InlayHintsRefresh => {
+                            this.hints_asked = None;
+                            cx.notify();
+                        }
+                        _ => {}
                     }
                 }));
         }
@@ -1159,6 +1223,124 @@ impl Editor {
         self.scroll_top = line.saturating_sub(half) as f32;
     }
 
+    // ---- inlay hints ---------------------------------------------------
+
+    pub(crate) fn inlay_hints_on(&self, cx: &App) -> bool {
+        self.options
+            .inlay_hints
+            .unwrap_or_else(|| cx.try_global::<Settings>().is_some_and(|s| s.inlay_hints))
+    }
+
+    /// Ask the server what it says inline, once the text has been still a
+    /// moment, if it is not known for this version of it. Drawing asks;
+    /// so can whatever has an editor that is not drawn.
+    pub fn request_hints(&mut self, cx: &mut Context<Self>) {
+        // Off, they are not drawn nor asked for, but kept for when it is on.
+        if !self.inlay_hints_on(cx) {
+            return;
+        }
+        let version = self.buf.version();
+        if self.hints_task.is_some() || self.hints_asked == Some(version) || self.lsp.is_none() {
+            return;
+        }
+        self.hints_asked = Some(version);
+        self.hints_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            let request = this.update(cx, |this, cx| {
+                let (lsp, path) = (this.lsp.as_ref()?, this.path.as_ref()?);
+                if this.buf.version() != version {
+                    return None;
+                }
+                let end = this.lsp_position(this.buf.max_offset());
+                let range = lsp::Range::new(lsp::Position::new(0, 0), end);
+                lsp.read(cx).inlay_hints(path, range)
+            });
+            let hints = match request.ok().flatten() {
+                Some(request) => request.await.ok().flatten(),
+                None => None,
+            };
+            this.update(cx, |this, cx| {
+                this.hints_task = None;
+                match hints {
+                    Some(hints) => {
+                        if this.apply_inlay_hints(version, &hints) {
+                            cx.notify();
+                        }
+                    }
+                    // No server to ask yet, or no answer: ask again later.
+                    None => this.hints_asked = None,
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Take the hints a server gave for `version` of the text, unless the
+    /// text has changed since: theirs would be in the wrong places.
+    pub(crate) fn apply_inlay_hints(&mut self, version: u64, hints: &[lsp::InlayHint]) -> bool {
+        if self.buf.version() != version {
+            return false;
+        }
+        let mut hints: Vec<InlayHint> = hints
+            .iter()
+            .map(|hint| InlayHint {
+                offset: self.offset_from_lsp(hint.position),
+                text: hint_text(hint),
+            })
+            .filter(|hint| !hint.text.is_empty())
+            .collect();
+        hints.sort_by_key(|hint| hint.offset);
+        self.inlay_hints = hints;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inlay_hints(&mut self, hints: &[(usize, &str)]) {
+        self.inlay_hints = hints
+            .iter()
+            .map(|&(offset, text)| InlayHint {
+                offset,
+                text: text.to_string(),
+            })
+            .collect();
+        self.hints_asked = Some(self.buf.version());
+    }
+
+    pub fn inlay_hint_texts(&self) -> Vec<String> {
+        self.inlay_hints
+            .iter()
+            .map(|hint| hint.text.clone())
+            .collect()
+    }
+
+    /// The hints drawn between `from` and `to`, both offsets of one line.
+    fn hints_between(&self, from: usize, to: usize) -> &[InlayHint] {
+        if !self.show_hints {
+            return &[];
+        }
+        let start = self.inlay_hints.partition_point(|hint| hint.offset < from);
+        let end = self.inlay_hints.partition_point(|hint| hint.offset <= to);
+        &self.inlay_hints[start..end.max(start)]
+    }
+
+    /// A line as it is drawn: its tabs laid out, and the hints in it. The
+    /// offsets of each char in that, and how many bytes of hints are
+    /// before each.
+    fn display_line(&self, line: usize) -> (String, Vec<u32>, Vec<u32>) {
+        let (mut display, mut offsets) =
+            expand_tabs(&self.buf.line_string(line), self.vim_lang.tab_width);
+        let ls = self.buf.line_start(line);
+        let hints: Vec<(usize, &str)> = self
+            .hints_between(ls, ls + offsets.len() - 1)
+            .iter()
+            .map(|hint| (hint.offset - ls, hint.text.as_str()))
+            .collect();
+        let hint_bytes = insert_texts(&mut display, &mut offsets, &hints);
+        (display, offsets, hint_bytes)
+    }
+
     fn set_diagnostics(&mut self, diagnostics: &[lsp::Diagnostic]) {
         self.diagnostics = diagnostics
             .iter()
@@ -1531,6 +1713,10 @@ impl Editor {
                 for d in &mut self.diagnostics {
                     shift_range(&mut d.start, &mut d.end, edit);
                 }
+                for hint in &mut self.inlay_hints {
+                    let mut end = hint.offset;
+                    shift_range(&mut hint.offset, &mut end, edit);
+                }
                 for (_, group) in &mut self.decorations {
                     for d in group {
                         shift_range(&mut d.start, &mut d.end, edit);
@@ -1572,11 +1758,24 @@ impl Editor {
     fn display_col(&self, offset: usize) -> usize {
         let line = self.buf.line_of(offset);
         let tab = self.vim_lang.tab_width.max(1);
+        let ls = self.buf.line_start(line);
         let mut col = 0;
-        for c in self.buf.slice(self.buf.line_start(line)..offset).chars() {
+        for c in self.buf.slice(ls..offset).chars() {
             col += cell_width(c, col, tab);
         }
-        col
+        // Hints before it take their cells too; tabs stop where they would
+        // without them, as they are laid out.
+        let hints: usize = self
+            .hints_between(ls, offset)
+            .iter()
+            .map(|hint| {
+                hint.text
+                    .chars()
+                    .map(|c| cell_width(c, 0, tab))
+                    .sum::<usize>()
+            })
+            .sum();
+        col + hints
     }
 
     fn ensure_cursor_visible(&mut self, cx: &App) {
@@ -2305,7 +2504,7 @@ impl Editor {
             ((row.max(0.) as usize).min(self.buf.last_line()), 0)
         };
         let breaks = self.breaks(line);
-        let (display, offsets) = expand_tabs(&self.buf.line_string(line), self.vim_lang.tab_width);
+        let (display, offsets, _) = self.display_line(line);
         let run = TextRun {
             len: display.len(),
             font: m.font.clone(),
@@ -2483,6 +2682,8 @@ impl Editor {
             || self.wrap_cells != wrap_cells;
         self.visible_lines = visible;
         self.wrap_cells = wrap_cells;
+        // Not where lines wrap: rows are as wide as their text.
+        self.show_hints = self.inlay_hints_on(cx) && wrap_cells.is_none();
         self.metrics = Some(Metrics {
             text_origin,
             text_width,
@@ -2591,7 +2792,7 @@ impl Editor {
             }
             let ls = buf.line_start(line);
             let text = buf.line_string(line);
-            let (mut display, mut offsets) = expand_tabs(&text, tab_width);
+            let (mut display, mut offsets, hint_bytes) = self.display_line(line);
             let nchars = offsets.len() - 1;
             let le = ls + nchars;
             let line_byte = buf.char_to_byte(ls);
@@ -2688,11 +2889,16 @@ impl Editor {
             let mut runs: Vec<TextRun> = Vec::new();
             let mut last_key = None;
             for (i, (byte, _)) in text.char_indices().enumerate() {
+                if hint_bytes[i] > 0 {
+                    runs.push(plain(hint_bytes[i] as usize, muted));
+                    last_key = None;
+                }
                 if label_bytes[i] > 0 {
                     runs.push(label_run(label_bytes[i]));
                     last_key = None;
                 }
-                let len = (offsets[i + 1] - offsets[i] - label_bytes[i + 1]) as usize;
+                let len =
+                    (offsets[i + 1] - offsets[i] - label_bytes[i + 1] - hint_bytes[i + 1]) as usize;
                 let offset = ls + i;
                 let inverse = block_cursor && offset == cursor;
                 let marked = self.marked.as_ref().is_some_and(|m| m.contains(&offset));
@@ -2738,6 +2944,9 @@ impl Editor {
                     });
                 }
                 runs.push(run);
+            }
+            if hint_bytes[nchars] > 0 {
+                runs.push(plain(hint_bytes[nchars] as usize, muted));
             }
             if label_bytes[nchars] > 0 {
                 runs.push(label_run(label_bytes[nchars]));
@@ -3268,6 +3477,7 @@ impl Render for Editor {
         // `set-option` refreshes the windows: a new tab width shows at once.
         self.vim_lang.tab_width = self.tab_width(cx);
         self.vim_lang.wrap = self.wrap_cells;
+        self.request_hints(cx);
         let mut key_context = KeyContext::default();
         key_context.add("Editor");
         key_context.set(
@@ -3544,7 +3754,7 @@ pub(crate) fn register(commands: &mut Commands) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fold, expand_tabs, insert_labels};
+    use super::{Fold, expand_tabs, insert_labels, insert_texts};
     use gpui::{point, px};
 
     #[test]
@@ -3576,6 +3786,19 @@ mod tests {
         assert_eq!(fold.at(px(50.)), point(px(10.), px(220.)));
         // Past the last row's start: on the last row, however far.
         assert_eq!(fold.at(px(300.)), point(px(210.), px(240.)));
+    }
+
+    #[test]
+    fn hints_stand_before_labels_between_the_characters() {
+        // `ab`: a hint before `b`, and a flash label there too.
+        let (mut display, mut offsets) = expand_tabs("ab", 4);
+        let hints = insert_texts(&mut display, &mut offsets, &[(1, ": T")]);
+        let labels = insert_labels(&mut display, &mut offsets, &[(1, 'x')]);
+        assert_eq!(display, "a: Txb");
+        assert_eq!((&hints, &labels), (&vec![0, 3, 0], &vec![0, 1, 0]));
+        // `b` is past both; `a` alone between offsets 0 and 1.
+        assert_eq!(offsets, [0, 5, 6]);
+        assert_eq!(offsets[1] - offsets[0] - hints[1] - labels[1], 1);
     }
 
     #[test]

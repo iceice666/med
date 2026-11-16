@@ -61,6 +61,9 @@ pub struct Settings {
     /// Lines longer than the view go on to the next row of it, at any
     /// character, rather than off its right edge: vim's `wrap`.
     pub wrap: bool,
+    /// Show what the language server says inline of the text, a type or
+    /// a parameter's name, where lines do not wrap.
+    pub inlay_hints: bool,
     /// The colors: `theme.rs`.
     pub theme: theme::ThemeChoice,
     /// Keep each file's undo history when it is saved, and take it up
@@ -220,6 +223,7 @@ pub fn init(cx: &mut App) {
         cursor_line: true,
         color_columns: Vec::new(),
         wrap: false,
+        inlay_hints: false,
         theme: theme::ThemeChoice::System,
         undo_file: false,
         // Turned on by `run`: tests must not start the user's shell.

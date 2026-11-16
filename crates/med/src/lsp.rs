@@ -87,6 +87,8 @@ struct Server {
     triggers: Vec<char>,
     /// The characters after which the server has a signature to show.
     signature_triggers: Vec<char>,
+    /// Whether the server says what it knows inline, as inlay hints.
+    inlay_hints: bool,
     status: Option<String>,
     _reader: Task<()>,
 }
@@ -99,6 +101,8 @@ pub enum LspEvent {
     ApplyEdit(lsp::WorkspaceEdit),
     /// A server started, stopped, or reported progress.
     Status,
+    /// A server has other inlay hints to give, for any of its files.
+    InlayHintsRefresh,
 }
 
 pub struct LspStore {
@@ -128,10 +132,12 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "workspaceFolders": true,
             "applyEdit": true,
             "workspaceEdit": { "documentChanges": true },
+            "inlayHint": { "refreshSupport": true },
         },
         "textDocument": {
             "rename": {},
             "formatting": {},
+            "inlayHint": {},
             "codeAction": {
                 "codeActionLiteralSupport": {
                     "codeActionKind": { "valueSet": [
@@ -276,6 +282,7 @@ impl LspStore {
                 queued: Vec::new(),
                 triggers: Vec::new(),
                 signature_triggers: Vec::new(),
+                inlay_hints: false,
                 status: Some("starting".into()),
                 _reader: reader,
             },
@@ -318,6 +325,7 @@ impl LspStore {
             .and_then(|c| c.trigger_characters.as_ref())
             .map(|chars| chars.iter().filter_map(|s| s.chars().next()).collect())
             .unwrap_or_default();
+        server.inlay_hints = caps.inlay_hint_provider.is_some();
         server.ready = true;
         server.status = None;
         server
@@ -393,6 +401,10 @@ impl LspStore {
                             cx.emit(LspEvent::ApplyEdit(params.edit));
                         }
                         Ok(json!({ "applied": applied }))
+                    }
+                    "workspace/inlayHint/refresh" => {
+                        cx.emit(LspEvent::InlayHintsRefresh);
+                        Ok(Value::Null)
                     }
                     "workspace/workspaceFolders" => Ok(json!([{
                         "uri": path_to_uri(&self.root).map(|u| u.as_str().to_string()),
@@ -792,6 +804,28 @@ impl LspStore {
                 });
         // It is on its way already, and nothing waits for the answer.
         drop(request);
+    }
+
+    /// What the server says inline of the text in `range`.
+    pub fn inlay_hints(
+        &self,
+        path: &Path,
+        range: lsp::Range,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::InlayHint>>>> + use<>> {
+        let server = self
+            .ready_server(path)
+            .filter(|server| server.inlay_hints)?;
+        Some(
+            server
+                .client
+                .request::<lsp::request::InlayHintRequest>(lsp::InlayHintParams {
+                    text_document: lsp::TextDocumentIdentifier {
+                        uri: path_to_uri(path)?,
+                    },
+                    range,
+                    work_done_progress_params: Default::default(),
+                }),
+        )
     }
 
     pub fn formatting(

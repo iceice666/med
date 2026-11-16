@@ -257,6 +257,8 @@ impl Workspace {
                 window,
                 |this, _, event: &LspEvent, window, cx| match event {
                     LspEvent::Status => cx.notify(),
+                    // The tabs ask again themselves.
+                    LspEvent::InlayHintsRefresh => {}
                     LspEvent::ApplyEdit(edit) => {
                         this.apply_workspace_edit(edit.clone(), window, cx);
                     }

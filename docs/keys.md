@@ -117,6 +117,14 @@ diagnostic or a program's text, is cut off at the right edge, and
 `set-buffer-option` and `buffer-language` it can be for some files only:
 `(set-buffer-option 'wrap true)` where the language is `"markdown"`.
 
+`(set-option 'inlay-hints true)` shows what the language server says
+inline of the text, dimmed, in the line where it goes: a variable's
+type, the name of a parameter an argument is given for. They are asked
+for when the text has been still for a moment, and again when the
+server says it has more; until then they go with the text as it is
+edited. They are not shown where lines wrap. A tab can have its own,
+with `set-buffer-option`.
+
 `(set-option 'theme "Catppuccin Mocha")` gives the window that theme's
 colors, the text's and the syntax's, whatever the system's appearance;
 `'("Catppuccin Latte" "Catppuccin Mocha")`, a light theme and a dark
@@ -193,8 +201,8 @@ run at startup, or from the command line with `:eval`:
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
                                               ; relative-number, scroll-off, cursor-line,
-                                              ; color-column, wrap, undo-file,
-                                              ; theme, project-env
+                                              ; color-column, wrap, inlay-hints,
+                                              ; undo-file, theme, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -221,8 +229,8 @@ again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
 `relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
-`cursor-line`, `color-column` and `wrap` (the others are the window's or
-the application's). Its own value goes before the one `set-option` gives
+`cursor-line`, `color-column`, `wrap` and `inlay-hints` (the others are
+the window's or the application's). Its own value goes before the one `set-option` gives
 every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:

@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -1269,6 +1269,85 @@ fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
         assert!(error.to_string().contains(said), "{bad}: {error}");
     }
     assert_eq!(colors(cx).1, background);
+}
+
+#[gpui::test]
+fn inlay_hints_stand_in_the_line(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "let x = 1;\na\tb\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    // `: i32` after `x`, `XY` before the tab of the second line.
+    let tab_line = editor.read_with(cx, |e, _| e.buf.line_start(1));
+    editor.update(cx, |e, _| {
+        e.set_inlay_hints(&[(5, ": i32"), (tab_line + 1, "XY")])
+    });
+    let x = |offset: usize, cx: &mut VisualTestContext| {
+        let origin: f32 = editor.read_with(cx, |e, _| {
+            let line = e.buf.line_start(e.buf.line_of(offset));
+            (e.cell_origin(offset).unwrap().x - e.cell_origin(line).unwrap().x).into()
+        });
+        let cell: f32 = editor.read_with(cx, |e, _| {
+            (e.cell_origin(1).unwrap().x - e.cell_origin(0).unwrap().x).into()
+        });
+        (origin / cell).round() as usize
+    };
+    let redraw = |cx: &mut VisualTestContext| cx.simulate_keystrokes("l h");
+
+    // Off, as at first: not there.
+    redraw(cx);
+    assert_eq!(x(6, cx), 6);
+
+    // On: the `=` after the hint is 5 cells further, on screen and to a
+    // click; a tab stops where it would without the hint, and what is
+    // after it is the hint's 2 cells further.
+    assert_eq!(lisp("(set-option 'inlay-hints true)", cx), "nil");
+    redraw(cx);
+    assert_eq!(x(6, cx), 11);
+    assert_eq!(x(tab_line + 2, cx), 6);
+    let cell = editor.read_with(cx, |e, _| e.cell_origin(6)).unwrap();
+    cx.simulate_click(point(cell.x + px(2.), cell.y + px(4.)), Modifiers::none());
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), 6);
+
+    // A tab of its own, and none where lines wrap.
+    eval_in(&ws, "(set-buffer-option 'inlay-hints false)", cx);
+    redraw(cx);
+    assert_eq!(x(6, cx), 6);
+    eval_in(&ws, "(reset-buffer-option 'inlay-hints)", cx);
+    eval_in(&ws, "(set-buffer-option 'wrap true)", cx);
+    redraw(cx);
+    assert_eq!(x(6, cx), 6);
+    eval_in(&ws, "(reset-buffer-option 'wrap)", cx);
+    redraw(cx);
+    assert_eq!(x(6, cx), 11);
+
+    // Hints go with the text as it is edited, and an answer for the text
+    // as it was before an edit is not taken.
+    let version = editor.read_with(cx, |e, _| e.buf.version());
+    cx.simulate_keystrokes("g g I l e t space escape");
+    assert_eq!(text(&ws, cx), "let let x = 1;\na\tb\n");
+    assert_eq!(x(10, cx), 15);
+    let stale = lsp_types::InlayHint {
+        position: lsp_types::Position::new(0, 1),
+        label: lsp_types::InlayHintLabel::String("stale".into()),
+        kind: None,
+        text_edits: None,
+        tooltip: None,
+        padding_left: None,
+        padding_right: None,
+        data: None,
+    };
+    let taken = editor.update(cx, |e, _| {
+        e.apply_inlay_hints(version, std::slice::from_ref(&stale))
+    });
+    assert!(!taken);
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.inlay_hint_texts()),
+        [": i32", "XY"]
+    );
+    let now = editor.read_with(cx, |e, _| e.buf.version());
+    let taken = editor.update(cx, |e, _| e.apply_inlay_hints(now, &[stale]));
+    assert!(taken);
+    assert_eq!(editor.read_with(cx, |e, _| e.inlay_hint_texts()), ["stale"]);
 }
 
 #[gpui::test]
