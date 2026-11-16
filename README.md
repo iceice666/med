@@ -10,9 +10,10 @@ English | [繁體中文](README.zh-TW.md)
 - Tree-sitter highlighting for ~35 languages, plus text objects and motions
   that follow the syntax tree (functions, types, arguments, comments)
 - LSP: diagnostics, completion, hover, signature help, go to definition,
-  declaration, type definition and implementation, references, document
-  symbols, rename, code actions, formatting; servers, their settings
-  and several to a file set up from the init file
+  declaration, type definition and implementation, references, the
+  places of the name under the cursor, call hierarchy, document and
+  project symbols, rename, code actions, formatting; servers, their
+  settings and several to a file set up from the init file
 - No built-in keys. The vim layout, an oil.nvim-style directory editor,
   the fuzzy finder, a lazygit-style git screen and which-key are Lisp
   programs in
@@ -100,7 +101,7 @@ from a checkout:
 | `vim.mlisp` | vim keys in every mode, plus nvim-surround-style `ys` / `ds` / `cs` |
 | `keys.mlisp` | LSP keys (`gd`, `gr`, `K`), tabs, panes, flash-style jumps, `space` leader keys, `⌘` shortcuts |
 | `oil.mlisp` | directories as buffers to edit, as oil.nvim (`space e`, `space -`) |
-| `picker.mlisp` | fuzzy file finder, project search and recent projects (`space f`, `space /`, `space p`) |
+| `picker.mlisp` | fuzzy file finder, project search, project symbols and recent projects (`space f`, `space /`, `space S`, `space p`) |
 | `git.mlisp` | lazygit-style git screen (`space g`) |
 | `which-key.mlisp` | the keys that can come next, after a pause |
 | `todo.mlisp` | signs on TODO/FIXME/NOTE lines, `]T` / `[T` |
@@ -173,8 +174,8 @@ Each package carries `THIRD-PARTY-LICENSES.txt`, the licences of the crates
 med is built from. cargo packager writes it first with
 `scripts/third-party-licenses.sh`, so packaging needs
 [cargo-about](https://github.com/EmbarkStudios/cargo-about) too (the flake has
-it; else `cargo install cargo-about --locked`). A crate under a licence not
-in `about.toml` stops the packaging until it is added there.
+it; else `cargo install cargo-about --locked --features cli`). A crate under
+a licence not in `about.toml` stops the packaging until it is added there.
 
 ## Acknowledgements
 

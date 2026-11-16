@@ -1,17 +1,19 @@
 ; The picker: a popup to find a file by a few letters of its name, to
-; search the project, to choose among the references to a name, or to
-; open another project.
+; search the project or its symbols, to choose among the references to a
+; name, or to open another project.
 ;
 ;   (load "picker.mlisp")
 ;
 ; space f, or ⌘P, finds a file; space /, or ⌘⇧F, searches the project
-; (a regular expression, if what is typed is one); space p, or ⌘⌥O, lists
+; (a regular expression, if what is typed is one); space S, or ⌘T, finds
+; a symbol of the project, as the language servers running know them;
+; space p, or ⌘⌥O, lists
 ; the projects opened before, to open one in a window of its own. In the
 ; picker: typing narrows the list, ctrl-n and ctrl-p (or the arrows) move,
 ; enter opens, escape puts it away. `gr` on a name lists its references
 ; here, and `space s` the symbols of the file.
 
-(def picker-mode 'files)   ; what is picked from: 'files, 'grep, 'list or 'projects
+(def picker-mode 'files)   ; what is picked from: 'files, 'grep, 'symbols, 'list or 'projects
 (def picker-query "")      ; what has been typed
 (def picker-files nil)     ; 'files: every file, as a path from the root
 (def picker-files-root nil) ; and the root they are of
@@ -71,6 +73,14 @@
       ((= picker-mode 'projects)
        (picker-show (filter (fn (item) (picker-matches? item (lowercase query)))
                             (map picker-project-item picker-projects))))
+      ((= picker-mode 'symbols)
+       (if (= query "")
+           (picker-show nil)
+           (do (set! picker-busy true)
+               (workspace-symbols query picker-limit
+                 (fn (places)
+                   (when (and (= picker-mode 'symbols) (= query picker-query))
+                     (picker-show (map picker-place-item places))))))))
       ((< (length query) 2)
        (picker-show nil))
       (true
@@ -136,6 +146,7 @@
         (input 'query :grow true
                :placeholder (cond ((= picker-mode 'files) "Find file…")
                                   ((= picker-mode 'grep) "Search in project…")
+                                  ((= picker-mode 'symbols) "Find symbol…")
                                   ((= picker-mode 'projects) "Open project…")
                                   (true "Filter…"))
                :on-change (fn (text)
@@ -156,7 +167,7 @@
                :on-click (fn ()
                            (set! picker-selected index)
                            (picker-confirm))
-            (if (member? picker-mode '(files projects))
+            (if (member? picker-mode '(files symbols projects))
                 ; The name first, then where it is.
                 (list (text (get item :label) :shrink false)
                       (picker-detail item :grow true))
@@ -170,6 +181,8 @@
   (fn () (picker-open 'files)))
 (defcommand "picker.search" "Search the project"
   (fn () (picker-open 'grep)))
+(defcommand "picker.symbols" "Find a symbol of the project"
+  (fn () (picker-open 'symbols)))
 (defcommand "picker.projects" "Open a project opened before, in a window of its own"
   (fn () (picker-open 'projects)))
 (defcommand "picker.down" "Select the next row" (fn () (picker-move 1)))
@@ -199,7 +212,9 @@
 (bind 'normal "<Space>f" "picker.files")
 (bind 'normal "<Space><Space>" "picker.files")
 (bind 'normal "<Space>/" "picker.search")
+(bind 'normal "<Space>S" "picker.symbols")
 (bind 'normal "<Space>p" "picker.projects")
 (bind 'app "cmd-p" "picker.files")
 (bind 'app "cmd-shift-f" "picker.search")
+(bind 'app "cmd-t" "picker.symbols")
 (bind 'app "cmd-alt-o" "picker.projects")

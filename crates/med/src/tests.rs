@@ -335,6 +335,20 @@ fn finds_files_and_searches_the_project(cx: &mut TestAppContext) {
     assert_eq!(cursor(&ws, cx), (3, 1));
     cx.simulate_keystrokes("g g");
 
+    // The symbols of the project: with no language server running there
+    // are none, and the picker stops looking.
+    cx.simulate_keystrokes("space shift-s");
+    cx.run_until_parked();
+    assert_eq!(lisp("picker-mode", cx), "symbols");
+    cx.simulate_input("main");
+    assert_eq!(lisp("picker-busy", cx), "true");
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(lisp("picker-busy", cx), "false");
+    assert_eq!(lisp("picker-items", cx), "nil");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
     // Project search jumps to the matching line and column.
     cx.simulate_keystrokes("space /");
     cx.run_until_parked();
@@ -1326,6 +1340,57 @@ fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
     assert_eq!(colors(cx).1, background);
 }
 
+/// The places of the name under the cursor stay while the cursor is on
+/// one of them, and go when it leaves them or the text changes.
+#[gpui::test]
+fn the_places_of_a_name_go_when_the_cursor_leaves(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "let a = 1;\na + a\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    let at = |line: u32, character: u32| lsp_types::Position { line, character };
+    let place = |line, from, to, kind| lsp_types::DocumentHighlight {
+        range: lsp_types::Range::new(at(line, from), at(line, to)),
+        kind: Some(kind),
+    };
+    let found = [
+        place(0, 4, 5, lsp_types::DocumentHighlightKind::WRITE),
+        place(1, 0, 1, lsp_types::DocumentHighlightKind::READ),
+        place(1, 4, 5, lsp_types::DocumentHighlightKind::READ),
+    ];
+    let marked =
+        |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.document_highlights().to_vec());
+    // On `a`, where it is let.
+    cx.simulate_keystrokes("w");
+    editor.update(cx, |e, cx| {
+        e.request_highlights(cx);
+        let key = (e.buf.version(), e.vim.cursor);
+        // An answer for another place of the cursor is no answer.
+        assert!(!e.apply_document_highlights((key.0, key.1 + 1), &found));
+        assert!(e.apply_document_highlights(key, &found));
+    });
+    assert_eq!(marked(cx), [(4..5, true), (11..12, false), (15..16, false)]);
+
+    // To another `a`: they stay.
+    cx.simulate_keystrokes("j 0");
+    editor.update(cx, |e, cx| e.request_highlights(cx));
+    assert_eq!(marked(cx).len(), 3);
+    // Off it: they go.
+    cx.simulate_keystrokes("l");
+    editor.update(cx, |e, cx| e.request_highlights(cx));
+    assert!(marked(cx).is_empty());
+
+    // An edit takes them away too.
+    cx.simulate_keystrokes("h");
+    editor.update(cx, |e, cx| {
+        e.request_highlights(cx);
+        let key = (e.buf.version(), e.vim.cursor);
+        assert!(e.apply_document_highlights(key, &found));
+    });
+    cx.simulate_keystrokes("x");
+    editor.update(cx, |e, cx| e.request_highlights(cx));
+    assert!(marked(cx).is_empty());
+}
+
 #[gpui::test]
 fn inlay_hints_stand_in_the_line(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "let x = 1;\na\tb\n"), ("b.txt", "b\n")]);
@@ -2064,6 +2129,8 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                (unbind 'normal "<Space>w")
                (unbind '(normal visual) "<Space>a")
                (unbind 'normal "<Space>s")
+               (unbind 'normal "<Space>ci")
+               (unbind 'normal "<Space>co")
                (unbind 'normal "<Space>=")
                (unbind 'normal "<Space>r")
                (unbind 'normal "<Space>m")

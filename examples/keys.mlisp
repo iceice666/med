@@ -70,6 +70,8 @@
 ; Leader keys. `space` alone still moves right, after a pause.
 (bind '(normal visual) "<Space>a" "editor.code_action")
 (bind 'normal "<Space>s" "editor.document_symbols")
+(bind 'normal "<Space>ci" "editor.incoming_calls")
+(bind 'normal "<Space>co" "editor.outgoing_calls")
 (bind 'normal "<Space>=" "editor.format")
 (bind 'normal "<Space>w" "workspace.save")
 (bind 'normal "<Space>q" "workspace.close_tab")

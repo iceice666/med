@@ -69,7 +69,8 @@ fn run(editor: &Entity<Editor>, cx: &mut AsyncApp, name: &str, arg: &str) {
 async fn scenario(
     editor: Entity<Editor>,
     jumps: Rc<RefCell<Vec<(PathBuf, u32, u32)>>>,
-    symbols: Rc<RefCell<Vec<Place>>>,
+    lists: Lists,
+    store: Entity<LspStore>,
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
     // 1. Diagnostics: the semicolon missing from line 6, which clangd
@@ -293,37 +294,152 @@ async fn scenario(
 
     // 10. Document symbols: both functions, from the top down, at their
     //     names, wherever formatting left them.
-    let line_of = |needle: &str| {
-        editor.read_with(cx, |e, _| {
-            (0..e.buf.line_count()).find(|line| e.buf.line_string(*line).contains(needle))
-        })
-    };
     let expected = [
-        ("function sum".to_string(), line_of("int sum(")),
-        ("function main".to_string(), line_of("int main(")),
+        ("function sum".to_string(), line_of(&editor, cx, "int sum(")),
+        (
+            "function main".to_string(),
+            line_of(&editor, cx, "int main("),
+        ),
     ];
     run(&editor, cx, "editor.document_symbols", "");
+    let found: Vec<(String, Option<usize>)> = listed("symbols", &lists, cx)
+        .await?
+        .into_iter()
+        .map(|(label, line)| (label, Some(line)))
+        .collect();
+    if found != expected {
+        return Err(format!("document symbols {found:?}, not {expected:?}"));
+    }
+    println!("ok  document symbols: {found:?}");
+
+    // 11. Document highlight: on `x` where it is declared, it is marked
+    //     there, where it is given another value (written), and where it
+    //     is returned (read).
+    let declared = line_of(&editor, cx, "int x =").ok_or("no line declares x")?;
+    editor.update(cx, |editor, cx| {
+        editor.feed_keys(keys(&format!("{}G0fx", declared + 1)), cx)
+    });
+    let mut marked = Vec::new();
     for _ in 0..200 {
-        if !symbols.borrow().is_empty() {
+        editor.update(cx, |editor, cx| editor.request_highlights(cx));
+        marked = editor.read_with(cx, |e, _| {
+            e.document_highlights()
+                .iter()
+                .map(|(range, write)| (e.buf.line_of(range.start), *write))
+                .collect::<Vec<_>>()
+        });
+        if marked.len() >= 2 {
             break;
         }
         cx.background_executor()
             .timer(Duration::from_millis(50))
             .await;
     }
-    let found: Vec<(String, Option<usize>)> = symbols
-        .borrow()
-        .iter()
-        .map(|place| {
-            let label = place.label.clone().unwrap_or_default();
-            (label, Some(place.location.range.start.line as usize))
-        })
-        .collect();
-    if found != expected {
-        return Err(format!("document symbols {found:?}, not {expected:?}"));
+    let returned = line_of(&editor, cx, "return x;").ok_or("no line returns x")?;
+    let assigned = editor.read_with(cx, |e, _| {
+        (0..e.buf.line_count()).find(|line| e.buf.line_string(*line).trim().starts_with("x = "))
+    });
+    let assigned = assigned.ok_or("no line gives x a value")?;
+    if marked != [(declared, false), (assigned, true), (returned, false)] {
+        return Err(format!("document highlights {marked:?}"));
     }
-    println!("ok  document symbols: {found:?}");
+    println!("ok  document highlight: {marked:?}");
+
+    // 12. Call hierarchy: `main` calls `sum`, and so is what calls it.
+    let sum = line_of(&editor, cx, "int sum(").ok_or("no line defines sum")?;
+    let main = line_of(&editor, cx, "int main(").ok_or("no line defines main")?;
+    editor.update(cx, |editor, cx| {
+        editor.feed_keys(keys(&format!("{}G0w", sum + 1)), cx)
+    });
+    run(&editor, cx, "editor.incoming_calls", "");
+    let callers = listed("callers", &lists, cx).await?;
+    if callers
+        != [(
+            "function main".to_string(),
+            line_of(&editor, cx, "x = sum(").unwrap_or(usize::MAX),
+        )]
+    {
+        return Err(format!("callers of sum: {callers:?}"));
+    }
+    println!("ok  incoming calls: {callers:?}");
+    editor.update(cx, |editor, cx| {
+        editor.feed_keys(keys(&format!("{}G0w", main + 1)), cx)
+    });
+    run(&editor, cx, "editor.outgoing_calls", "");
+    let calls = listed("calls", &lists, cx).await?;
+    if calls != [("function sum".to_string(), sum)] {
+        return Err(format!("calls of main: {calls:?}"));
+    }
+    println!("ok  outgoing calls: {calls:?}");
+
+    // 13. Workspace symbols: `sum`, found by its name.
+    let mut found = Vec::new();
+    for _ in 0..200 {
+        let request = store.read_with(cx, |store, _| store.workspace_symbols("sum"));
+        if let Some(request) = request {
+            found = request
+                .await
+                .into_iter()
+                .map(|place| {
+                    (
+                        place.label.unwrap_or_default(),
+                        place.location.range.start.line as usize,
+                    )
+                })
+                .collect();
+        }
+        if !found.is_empty() {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    if !found.contains(&("function sum".to_string(), sum)) {
+        return Err(format!("workspace symbols for sum: {found:?}"));
+    }
+    println!("ok  workspace symbols: {found:?}");
     Ok(())
+}
+
+/// The first line of the editor's text that has `needle` in it.
+fn line_of(editor: &Entity<Editor>, cx: &mut AsyncApp, needle: &str) -> Option<usize> {
+    editor.read_with(cx, |e, _| {
+        (0..e.buf.line_count()).find(|line| e.buf.line_string(*line).contains(needle))
+    })
+}
+
+type Lists = Rc<RefCell<Vec<(&'static str, Vec<Place>)>>>;
+
+/// The places last listed as `what`, each by its label and line, once
+/// there are some; they are taken from `lists`.
+async fn listed(
+    what: &str,
+    lists: &Lists,
+    cx: &mut AsyncApp,
+) -> Result<Vec<(String, usize)>, String> {
+    for _ in 0..200 {
+        let found = lists
+            .borrow()
+            .iter()
+            .rposition(|(listed, _)| *listed == what);
+        if let Some(index) = found {
+            let (_, places) = lists.borrow_mut().remove(index);
+            return Ok(places
+                .into_iter()
+                .map(|place| {
+                    (
+                        place.label.unwrap_or_default(),
+                        place.location.range.start.line as usize,
+                    )
+                })
+                .collect());
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    Err(format!("timed out waiting for the {what}"))
 }
 
 fn main() {
@@ -349,12 +465,12 @@ fn main() {
             med::script::eval(program, cx).unwrap();
         }
         let store = cx.new(|_| LspStore::new(dir.clone(), true));
-        let editor = cx.new(|cx| Editor::new(Some(file.clone()), SOURCE, Some(store), cx));
+        let editor = cx.new(|cx| Editor::new(Some(file.clone()), SOURCE, Some(store.clone()), cx));
 
         let jumps = Rc::new(RefCell::new(Vec::new()));
         let seen = jumps.clone();
-        let symbols = Rc::new(RefCell::new(Vec::new()));
-        let listed = symbols.clone();
+        let lists: Lists = Rc::new(RefCell::new(Vec::new()));
+        let listed = lists.clone();
         cx.subscribe(
             &editor,
             move |editor, event: &EditorEvent, cx| match event {
@@ -362,10 +478,9 @@ fn main() {
                     seen.borrow_mut()
                         .push((path.clone(), position.line, position.character));
                 }
-                EditorEvent::Locations {
-                    what: "symbols",
-                    places,
-                } => *listed.borrow_mut() = places.clone(),
+                EditorEvent::Locations { what, places } => {
+                    listed.borrow_mut().push((what, places.clone()))
+                }
                 // What a workspace does with them, for the one file there is.
                 EditorEvent::WorkspaceEdit(edit) => {
                     for (_, edits) in med::lsp::edits_by_file(edit.clone()) {
@@ -378,7 +493,7 @@ fn main() {
         .detach();
 
         cx.spawn(async move |cx| {
-            let result = scenario(editor, jumps, symbols, cx).await;
+            let result = scenario(editor, jumps, lists, store, cx).await;
             let _ = std::fs::remove_dir_all(&cleanup);
             match result {
                 Ok(()) => {

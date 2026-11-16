@@ -198,6 +198,7 @@ at once.
 | `(walk-files function)` | every file of the project, as paths from its root |
 | `(fuzzy query list limit)` | the texts a few letters mean, best first |
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
+| `(workspace-symbols query limit function)` | the symbols of the project the language servers running find, as `grep`'s places with the kind and name as `:text` |
 | `(git what arguments... function)` | the repository: see `crates/med/src/host.rs` |
 | `(bindings table [keys])` | the keys that can come after `keys` in a mode's table or a panel's |
 | `(after milliseconds function)` | a call that long from now, and a timer for `(cancel timer)` to call it off |

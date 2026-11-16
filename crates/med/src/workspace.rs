@@ -506,6 +506,11 @@ impl Workspace {
         &self.root
     }
 
+    /// The project's language servers.
+    pub(crate) fn lsp(&self) -> Entity<LspStore> {
+        self.lsp.clone()
+    }
+
     /// The environment the project's programs run in, for a background
     /// thread to wait for.
     pub(crate) fn env(&self) -> Arc<EnvCell> {

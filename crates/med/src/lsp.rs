@@ -128,6 +128,7 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "applyEdit": true,
             "workspaceEdit": { "documentChanges": true },
             "inlayHint": { "refreshSupport": true },
+            "symbol": {},
         },
         "textDocument": {
             "rename": {},
@@ -158,6 +159,8 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "implementation": { "linkSupport": false },
             "references": {},
             "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+            "documentHighlight": {},
+            "callHierarchy": {},
             "completion": {
                 "contextSupport": true,
                 "completionItem": {
@@ -864,6 +867,85 @@ impl LspStore {
         })
     }
 
+    /// The other places in `path` of the symbol at `position`, each with
+    /// whether it is read or written there.
+    pub fn document_highlight(
+        &self,
+        path: &Path,
+        position: lsp::Position,
+    ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::DocumentHighlight>>>> + use<>>
+    {
+        // Only one that says so: a server asked anyway may answer each
+        // move of the cursor with an error.
+        let server = self
+            .ready_servers(path)
+            .find(|server| offers(&server.caps.document_highlight_provider))?;
+        Some(
+            server
+                .client
+                .request::<lsp::request::DocumentHighlightRequest>(lsp::DocumentHighlightParams {
+                    text_document_position_params: Self::position_params(path, position)?,
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                }),
+        )
+    }
+
+    /// What calls the function at `position` (`incoming`), or what it
+    /// calls: each a place to go, called by its kind and name. One server
+    /// is asked both what is at `position` and then what calls it, as the
+    /// second question is about its answer to the first.
+    pub fn calls(
+        &self,
+        path: &Path,
+        position: lsp::Position,
+        incoming: bool,
+    ) -> Option<impl Future<Output = anyhow::Result<Vec<Place>>> + use<>> {
+        let server = self.ready_server(path, |c| {
+            !matches!(
+                c.call_hierarchy_provider,
+                None | Some(lsp::CallHierarchyServerCapability::Simple(false))
+            )
+        })?;
+        let client = server.client.clone();
+        let prepare =
+            client.request::<lsp::request::CallHierarchyPrepare>(lsp::CallHierarchyPrepareParams {
+                text_document_position_params: Self::position_params(path, position)?,
+                work_done_progress_params: Default::default(),
+            });
+        Some(async move {
+            let Some(item) = prepare.await?.unwrap_or_default().into_iter().next() else {
+                return Ok(Vec::new());
+            };
+            let places = if incoming {
+                let calls = client
+                    .request::<lsp::request::CallHierarchyIncomingCalls>(
+                        lsp::CallHierarchyIncomingCallsParams {
+                            item,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        },
+                    )
+                    .await?
+                    .unwrap_or_default();
+                incoming_places(calls)
+            } else {
+                let calls = client
+                    .request::<lsp::request::CallHierarchyOutgoingCalls>(
+                        lsp::CallHierarchyOutgoingCallsParams {
+                            item,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        },
+                    )
+                    .await?
+                    .unwrap_or_default();
+                outgoing_places(calls)
+            };
+            Ok(places)
+        })
+    }
+
     /// The symbols of `path`, as the first server of it that has them
     /// gives them: a tree, or a list.
     pub fn document_symbols(
@@ -1122,6 +1204,46 @@ impl LspStore {
         drop(request);
     }
 
+    /// The symbols of the project whose names match `query`, from every
+    /// running server that can look for them, in the order of their names.
+    pub fn workspace_symbols(
+        &self,
+        query: &str,
+    ) -> Option<impl Future<Output = Vec<Place>> + use<>> {
+        let mut servers: Vec<&Server> = self
+            .servers
+            .values()
+            .filter(|server| server.ready && offers(&server.caps.workspace_symbol_provider))
+            .collect();
+        if servers.is_empty() {
+            return None;
+        }
+        servers.sort_by(|a, b| a.config.name.cmp(&b.config.name));
+        let params = lsp::WorkspaceSymbolParams {
+            query: query.to_string(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let requests: Vec<_> = servers
+            .into_iter()
+            .map(|server| {
+                let request = server
+                    .client
+                    .request::<lsp::request::WorkspaceSymbolRequest>(params.clone());
+                // One that fails hides nothing the others have.
+                async move { request.await.ok().flatten() }
+            })
+            .collect();
+        Some(async move {
+            futures::future::join_all(requests)
+                .await
+                .into_iter()
+                .flatten()
+                .flat_map(workspace_symbol_places)
+                .collect()
+        })
+    }
+
     /// What the server says inline of the text in `range`.
     pub fn inlay_hints(
         &self,
@@ -1242,6 +1364,84 @@ fn symbol_kind_name(kind: lsp::SymbolKind) -> &'static str {
     }
 }
 
+/// A symbol as a list calls it: its kind, and its name, after the name of
+/// what it is in when there is one.
+fn symbol_label(kind: lsp::SymbolKind, name: &str, container: Option<&str>) -> String {
+    match container {
+        Some(container) if !container.is_empty() => {
+            format!("{} {container}.{name}", symbol_kind_name(kind))
+        }
+        _ => format!("{} {name}", symbol_kind_name(kind)),
+    }
+}
+
+/// The symbols a server found in the project, each at its name; one it
+/// gave no range for, at the top of its file.
+pub fn workspace_symbol_places(response: lsp::WorkspaceSymbolResponse) -> Vec<Place> {
+    match response {
+        lsp::WorkspaceSymbolResponse::Flat(symbols) => symbols
+            .into_iter()
+            .map(|symbol| Place {
+                label: Some(symbol_label(
+                    symbol.kind,
+                    &symbol.name,
+                    symbol.container_name.as_deref(),
+                )),
+                location: symbol.location,
+            })
+            .collect(),
+        lsp::WorkspaceSymbolResponse::Nested(symbols) => symbols
+            .into_iter()
+            .map(|symbol| Place {
+                label: Some(symbol_label(
+                    symbol.kind,
+                    &symbol.name,
+                    symbol.container_name.as_deref(),
+                )),
+                location: match symbol.location {
+                    lsp::OneOf::Left(location) => location,
+                    lsp::OneOf::Right(file) => lsp::Location {
+                        uri: file.uri,
+                        range: lsp::Range::default(),
+                    },
+                },
+            })
+            .collect(),
+    }
+}
+
+/// What calls a function, each where it calls it.
+pub fn incoming_places(calls: Vec<lsp::CallHierarchyIncomingCall>) -> Vec<Place> {
+    calls
+        .into_iter()
+        .map(|call| Place {
+            label: Some(symbol_label(call.from.kind, &call.from.name, None)),
+            location: lsp::Location {
+                range: call
+                    .from_ranges
+                    .first()
+                    .copied()
+                    .unwrap_or(call.from.selection_range),
+                uri: call.from.uri,
+            },
+        })
+        .collect()
+}
+
+/// What a function calls, each where it is defined.
+pub fn outgoing_places(calls: Vec<lsp::CallHierarchyOutgoingCall>) -> Vec<Place> {
+    calls
+        .into_iter()
+        .map(|call| Place {
+            label: Some(symbol_label(call.to.kind, &call.to.name, None)),
+            location: lsp::Location {
+                uri: call.to.uri,
+                range: call.to.selection_range,
+            },
+        })
+        .collect()
+}
+
 /// The symbols of the file at `uri`, from the top of it down, each called
 /// by its kind and name; one inside another is indented under it.
 pub fn symbol_places(response: lsp::DocumentSymbolResponse, uri: &lsp::Uri) -> Vec<Place> {
@@ -1278,17 +1478,13 @@ pub fn symbol_places(response: lsp::DocumentSymbolResponse, uri: &lsp::Uri) -> V
                 let start = s.location.range.start;
                 (start.line, start.character)
             });
-            out.extend(symbols.into_iter().map(|symbol| {
-                let name = match &symbol.container_name {
-                    Some(container) if !container.is_empty() => {
-                        format!("{container}.{}", symbol.name)
-                    }
-                    _ => symbol.name,
-                };
-                Place {
-                    label: Some(format!("{} {name}", symbol_kind_name(symbol.kind))),
-                    location: symbol.location,
-                }
+            out.extend(symbols.into_iter().map(|symbol| Place {
+                label: Some(symbol_label(
+                    symbol.kind,
+                    &symbol.name,
+                    symbol.container_name.as_deref(),
+                )),
+                location: symbol.location,
             }));
         }
     }
@@ -1557,6 +1753,90 @@ mod tests {
         );
         let labels: Vec<_> = places.iter().map(|p| p.label.clone().unwrap()).collect();
         assert_eq!(labels, ["method new", "method Shape.draw"]);
+    }
+
+    /// The symbols a server found in the project, each at its name, or at
+    /// the top of its file when it gave no range.
+    #[test]
+    fn symbols_of_the_project() {
+        let uri: lsp::Uri = "file:///p/a.rs".parse().unwrap();
+        #[allow(deprecated)]
+        let flat = lsp::WorkspaceSymbolResponse::Flat(vec![lsp::SymbolInformation {
+            name: "draw".into(),
+            kind: lsp::SymbolKind::METHOD,
+            tags: None,
+            deprecated: None,
+            location: lsp::Location {
+                uri: uri.clone(),
+                range: range(7, 4),
+            },
+            container_name: Some("Shape".into()),
+        }]);
+        let places = workspace_symbol_places(flat);
+        assert_eq!(places[0].label.as_deref(), Some("method Shape.draw"));
+        assert_eq!(places[0].location.range, range(7, 4));
+
+        let nested = lsp::WorkspaceSymbolResponse::Nested(vec![lsp::WorkspaceSymbol {
+            name: "Point".into(),
+            kind: lsp::SymbolKind::STRUCT,
+            tags: None,
+            container_name: None,
+            location: lsp::OneOf::Right(lsp::WorkspaceLocation { uri: uri.clone() }),
+            data: None,
+        }]);
+        let places = workspace_symbol_places(nested);
+        assert_eq!(places[0].label.as_deref(), Some("struct Point"));
+        assert_eq!(places[0].location.range, lsp::Range::default());
+    }
+
+    /// A caller is listed where it calls; a callee where it is defined.
+    #[test]
+    fn calls_are_places() {
+        let item = |name: &str, file: &str, line| lsp::CallHierarchyItem {
+            name: name.into(),
+            kind: lsp::SymbolKind::FUNCTION,
+            tags: None,
+            detail: None,
+            uri: file.parse().unwrap(),
+            range: range(line, 0),
+            selection_range: range(line, 3),
+            data: None,
+        };
+        let incoming = incoming_places(vec![
+            lsp::CallHierarchyIncomingCall {
+                from: item("main", "file:///p/main.c", 4),
+                from_ranges: vec![range(6, 8), range(7, 8)],
+            },
+            lsp::CallHierarchyIncomingCall {
+                from: item("test", "file:///p/test.c", 1),
+                from_ranges: Vec::new(),
+            },
+        ]);
+        let listed: Vec<_> = incoming
+            .iter()
+            .map(|p| {
+                (
+                    p.label.as_deref().unwrap(),
+                    p.location.uri.as_str(),
+                    p.location.range,
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("function main", "file:///p/main.c", range(6, 8)),
+                ("function test", "file:///p/test.c", range(1, 3)),
+            ]
+        );
+
+        let outgoing = outgoing_places(vec![lsp::CallHierarchyOutgoingCall {
+            to: item("add", "file:///p/add.c", 0),
+            from_ranges: vec![range(6, 8)],
+        }]);
+        assert_eq!(outgoing[0].label.as_deref(), Some("function add"));
+        assert_eq!(outgoing[0].location.uri.as_str(), "file:///p/add.c");
+        assert_eq!(outgoing[0].location.range, range(0, 3));
     }
 
     /// Each item asked for gets its section of the settings, or all of them.

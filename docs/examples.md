@@ -31,6 +31,7 @@ there. Each brings its commands and its keys:
 | | `:w` | in a listing: do what the edits ask, after a popup says what (`y` / `n`) |
 | `picker.mlisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
+| | `space S` / `⌘T` | find a symbol of the project, as the language servers running know them |
 | | `space p` / `⌘⌥O` | open a project opened before, in a window of its own |
 | `git.mlisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.mlisp` | | the keys that can come next, after a pause |
@@ -58,8 +59,9 @@ there; `init.mlisp` does so with `g ?` for oil's listings, after their
 keys are bound, as a key bound later is not on the list.
 
 With `picker.mlisp`, `gr` lists the references to choose from, `space s`
-the symbols of the file, and `gd`, `gy` and `gi` the places they find
-when there are several; without it, each goes to the first.
+the symbols of the file, `space c i` and `space c o` the callers and
+calls of a function, and `gd`, `gy` and `gi` the places they find when
+there are several; without it, each goes to the first.
 
 With `oil.mlisp` (as oil.nvim), a directory is a tab called
 `oil:///the/directory/` with a name to a line, a directory's with `/`

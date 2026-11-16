@@ -39,6 +39,7 @@ any case.
 | `gd` / `gr` / `K` | definition / references / hover |
 | `gD` / `gy` / `gi` | declaration / type definition / implementations |
 | `space s` | the symbols of the file, to go to one |
+| `space c i` / `space c o` | what calls the function under the cursor / what it calls |
 | `]d` / `[d` | next / previous diagnostic |
 | `]h` / `[h` | next / previous change from HEAD that the gutter marks |
 | `space r` | rename: the new name is typed after `:rename` |

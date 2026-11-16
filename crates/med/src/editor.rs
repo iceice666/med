@@ -316,6 +316,12 @@ pub struct Editor {
     hints_task: Option<Task<()>>,
     /// Whether they are drawn, as the view was last laid out.
     show_hints: bool,
+    /// The places of the name under the cursor, as the language server
+    /// sees them, each with whether it is written there; the text's
+    /// version and the cursor they were last asked for, and the asking.
+    doc_highlights: Vec<(Range<usize>, bool)>,
+    highlights_asked: Option<(u64, usize)>,
+    highlights_task: Option<Task<()>>,
     /// What programs marked on the text, by the group they gave.
     decorations: Vec<(SharedString, Vec<Decoration>)>,
     completion: Option<CompletionMenu>,
@@ -876,6 +882,9 @@ impl Editor {
             hints_asked: None,
             hints_task: None,
             show_hints: false,
+            doc_highlights: Vec::new(),
+            highlights_asked: None,
+            highlights_task: None,
             decorations: Vec::new(),
             completion: None,
             completion_task: None,
@@ -1676,6 +1685,84 @@ impl Editor {
             .collect()
     }
 
+    // ---- the places of the name under the cursor -------------------------
+
+    /// Ask the server where else the name under the cursor is, once the
+    /// cursor has been still a moment, unless that is known. What was
+    /// found goes as soon as the text changes or the cursor leaves it.
+    pub fn request_highlights(&mut self, cx: &mut Context<Self>) {
+        let key = (self.buf.version(), self.vim.cursor);
+        if self.highlights_asked == Some(key) {
+            return;
+        }
+        let cursor = self.vim.cursor;
+        let same_text = self.highlights_asked.map(|(version, _)| version) == Some(key.0);
+        let on_one = self
+            .doc_highlights
+            .iter()
+            .any(|(range, _)| range.contains(&cursor));
+        if !(same_text && on_one) {
+            self.doc_highlights.clear();
+        }
+        self.highlights_asked = Some(key);
+        self.highlights_task = None;
+        if self.lsp.is_none() || self.path.is_none() || self.vim.mode == Mode::Insert {
+            return;
+        }
+        self.highlights_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            let request = this.update(cx, |this, cx| {
+                if (this.buf.version(), this.vim.cursor) != key {
+                    return None;
+                }
+                let (lsp, path) = (this.lsp.as_ref()?, this.path.as_ref()?);
+                lsp.read(cx)
+                    .document_highlight(path, this.lsp_position(key.1))
+            });
+            let Some(request) = request.ok().flatten() else {
+                return;
+            };
+            let found = request.await.ok().flatten().unwrap_or_default();
+            this.update(cx, |this, cx| {
+                if this.apply_document_highlights(key, &found) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Take the places a server gave for the cursor at `key.1` in version
+    /// `key.0` of the text, unless either has changed since.
+    pub(crate) fn apply_document_highlights(
+        &mut self,
+        key: (u64, usize),
+        found: &[lsp::DocumentHighlight],
+    ) -> bool {
+        if (self.buf.version(), self.vim.cursor) != key {
+            return false;
+        }
+        self.doc_highlights = found
+            .iter()
+            .map(|highlight| {
+                let start = self.offset_from_lsp(highlight.range.start);
+                let end = self.offset_from_lsp(highlight.range.end);
+                let write = highlight.kind == Some(lsp::DocumentHighlightKind::WRITE);
+                (start..end, write)
+            })
+            .filter(|(range, _)| range.start < range.end)
+            .collect();
+        true
+    }
+
+    /// The places of the name under the cursor that are marked, and
+    /// whether each is written there.
+    pub fn document_highlights(&self) -> &[(Range<usize>, bool)] {
+        &self.doc_highlights
+    }
+
     /// The hints drawn between `from` and `to`, both offsets of one line.
     fn hints_between(&self, from: usize, to: usize) -> &[InlayHint] {
         if !self.show_hints {
@@ -2279,6 +2366,31 @@ impl Editor {
                             .collect(),
                     });
                 }
+            })
+            .ok();
+        }));
+    }
+
+    /// List what calls the function under the cursor (`incoming`), or
+    /// what it calls, to go to one.
+    fn show_calls(&mut self, incoming: bool, cx: &mut Context<Self>) {
+        let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
+            return;
+        };
+        let position = self.lsp_position(self.vim.cursor);
+        let Some(request) = lsp.read(cx).calls(path, position, incoming) else {
+            cx.emit(EditorEvent::Message("No language server".into()));
+            return;
+        };
+        let what = if incoming { "callers" } else { "calls" };
+        self.request_task = Some(cx.spawn(async move |this, cx| {
+            let found = request.await;
+            this.update(cx, |_, cx| match found {
+                Ok(places) if places.is_empty() => {
+                    cx.emit(EditorEvent::Message(format!("No {what} found")))
+                }
+                Ok(places) => cx.emit(EditorEvent::Locations { what, places }),
+                Err(error) => cx.emit(EditorEvent::Message(format!("{error:#}"))),
             })
             .ok();
         }));
@@ -3239,7 +3351,7 @@ impl Editor {
             bg: Option<Hsla>,
             color: Option<Hsla>,
         }
-        let marks: Vec<Mark> = self
+        let mut marks: Vec<Mark> = self
             .decorations
             .iter()
             .flat_map(|(_, group)| group)
@@ -3253,6 +3365,21 @@ impl Editor {
                 color: d.color.map(|color| color.of(theme)),
             })
             .collect();
+        // The places of the name under the cursor: brighter where it is
+        // written.
+        marks.extend(self.doc_highlights.iter().map(|(range, write)| Mark {
+            start: range.start,
+            end: range.end,
+            whole_line: false,
+            sign: None,
+            text: None,
+            bg: Some(if *write {
+                theme.list_active
+            } else {
+                theme.list_hover
+            }),
+            color: None,
+        }));
 
         let mut frame = Frame {
             bounds,
@@ -4147,6 +4274,7 @@ impl Render for Editor {
         self.vim_lang.tab_width = self.tab_width(cx);
         self.vim_lang.wrap = self.wrap_cells;
         self.request_hints(cx);
+        self.request_highlights(cx);
         self.request_git_diff(cx);
         let mut key_context = KeyContext::default();
         key_context.add("Editor");
@@ -4467,6 +4595,16 @@ pub(crate) fn register(commands: &mut Commands) {
         "editor.goto_implementation",
         "Go to the implementations of the symbol under the cursor",
         E(|editor, _, cx| editor.goto_implementation(cx)),
+    );
+    commands.register(
+        "editor.incoming_calls",
+        "List what calls the function under the cursor",
+        E(|editor, _, cx| editor.show_calls(true, cx)),
+    );
+    commands.register(
+        "editor.outgoing_calls",
+        "List what the function under the cursor calls",
+        E(|editor, _, cx| editor.show_calls(false, cx)),
     );
     commands.register(
         "editor.document_symbols",

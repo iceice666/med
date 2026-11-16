@@ -31,6 +31,7 @@
 //! (walk-files (fn (files) ...))   ; every file, as a path from the root
 //! (fuzzy "mnrs" files 100)        ; the ones a few letters mean, best first
 //! (grep "needle" 500 (fn (places) ...))   ; ((:path :file :line :col :text)...)
+//! (workspace-symbols "name" 500 (fn (places) ...))  ; the same, :text the symbol
 //!
 //! (git 'status (fn (files problem) ...))
 //! (git 'commit "message" (fn (output problem) ...))
@@ -466,6 +467,51 @@ pub(crate) fn define_functions(interp: &mut Interp) {
                 return;
             }
             let places = Value::list(hits.into_iter().map(hit_value));
+            cx.update(|cx| script::call_back(origin, callback, vec![places], cx));
+        })
+        .detach();
+        Ok(Value::Nil)
+    });
+
+    // (workspace-symbols query limit function): the symbols of the project
+    // whose names match, as the language servers running find them, each
+    // a place as `grep` gives them with the symbol's kind and name as its
+    // text; none when no server running can look. As with `grep`, the last
+    // one asked for is the one answered.
+    interp.define_native("workspace-symbols", 3, |call, args| {
+        let query = args[0].as_str()?.to_string();
+        let limit = count("workspace-symbols", &args[1])?;
+        let callback = callback("workspace-symbols", &args[2])?;
+        let cx = script::app(call)?;
+        let root = project("workspace-symbols", cx)?;
+        let origin = script::origin(cx);
+        let Some(lsp) = script::in_workspace(cx, |workspace, _, _| workspace.lsp()) else {
+            return Err(failed("workspace-symbols: there is no window to look from"));
+        };
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let script = cx.global_mut::<Script>();
+        std::mem::replace(&mut script.search, cancel.clone()).store(true, Ordering::Relaxed);
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            executor.timer(SEARCH_DELAY).await;
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let request = cx.update(|cx| lsp.read(cx).workspace_symbols(&query));
+            let found = match request {
+                Some(request) => request.await,
+                None => Vec::new(),
+            };
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let places = Value::list(found.into_iter().take(limit).filter_map(|place| {
+                let path = crate::lsp::uri_to_path(&place.location.uri)?;
+                let start = place.location.range.start;
+                let (line, column) = (start.line as usize, start.character as usize);
+                Some(location(&root, path, line, column, place.label))
+            }));
             cx.update(|cx| script::call_back(origin, callback, vec![places], cx));
         })
         .detach();

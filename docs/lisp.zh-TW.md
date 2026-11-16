@@ -123,6 +123,7 @@
 | `(walk-files function)` | 專案的每個檔案，以相對於根目錄的路徑表示 |
 | `(fuzzy query list limit)` | 幾個字母所能代表的文字，最佳者優先 |
 | `(grep query limit function)` | 符合的行：`((:path :file :line :col :text)...)` |
+| `(workspace-symbols query limit function)` | 執行中的語言伺服器找到的專案符號，格式同 `grep` 的位置，`:text` 是種類和名稱 |
 | `(git what arguments... function)` | 存放庫：見 `crates/med/src/host.rs` |
 | `(bindings table [keys])` | 在模式或面板的表中，可接在 `keys` 之後的按鍵 |
 | `(after milliseconds function)` | 在那麼多毫秒後呼叫，並回傳一個計時器，可用 `(cancel timer)` 取消 |
