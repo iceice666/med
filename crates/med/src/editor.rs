@@ -88,6 +88,22 @@ fn hint_text(hint: &lsp::InlayHint) -> String {
     text
 }
 
+/// A fold's ends through an edit: after what it took out, moved by it;
+/// in it, to the end of what it put in, so that a fold taken out whole
+/// comes to nothing.
+fn shift_fold(fold: &mut Range<usize>, edit: &med_core::Edit) {
+    let shift = |offset: usize| {
+        if offset >= edit.old_end_char {
+            offset + edit.new_end_char - edit.old_end_char
+        } else if offset <= edit.start_char {
+            offset
+        } else {
+            edit.new_end_char
+        }
+    };
+    *fold = shift(fold.start)..shift(fold.end);
+}
+
 fn shift_range(start: &mut usize, end: &mut usize, edit: &med_core::Edit) {
     let delta = edit.new_end_char as isize - edit.old_end_char as isize;
     let shift = |offset: usize| (offset as isize + delta).max(0) as usize;
@@ -2579,7 +2595,7 @@ impl Editor {
                     }
                 }
                 for fold in &mut self.folds {
-                    shift_range(&mut fold.start, &mut fold.end, edit);
+                    shift_fold(fold, edit);
                 }
                 // A token the edit touches is no longer known; those
                 // after it move with the text.

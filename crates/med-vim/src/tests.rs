@@ -385,6 +385,16 @@ fn a_closed_fold_is_one_line() {
     assert_eq!(folded(text, "2j"), "aa\nb {\nc\nd\n|}\ne");
     assert_eq!(folded(text, "Gk"), "aa\nb {\nc\nd\n|}\ne");
     assert_eq!(folded(text, "Gkk"), "aa\n|b {\nc\nd\n}\ne");
+    // Whole lines take in all of a closed fold: `dd`, a count, `j` after
+    // an operator, and a selection of lines.
+    assert_eq!(folded(text, "jdd"), "aa\n|}\ne");
+    assert_eq!(folded(text, "j2dd"), "aa\n|e");
+    assert_eq!(folded(text, "dj"), "|}\ne");
+    assert_eq!(folded(text, "Gkdk"), "aa\n|e");
+    assert_eq!(folded(text, "jVd"), "aa\n|}\ne");
+    assert_eq!(folded(text, "jyyGp"), "aa\nb {\nc\nd\n}\ne\n|b {\nc\nd");
+    // What is not whole lines is as it is.
+    assert_eq!(folded(text, "jx"), "aa\nb|{\nc\nd\n}\ne");
     // Where lines wrap, `gj` too.
     let mut h = Harness::new("b| {\nc\nd\n}");
     h.lang.hidden = Hidden::new(vec![(1, 2)]);

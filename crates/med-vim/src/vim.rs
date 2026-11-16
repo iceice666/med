@@ -2146,7 +2146,8 @@ impl Vim {
         } else if self.pending.op == Some(op) {
             let n = self.pending.count().unwrap_or(1).max(1);
             let line = cx.buf.line_of(self.cursor);
-            let last = (line + n - 1).min(cx.buf.last_line());
+            // `n` lines on screen: a closed fold is one.
+            let last = cx.lang.hidden.down(line, n - 1, cx.buf.last_line());
             self.apply_operator(op, Target::Lines(line, last), cx);
             self.reset_pending();
         } else if self.pending.op.is_some() {
@@ -2239,6 +2240,16 @@ impl Vim {
     }
 
     fn apply_operator(&mut self, op: Operator, target: Target, cx: &mut Ctx<'_>) {
+        // Whole lines take in a closed fold they start or end on, all of
+        // it, as vim's do: `dd` on one deletes what it hides too.
+        let target = match target {
+            Target::Lines(a, b) => {
+                let hidden = &cx.lang.hidden;
+                let b = hidden.around(b + 1).map_or(b, |(_, last)| last);
+                Target::Lines(hidden.shown(a), b)
+            }
+            chars => chars,
+        };
         if self.mode.is_visual() {
             self.last_visual = Some((self.anchor, self.cursor, self.mode));
         }
@@ -2687,7 +2698,7 @@ impl Vim {
     fn repeat_op_on_lines(&mut self, op: Operator, cx: &mut Ctx<'_>) {
         let n = self.pending.count().unwrap_or(1).max(1);
         let line = cx.buf.line_of(self.cursor);
-        let last = (line + n - 1).min(cx.buf.last_line());
+        let last = cx.lang.hidden.down(line, n - 1, cx.buf.last_line());
         self.apply_operator(op, Target::Lines(line, last), cx);
     }
 

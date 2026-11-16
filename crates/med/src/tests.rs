@@ -1328,6 +1328,14 @@ fn folds_hide_lines_that_keys_and_the_view_go_over(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("u");
     assert_eq!(folds(cx), [(0, 21)]);
 
+    // `dd` on a closed fold deletes all of it, and the fold with it.
+    cx.simulate_keystrokes("g g d d");
+    let after = editor.read_with(cx, |e, _| e.buf.text());
+    assert!(after.starts_with("fn b() {\n"), "{after}");
+    assert_eq!(folds(cx), []);
+    cx.simulate_keystrokes("u z c");
+    assert_eq!(folds(cx), [(0, 21)]);
+
     // Where lines wrap as well.
     assert_eq!(lisp("(set-option 'wrap true)", cx), "nil");
     cx.simulate_keystrokes("g g j");

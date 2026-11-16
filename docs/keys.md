@@ -147,9 +147,11 @@ line, and comments on lines that follow each other as one. A file with
 no grammar folds by indent: a line, and the lines indented further after
 it. A closed fold shows its first line, a `▸` beside its number and how
 many lines it hides after its end. `j`, `k`, `gj`, `gk`, `H`, `M`, `L`,
-paging and relative line numbers count it as one line; a search, a jump
-or an edit that comes to a line in it opens it. Folds follow the text as
-it is edited.
+paging and relative line numbers count it as one line, and so do counts
+and motions after an operator: what acts on whole lines (`dd`, `yy`,
+`cc`, `>>`, `dj`, a selection of lines) takes in all of a closed fold it
+starts or ends on. A search, a jump or an edit that comes to a line in it
+opens it. Folds follow the text as it is edited.
 
 `(set-option 'sticky-scroll true)` keeps the first lines of the
 functions, types and modules the top of the view is in standing at its
