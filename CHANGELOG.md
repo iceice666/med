@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/iceice666/med/compare/v0.1.1...v0.2.0) - 2026-11-16
+
+### Added
+
+- *(med/panel)* let a program's bar draw the : cursor
+- *(med/lsp)* set up language servers from the init file
+- *(med/workspace)* say in a popup how to get keys
+- *(med/editor)* draw indent guides
+- *(med/editor)* show inlay hints
+- *(med/editor)* add a theme option
+- *(med-vim/motion)* move by rows of the screen with gj and gk
+- *(med/editor)* add a wrap option
+- *(med/editor)* keep undo history across runs
+- *(med/editor)* add cursor-line and color-column options
+- *(med/editor)* add a scroll-off option
+- *(med/editor)* let a tab have options of its own
+- *(med/editor)* add a relative-number option
+- *(med/workspace)* restore a project's session
+- *(med/editor)* add a tab-width option
+- *(med/syntax)* highlight med-lisp files
+- *(med/examples)* [**breaking**] name med-lisp files .mlisp
+- *(med/examples)* edit directories as oil.nvim does
+- *(med/script)* make empty files and read every scratch tab
+- *(med/examples)* hide the file tree until asked for
+- *(med/examples)* list a table's keys at once on ?
+- *(med/script)* drive terminals from programs
+- *(med/workspace)* open a terminal in a pane
+- *(med-term/terminal)* run programs on a pty
+
+### Fixed
+
+- *(med/editor)* compose with the input method on the : line
+- *(med/app)* let tab reach the editor in a window
+- *(med-vim/visual)* keep gv on the lines edits moved
+- *(med/vim)* match * and # in any case
+
 ## [0.1.1](https://github.com/iceice666/med/compare/v0.1.0...v0.1.1) - 2026-11-16
 
 ### Added
