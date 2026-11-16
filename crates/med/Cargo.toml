@@ -25,6 +25,8 @@ regex = "1"
 # Must stay on the tree-sitter that gpui-component's grammars are built for.
 tree-sitter = "0.26"
 tree-sitter-nix = "0.3"
+# The grammar med-lisp is read with, for its highlighting.
+tree-sitter-scheme = "0.25"
 ignore = "0.4"
 nucleo-matcher = "0.3"
 # blink.cmp's fuzzy matcher, for LSP completion.

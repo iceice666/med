@@ -87,6 +87,7 @@ static LANGS: &[LangInfo] = &[
     lang("css", "css", &["css", "scss"], None, 2),
     lang("yaml", "yaml", &["yaml", "yml"], Some("#"), 2),
     lang("lua", "lua", &["lua"], Some("--"), 2),
+    lang("mlisp", "mlisp", &["mlisp"], Some(";"), 2),
     lang("zig", "zig", &["zig"], Some("//"), 4),
     LangInfo {
         filenames: &["flake.lock"],
@@ -136,6 +137,12 @@ fn load_grammar(name: &str) -> Option<Grammar> {
         (
             tree_sitter::Language::from(tree_sitter_nix::LANGUAGE),
             tree_sitter_nix::HIGHLIGHTS_QUERY.to_string(),
+        )
+    } else if name == "mlisp" {
+        // med-lisp reads as Scheme; the query is ours, for its own forms.
+        (
+            tree_sitter::Language::from(tree_sitter_scheme::LANGUAGE),
+            include_str!("mlisp-highlights.scm").to_string(),
         )
     } else {
         let config = LanguageRegistry::singleton().language(name)?;
@@ -616,6 +623,10 @@ mod tests {
         assert_eq!(lang_for_path(Path::new("Makefile")).unwrap().name, "make");
         assert_eq!(lang_for_path(Path::new("a/flake.nix")).unwrap().name, "nix");
         assert_eq!(lang_for_path(Path::new("x.HPP")).unwrap().name, "cpp");
+        assert_eq!(
+            lang_for_path(Path::new("init.mlisp")).unwrap().name,
+            "mlisp"
+        );
         assert!(lang_for_path(Path::new("notes.txt")).is_none());
     }
 
@@ -651,6 +662,69 @@ mod tests {
             "{names:?}"
         );
         assert!(buf.text().contains("let x = 42;"));
+    }
+
+    /// What paints `needle`: the capture drawn last over it.
+    fn painted(syntax: &Syntax, buf: &Buffer, needle: &str) -> String {
+        names_at(syntax, buf, needle).pop().unwrap_or_default()
+    }
+
+    #[test]
+    fn highlights_med_lisp() {
+        let lang = lang_for_path(Path::new("init.mlisp")).unwrap();
+        assert_eq!(lang.name, "mlisp");
+        let buf = Buffer::new(
+            "; c\n\
+             (defn leader (chord cmd)\n\
+             \x20 (bind 'normal (str \"<Space>\" chord) cmd :at 1))\n\
+             (def lines nil)\n\
+             (let ((count 0)) (when true (+ count 2)))\n",
+        );
+        let syntax = Syntax::new(lang, &buf).unwrap();
+        for (needle, name) in [
+            ("; c", "comment"),
+            ("defn", "keyword"),
+            ("leader", "function"),
+            ("chord", "variable"),
+            ("bind", "function"),
+            ("'", "punctuation.special"),
+            ("normal", "string.special.symbol"),
+            ("\"<Space>\"", "string"),
+            (":at", "string.special.symbol"),
+            ("1", "number"),
+            ("lines", "variable.special"),
+            ("nil", "constant.builtin"),
+            ("let", "keyword"),
+            ("count", "variable"),
+            ("when", "keyword"),
+            ("true", "boolean"),
+            ("+", "operator"),
+            ("(", "punctuation.bracket"),
+        ] {
+            assert_eq!(painted(&syntax, &buf, needle), name, "{needle}");
+        }
+    }
+
+    /// The Scheme grammar reads every example without an error.
+    #[test]
+    fn reads_the_examples_without_errors() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_scheme::LANGUAGE.into())
+            .unwrap();
+        let mut read = 0;
+        for entry in std::fs::read_dir(examples).unwrap() {
+            let path = entry.unwrap().path();
+            if lang_for_path(&path).map(|l| l.name) != Some("mlisp") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let tree = parser.parse(&text, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{}", path.display());
+            read += 1;
+        }
+        assert!(read > 0);
     }
 
     #[test]
