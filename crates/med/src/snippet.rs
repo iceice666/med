@@ -1,18 +1,38 @@
 //! Snippets, as language servers write completions that have places to
-//! fill in: `add(${1:a}, ${2:b})$0`. Only the text is made of them, and
-//! where the cursor goes: there is no going from one place to the next.
+//! fill in: `add(${1:a}, ${2:b})$0`. What is made of one is its text and
+//! the places in it, in the order they are to be gone through, each with
+//! every range that is to have the same text.
 //!
 //! A tabstop (`$1`, `${1}`) is nothing, a placeholder (`${1:a}`) its text,
 //! a choice (`${1|a,b|}`) its first, and a variable (`$TM_FILENAME`,
 //! `${TM_FILENAME:default}`) its default or nothing. `\` takes the `$`, `}`
 //! or `\` after it as it is.
 
-/// A snippet's text, and where in it the cursor goes, in chars: the first
-/// place to fill in, else the end of the snippet (`$0`), else the end.
+use std::ops::Range;
+
+/// A snippet's text, and its places, in chars: the ones to fill in, in
+/// order, then the one the cursor ends at (`$0`, else the end). The first
+/// range of a place is the one typed in; the rest follow it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Expanded {
     pub text: String,
-    pub cursor: usize,
+    pub stops: Vec<Vec<Range<usize>>>,
+}
+
+impl Expanded {
+    /// Where the cursor goes first: the first place to fill in, else the
+    /// end.
+    pub fn cursor(&self) -> usize {
+        self.stops
+            .first()
+            .and_then(|stop| stop.first())
+            .map_or(0, |range| range.start)
+    }
+
+    /// Whether there is anywhere to go from where the cursor goes first.
+    pub fn has_places(&self) -> bool {
+        self.stops.len() > 1
+    }
 }
 
 pub fn expand(snippet: &str) -> Expanded {
@@ -24,16 +44,38 @@ pub fn expand(snippet: &str) -> Expanded {
         stops: Vec::new(),
     };
     parser.any(false);
-    let first = parser
+    let mut numbers: Vec<u32> = parser
         .stops
         .iter()
-        .filter(|(n, _)| *n > 0)
-        .min_by_key(|(n, _)| *n);
-    let last = parser.stops.iter().find(|(n, _)| *n == 0);
-    let cursor = first.or(last).map_or(parser.len, |&(_, at)| at);
+        .map(|(n, _)| *n)
+        .filter(|n| *n > 0)
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let group = |number: u32| -> Vec<Range<usize>> {
+        let mut ranges: Vec<Range<usize>> = parser
+            .stops
+            .iter()
+            .filter(|(n, _)| *n == number)
+            .map(|(_, range)| range.clone())
+            .collect();
+        ranges.sort_by_key(|range| range.start);
+        // The one typed in: the first with a placeholder, else the first.
+        if let Some(at) = ranges.iter().position(|range| !range.is_empty()) {
+            let typed = ranges.remove(at);
+            ranges.insert(0, typed);
+        }
+        ranges
+    };
+    let mut stops: Vec<Vec<Range<usize>>> = numbers.into_iter().map(group).collect();
+    let last = group(0);
+    stops.push(match last.is_empty() {
+        true => std::iter::once(parser.len..parser.len).collect(),
+        false => last,
+    });
     Expanded {
         text: parser.text,
-        cursor,
+        stops,
     }
 }
 
@@ -41,12 +83,11 @@ pub fn expand(snippet: &str) -> Expanded {
 /// after the first indented as much, and each tab one `unit` of indent.
 pub fn reindent(expanded: Expanded, indent: &str, unit: &str) -> Expanded {
     let mut text = String::with_capacity(expanded.text.len());
+    // Where each place of the text is now.
+    let mut moved = Vec::with_capacity(expanded.text.len() + 1);
     let mut len = 0;
-    let mut cursor = None;
-    for (at, c) in expanded.text.chars().enumerate() {
-        if at == expanded.cursor {
-            cursor = Some(len);
-        }
+    for c in expanded.text.chars() {
+        moved.push(len);
         match c {
             '\t' => {
                 text.push_str(unit);
@@ -63,10 +104,18 @@ pub fn reindent(expanded: Expanded, indent: &str, unit: &str) -> Expanded {
             }
         }
     }
-    Expanded {
-        text,
-        cursor: cursor.unwrap_or(len),
-    }
+    moved.push(len);
+    let at = |offset: usize| moved.get(offset).copied().unwrap_or(len);
+    let stops = expanded
+        .stops
+        .into_iter()
+        .map(|stop| {
+            stop.into_iter()
+                .map(|range| at(range.start)..at(range.end))
+                .collect()
+        })
+        .collect();
+    Expanded { text, stops }
 }
 
 struct Parser {
@@ -75,9 +124,8 @@ struct Parser {
     text: String,
     /// The length of `text`, in chars.
     len: usize,
-    /// Each tabstop and placeholder: its number and where it starts, the
-    /// first of a number first.
-    stops: Vec<(u32, usize)>,
+    /// Each tabstop, placeholder and choice: its number and its text.
+    stops: Vec<(u32, Range<usize>)>,
 }
 
 impl Parser {
@@ -149,7 +197,7 @@ impl Parser {
         match self.peek() {
             Some(c) if c.is_ascii_digit() => {
                 let n = self.number();
-                self.stops.push((n, self.len));
+                self.stops.push((n, self.len..self.len));
             }
             // A variable: nothing is known of any.
             Some(c) if c.is_ascii_alphabetic() || c == '_' => self.skip_name(),
@@ -158,8 +206,12 @@ impl Parser {
                 let ok = match self.peek() {
                     Some(c) if c.is_ascii_digit() => {
                         let n = self.number();
-                        self.stops.push((n, self.len));
-                        self.after_stop()
+                        let from = self.len;
+                        let ok = self.after_stop();
+                        // After what is in it, which may have places of
+                        // its own.
+                        self.stops.push((n, from..self.len));
+                        ok
                     }
                     Some(c) if c.is_ascii_alphabetic() || c == '_' => {
                         self.skip_name();
@@ -259,12 +311,43 @@ impl Parser {
 }
 
 #[cfg(test)]
+// A place's ranges are a list, even of one.
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 
     fn expanded(snippet: &str) -> (String, usize) {
-        let Expanded { text, cursor } = expand(snippet);
-        (text, cursor)
+        let expanded = expand(snippet);
+        let cursor = expanded.cursor();
+        (expanded.text, cursor)
+    }
+
+    fn places(snippet: &str) -> Vec<Vec<Range<usize>>> {
+        expand(snippet).stops
+    }
+
+    /// Each place to fill in, by its number, then where the cursor ends;
+    /// a place written more than once has each of its ranges, the one
+    /// with a placeholder first.
+    #[test]
+    fn the_places_go_by_their_numbers() {
+        assert_eq!(
+            places("add(${1:a}, ${2:b})$0"),
+            [vec![4..5], vec![7..8], vec![9..9]]
+        );
+        // No `$0`: the end.
+        assert_eq!(places("f($2, $1)"), [vec![4..4], vec![2..2], vec![5..5]]);
+        assert_eq!(places("plain"), [vec![5..5]]);
+        assert_eq!(
+            places("${1:foo(${2:x})} $0"),
+            [vec![0..6], vec![4..5], vec![7..7]]
+        );
+        assert_eq!(
+            places("$1 = ${1:name}; $1"),
+            [vec![3..7, 0..0, 9..9], vec![9..9]]
+        );
+        assert!(!expand("x$0").has_places());
+        assert!(expand("x$1").has_places());
     }
 
     #[test]
@@ -314,8 +397,9 @@ mod tests {
     #[test]
     fn a_snippet_takes_the_indent_of_its_line() {
         let indented = |snippet: &str| {
-            let Expanded { text, cursor } = reindent(expand(snippet), "    ", "  ");
-            (text, cursor)
+            let expanded = reindent(expand(snippet), "    ", "  ");
+            let cursor = expanded.cursor();
+            (expanded.text, cursor)
         };
         assert_eq!(
             indented("if $1 {\n\t$0\n}"),
@@ -327,6 +411,11 @@ mod tests {
         );
         assert_eq!(indented("foo($1)"), ("foo()".into(), 4));
         assert_eq!(indented("x\n"), ("x\n    ".into(), 6));
+        // Every place moves with the text.
+        assert_eq!(
+            reindent(expand("{\n\t${1:a}\n}$0"), "  ", "\t").stops,
+            [vec![5..6], vec![10..10]]
+        );
     }
 
     /// `\` takes what follows as it is; a `$` that starts nothing is a `$`.

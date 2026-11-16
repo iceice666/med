@@ -194,6 +194,34 @@ async fn scenario(
     })
     .await?;
     println!("ok  signature after the completion");
+    // What is typed takes the place of the first parameter's placeholder,
+    // and Tab goes on to the second, the signature with it. (While the
+    // call still has the placeholder `int a` in it, clangd cannot tell
+    // which argument the cursor is at.)
+    editor.update(cx, |editor, cx| {
+        editor.type_text("1", cx);
+        editor.press(Key::Tab, cx);
+    });
+    let after = editor.read_with(cx, |e, _| {
+        let end = e.buf.line_start(6) + e.buf.line_string(6).chars().count();
+        e.buf.slice_string(e.vim.cursor..end)
+    });
+    if after != "int b)" {
+        return Err(format!("after Tab, the cursor is before {after:?}"));
+    }
+    wait_for("the second parameter after Tab", &editor, cx, |e| {
+        e.signature_text()
+            .is_some_and(|(_, active)| active == Some("int b"))
+    })
+    .await
+    .map_err(|error| {
+        let shown = editor.read_with(cx, |e, _| {
+            e.signature_text()
+                .map(|(label, active)| (label.to_string(), active.map(str::to_string)))
+        });
+        format!("{error}: {shown:?}")
+    })?;
+    println!("ok  tab to the next place of the snippet");
     // As it was, for the signature to be asked for as `(` is typed.
     editor.update(cx, |editor, cx| {
         editor.press(Key::Esc, cx);

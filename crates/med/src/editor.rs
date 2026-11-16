@@ -170,6 +170,57 @@ struct CompletionMenu {
     start: usize,
 }
 
+/// A snippet put in, while its places are being filled in.
+struct SnippetSession {
+    /// Its places, in the order `Tab` goes through them, each with every
+    /// range that has its text, the one typed in first; the last is where
+    /// the cursor ends up.
+    stops: Vec<Vec<Range<usize>>>,
+    current: usize,
+    /// The placeholder of the place the cursor is at is as the snippet
+    /// put it: what is typed there first takes its place.
+    fresh: bool,
+}
+
+impl SnippetSession {
+    /// From the start of the first place to the end of the last.
+    fn contains(&self, offset: usize) -> bool {
+        let ranges = self.stops.iter().flatten();
+        let start = ranges.clone().map(|r| r.start).min();
+        let end = ranges.map(|r| r.end).max();
+        matches!((start, end), (Some(start), Some(end)) if start <= offset && offset <= end)
+    }
+}
+
+/// Keep a place of a snippet on its text through an edit. One of the place
+/// being filled in (`active`) takes in what is typed at either end of it;
+/// another moves on from what is typed at its start.
+fn shift_place(range: &mut Range<usize>, edit: &med_core::Edit, active: bool) {
+    let (start, old_end, new_end) = (edit.start_char, edit.old_end_char, edit.new_end_char);
+    let moved =
+        |offset: usize| (offset as isize + new_end as isize - old_end as isize).max(0) as usize;
+    if active && start >= range.start && old_end <= range.end {
+        range.end = moved(range.end);
+        return;
+    }
+    let follow = |offset: usize| {
+        if offset < start || (offset == start && start != old_end) {
+            offset
+        } else if offset >= old_end {
+            moved(offset)
+        } else {
+            new_end
+        }
+    };
+    // What is typed at its start goes before it.
+    let at_start = start == old_end && start == range.start;
+    let (from, to) = match at_start {
+        true => (moved(range.start), moved(range.end)),
+        false => (follow(range.start), follow(range.end)),
+    };
+    *range = from..to.max(from);
+}
+
 /// The code actions on offer, to choose one from.
 struct ActionMenu {
     /// Each with the server that offered it, which is to run its command.
@@ -344,6 +395,8 @@ pub struct Editor {
     decorations: Vec<(SharedString, Vec<Decoration>)>,
     completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
+    /// The snippet whose places are being filled in.
+    snippet: Option<SnippetSession>,
     /// `Tab` going through what the `:` line could be.
     cmdline_completion: Option<crate::cmdline::Completion>,
     /// The project's root, which a file named on the command line is
@@ -791,8 +844,9 @@ pub(crate) fn translate_key(keystroke: &Keystroke, mode: Mode) -> Option<Key> {
         "enter" => Some(Key::Enter),
         "backspace" => Some(Key::Backspace),
         "delete" => Some(Key::Delete),
-        // Back through what the command line completes to.
-        "tab" if m.shift && mode == Mode::Command => Some(Key::BackTab),
+        // Back through what the command line completes to, or the places
+        // of a snippet.
+        "tab" if m.shift && matches!(mode, Mode::Command | Mode::Insert) => Some(Key::BackTab),
         "tab" => Some(Key::Tab),
         "left" => Some(Key::Left),
         "right" => Some(Key::Right),
@@ -912,6 +966,7 @@ impl Editor {
             decorations: Vec::new(),
             completion: None,
             completion_task: None,
+            snippet: None,
             cmdline_completion: None,
             root: None,
             key_timeout: None,
@@ -2040,6 +2095,7 @@ impl Editor {
 
     /// Text typed by the user, including input-method commits.
     pub fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.type_over_placeholder(None, cx);
         self.hover = None;
         cx.emit(EditorEvent::KeyPress);
         let effects = self.with_vim(cx, |vim, ctx| vim.type_text(text, ctx));
@@ -2305,10 +2361,13 @@ impl Editor {
             self.cmdline_preedit = None;
             self.cmdline_caret = None;
         }
-        // Marks follow the edits made here as they do the engine's own.
-        self.vim.sync(&self.buf);
-        let edits = self.buf.take_edits();
-        if !edits.is_empty() {
+        loop {
+            // Marks follow the edits made here as they do the engine's own.
+            self.vim.sync(&self.buf);
+            let edits = self.buf.take_edits();
+            if edits.is_empty() {
+                break;
+            }
             if let Some(syntax) = &mut self.syntax {
                 syntax.update(&self.buf, &edits);
             }
@@ -2359,6 +2418,28 @@ impl Editor {
                     store.change(path, version, changes, || buf.text())
                 });
             }
+            if let Some(session) = &mut self.snippet {
+                for edit in &edits {
+                    for (at, stop) in session.stops.iter_mut().enumerate() {
+                        for range in stop {
+                            shift_place(range, edit, at == session.current);
+                        }
+                    }
+                }
+            }
+            // The other ranges of the place typed in follow it: more edits,
+            // seen to in turn.
+            if !self.mirror_snippet() {
+                break;
+            }
+        }
+        // The snippet is done with once its places are left.
+        if self
+            .snippet
+            .as_ref()
+            .is_some_and(|s| self.vim.mode != Mode::Insert || !s.contains(self.vim.cursor))
+        {
+            self.snippet = None;
         }
         if self.vim.mode != Mode::Insert {
             self.marked = None;
@@ -3087,6 +3168,114 @@ impl Editor {
         }));
     }
 
+    // ---- the places of a snippet ------------------------------------------
+
+    /// Make the other ranges of the place being filled in have the text of
+    /// the one typed in, if they do not. Whether there was anything to do.
+    fn mirror_snippet(&mut self) -> bool {
+        let Some(session) = &self.snippet else {
+            return false;
+        };
+        let stop = &session.stops[session.current];
+        let Some(typed) = stop.first() else {
+            return false;
+        };
+        let text = self.buf.slice_string(typed.clone());
+        let mut stale: Vec<Range<usize>> = stop[1..]
+            .iter()
+            .filter(|range| self.buf.slice_string((*range).clone()) != text)
+            .cloned()
+            .collect();
+        if stale.is_empty() {
+            return false;
+        }
+        // The last first, for the ones before to stay where they are.
+        stale.sort_by_key(|range| std::cmp::Reverse(range.start));
+        let len = text.chars().count() as isize;
+        for range in stale {
+            if range.end <= self.vim.cursor {
+                let cursor = self.vim.cursor as isize + len - range.len() as isize;
+                self.vim.cursor = cursor.max(0) as usize;
+            }
+            self.buf.edit(range, &text);
+        }
+        true
+    }
+
+    /// Go `step` places on in the snippet, or back. At its last place it
+    /// is done with.
+    fn snippet_jump(&mut self, step: isize, cx: &mut Context<Self>) {
+        let Some(session) = &mut self.snippet else {
+            return;
+        };
+        let last = session.stops.len() - 1;
+        let next = (session.current as isize + step).clamp(0, last as isize) as usize;
+        session.current = next;
+        session.fresh = true;
+        let target = session.stops[next]
+            .first()
+            .map_or(self.vim.cursor, |r| r.start);
+        if next == last {
+            self.snippet = None;
+        }
+        self.vim.cursor = target;
+        self.completion = None;
+        self.after_change(cx);
+        // What is being called follows the cursor to its next argument.
+        if self.signature.is_some() {
+            self.request_signature(cx);
+        }
+    }
+
+    /// `Tab` and `S-Tab` while a snippet is being filled in, and nothing
+    /// else wants them. Returns true if consumed.
+    fn snippet_key(&mut self, key: &Key, cx: &mut Context<Self>) -> bool {
+        if self.snippet.is_none() || self.vim.mode != Mode::Insert {
+            return false;
+        }
+        match key {
+            Key::Tab => self.snippet_jump(1, cx),
+            Key::BackTab => self.snippet_jump(-1, cx),
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// What is typed (`key`, or text when `None`) at the start of a
+    /// placeholder the snippet put there takes its place: the placeholder
+    /// goes first. Returns true if that was all the key was to do, as a
+    /// backspace's is.
+    fn type_over_placeholder(&mut self, key: Option<&Key>, cx: &mut Context<Self>) -> bool {
+        let Some(session) = &mut self.snippet else {
+            return false;
+        };
+        if self.vim.mode != Mode::Insert || !session.fresh {
+            return false;
+        }
+        let typed = session.stops[session.current].first().cloned();
+        let Some(range) = typed.filter(|r| !r.is_empty() && r.start == self.vim.cursor) else {
+            return false;
+        };
+        let consumed = match key {
+            None | Some(Key::Char(_) | Key::Text(_)) => false,
+            Some(Key::Backspace | Key::Delete) => true,
+            Some(_) => return false,
+        };
+        session.fresh = false;
+        self.buf.edit(range, "");
+        self.after_change(cx);
+        consumed
+    }
+
+    /// The places of the snippet being filled in, and which one the
+    /// cursor is at.
+    pub fn snippet_places(&self) -> Option<(usize, Vec<Vec<Range<usize>>>)> {
+        self.snippet
+            .as_ref()
+            .map(|session| (session.current, session.stops.clone()))
+    }
+
     /// Open the menu with `items`, as an answer from a server would.
     #[cfg(test)]
     pub(crate) fn show_completions(&mut self, items: Vec<lsp::CompletionItem>) {
@@ -3162,7 +3351,9 @@ impl Editor {
         let count = menu.filtered.len();
         match key {
             Key::Ctrl('n') | Key::Down => menu.selected = (menu.selected + 1) % count,
-            Key::Ctrl('p') | Key::Up => menu.selected = (menu.selected + count - 1) % count,
+            Key::Ctrl('p') | Key::Up | Key::BackTab => {
+                menu.selected = (menu.selected + count - 1) % count
+            }
             Key::Tab | Key::Enter => self.accept_completion(cx),
             Key::Ctrl('e') => self.completion = None,
             _ => return false,
@@ -3198,7 +3389,8 @@ impl Editor {
         let start = start.min(cursor);
         // A snippet is its text, with the cursor at the first place to
         // fill in.
-        let (text, at) = if item.insert_text_format == Some(lsp::InsertTextFormat::SNIPPET) {
+        let (text, at, places) = if item.insert_text_format == Some(lsp::InsertTextFormat::SNIPPET)
+        {
             let line = self.buf.line_string(self.buf.line_of(start));
             let indent: String = line
                 .chars()
@@ -3206,10 +3398,12 @@ impl Editor {
                 .collect();
             let unit = self.vim_lang.indent_unit();
             let expanded = crate::snippet::reindent(crate::snippet::expand(&text), &indent, &unit);
-            (expanded.text, expanded.cursor)
+            let at = expanded.cursor();
+            let places = expanded.has_places().then_some(expanded.stops);
+            (expanded.text, at, places)
         } else {
             let at = text.chars().count();
-            (text, at)
+            (text, at, None)
         };
         // Resolve extra edits (auto-imports) before the buffer shifts.
         let mut extra: Vec<(usize, usize, String)> = item
@@ -3236,6 +3430,27 @@ impl Editor {
         }
         self.vim.cursor = new_cursor;
         self.after_change(cx);
+        // Its places, to go through with `Tab`; ones of a snippet put in
+        // before are done with.
+        if let Some(stops) = places {
+            let base = new_cursor - at;
+            let stops = stops
+                .into_iter()
+                .map(|stop| {
+                    stop.into_iter()
+                        .map(|r| base + r.start..base + r.end)
+                        .collect()
+                })
+                .collect();
+            self.snippet = Some(SnippetSession {
+                stops,
+                current: 0,
+                fresh: true,
+            });
+            if self.mirror_snippet() {
+                self.after_change(cx);
+            }
+        }
         // A call put in with the cursor in its parentheses: what it takes.
         let before = new_cursor.checked_sub(1).map(|at| self.buf.char_at(at));
         let has_signature = match (&self.lsp, &self.path, before) {
@@ -3262,8 +3477,15 @@ impl Editor {
     pub fn press(&mut self, key: Key, cx: &mut Context<Self>) {
         if !self.menu_key(&key, cx)
             && !self.completion_key(&key, cx)
+            && !self.snippet_key(&key, cx)
             && !self.cmdline_complete(&key, cx)
+            && !self.type_over_placeholder(Some(&key), cx)
         {
+            // With no snippet to go back through, as it was: a tab.
+            let key = match key {
+                Key::BackTab if self.vim.mode == Mode::Insert => Key::Tab,
+                key => key,
+            };
             self.handle_key(key, cx);
         }
     }
@@ -3663,6 +3885,28 @@ impl Editor {
                 color: d.color.map(|color| color.of(theme)),
             })
             .collect();
+        // The places of a snippet still to fill in: the one the cursor is
+        // at as if selected.
+        if let Some(session) = &self.snippet {
+            let last = session.stops.len() - 1;
+            for (at, stop) in session.stops.iter().enumerate().take(last) {
+                for range in stop.iter().filter(|r| !r.is_empty()) {
+                    marks.push(Mark {
+                        start: range.start,
+                        end: range.end,
+                        whole_line: false,
+                        sign: None,
+                        text: None,
+                        bg: Some(if at == session.current {
+                            theme.selection
+                        } else {
+                            theme.list_hover
+                        }),
+                        color: None,
+                    });
+                }
+            }
+        }
         // The places of the name under the cursor: brighter where it is
         // written.
         marks.extend(self.doc_highlights.iter().map(|(range, write)| Mark {

@@ -48,6 +48,7 @@ any case.
 | `space =`, `:format` | format the file |
 | `ctrl-s` (insert) | the signature of what is being called; it comes up by itself after `(` |
 | `ctrl-n` `ctrl-p` `tab` | completion menu: next, previous, accept |
+| `tab` / `shift-tab` (insert, in a snippet) | the next / previous place of a completion to fill in; what is typed at a placeholder takes its place |
 | `tab` / `shift-tab` (on `:`) | complete a command's name, a file after `:e` `:w`, or a topic after `:h`; again for the next / previous match |
 | `ctrl-o` / `ctrl-i` | jump back / forward |
 | `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |

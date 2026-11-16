@@ -1433,6 +1433,104 @@ fn semantic_tokens_follow_the_text(cx: &mut TestAppContext) {
     assert_eq!(texts(cx), [("Point".to_string(), "type")]);
 }
 
+/// Open the completion menu on `line` with one snippet, and accept it.
+fn accept_snippet<'a>(
+    project: &Project,
+    label: &str,
+    snippet: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    Entity<Workspace>,
+    Entity<crate::editor::Editor>,
+    &'a mut VisualTestContext,
+) {
+    let (ws, cx) = open(project, &["a.txt"], cx);
+    let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+    cx.simulate_keystrokes("A");
+    editor.update(cx, |e, _| {
+        e.show_completions(vec![lsp_types::CompletionItem {
+            label: label.into(),
+            insert_text: Some(snippet.into()),
+            insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+            ..Default::default()
+        }])
+    });
+    cx.simulate_keystrokes("tab");
+    (ws, editor, cx)
+}
+
+/// `Tab` goes from place to place of a snippet, and `S-Tab` back; what is
+/// typed at a placeholder takes its place; at the last place the snippet
+/// is done with, and `Tab` is a tab again.
+#[gpui::test]
+fn tab_goes_through_the_places_of_a_snippet(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "x = ad\n")]);
+    let (ws, editor, cx) = accept_snippet(&project, "add", "add(${1:a}, ${2:b})$0", cx);
+    let at = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.vim.cursor);
+    let current = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |e, _| e.snippet_places().map(|(current, _)| current))
+    };
+    assert_eq!(text(&ws, cx), "x = add(a, b)\n");
+    assert_eq!((at(cx), current(cx)), (8, Some(0)));
+    cx.simulate_input("first");
+    assert_eq!(text(&ws, cx), "x = add(first, b)\n");
+    cx.simulate_keystrokes("tab");
+    assert_eq!((at(cx), current(cx)), (15, Some(1)));
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!((at(cx), current(cx)), (8, Some(0)));
+    // Back at a place typed in, it is fresh again: typing replaces it.
+    cx.simulate_input("1");
+    assert_eq!(text(&ws, cx), "x = add(1, b)\n");
+    cx.simulate_keystrokes("tab");
+    // A backspace on a placeholder takes it away, and only it.
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&ws, cx), "x = add(1, )\n");
+    cx.simulate_input("2");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(text(&ws, cx), "x = add(1, 2)\n");
+    assert_eq!((at(cx), current(cx)), (13, None));
+    // Done with, `Tab` indents again.
+    cx.simulate_keystrokes("tab");
+    assert!(at(cx) > 13);
+    assert_eq!(text(&ws, cx).trim_end(), "x = add(1, 2)");
+    // The insert, snippet and all, is one change to undo.
+    cx.simulate_keystrokes("escape u");
+    assert_eq!(text(&ws, cx), "x = ad\n");
+}
+
+/// A place written more than once: what is typed in one is in all.
+#[gpui::test]
+fn the_ranges_of_a_place_follow_the_one_typed_in(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "\n")]);
+    let (ws, editor, cx) = accept_snippet(&project, "let", "let ${1:name} = 1; f($1, $1)$0", cx);
+    assert_eq!(text(&ws, cx), "let name = 1; f(name, name)\n");
+    assert_eq!(editor.read_with(cx, |e, _| e.vim.cursor), 4);
+    cx.simulate_input("count");
+    assert_eq!(text(&ws, cx), "let count = 1; f(count, count)\n");
+    cx.simulate_keystrokes("backspace backspace");
+    assert_eq!(text(&ws, cx), "let cou = 1; f(cou, cou)\n");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.vim.cursor),
+        "let cou = 1; f(cou, cou)".len()
+    );
+}
+
+/// Leaving insert mode, or the snippet, is done with it.
+#[gpui::test]
+fn leaving_a_snippet_is_done_with_it(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "\n")]);
+    let (ws, editor, cx) = accept_snippet(&project, "f", "f(${1:a}, ${2:b})", cx);
+    let filling =
+        |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.snippet_places().is_some());
+    assert!(filling(cx));
+    cx.simulate_keystrokes("escape");
+    assert!(!filling(cx));
+    // `Tab` in insert mode indents once more.
+    cx.simulate_keystrokes("A tab");
+    assert!(text(&ws, cx).starts_with("f(a, b) "));
+}
+
 /// The places of the name under the cursor stay while the cursor is on
 /// one of them, and go when it leaves them or the text changes.
 #[gpui::test]
