@@ -22,7 +22,7 @@
 //! serves it, except that med's own servers for one language are
 //! alternatives (pyright, or else pylsp): the first of those found. What
 //! is asked about the file goes to the first server that can answer it;
-//! diagnostics and code actions come from all of them.
+//! diagnostics, code actions and completions come from all of them.
 //!
 //! `:settings` is what the server reads with `workspace/configuration`,
 //! and is sent with `workspace/didChangeConfiguration` once it has

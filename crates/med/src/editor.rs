@@ -144,6 +144,9 @@ struct StickyHeader {
 
 struct CompletionMenu {
     items: Vec<lsp::CompletionItem>,
+    /// For each item, the place of the server it came from among those
+    /// asked: what is asked of the first comes first among equals.
+    ranks: Vec<usize>,
     /// Indices into `items` that match what has been typed, best first.
     filtered: Vec<usize>,
     selected: usize,
@@ -1591,7 +1594,7 @@ impl Editor {
             return;
         };
         let is_trigger = match (&self.lsp, &self.path) {
-            (Some(lsp), Some(path)) => lsp.read(cx).completion_triggers(path).contains(&last),
+            (Some(lsp), Some(path)) => lsp.read(cx).triggers_completion(path, last),
             _ => false,
         };
         let has_signature = match (&self.lsp, &self.path) {
@@ -1603,6 +1606,8 @@ impl Editor {
             self.request_signature(cx);
         }
         if is_trigger {
+            // What was on offer before it is for another place.
+            self.completion = None;
             self.request_completion(Some(last), cx);
         } else if is_ident(last) {
             self.refresh_completion();
@@ -2435,13 +2440,11 @@ impl Editor {
         };
         let version = self.buf.version();
         self.completion_task = Some(cx.spawn(async move |this, cx| {
-            let Ok(Some(response)) = request.await else {
+            let (ranks, items): (Vec<usize>, Vec<lsp::CompletionItem>) =
+                request.await.into_iter().unzip();
+            if items.is_empty() {
                 return;
-            };
-            let items = match response {
-                lsp::CompletionResponse::Array(items) => items,
-                lsp::CompletionResponse::List(list) => list.items,
-            };
+            }
             this.update(cx, |this, cx| {
                 if this.buf.version() != version || this.vim.mode != Mode::Insert {
                     return;
@@ -2449,6 +2452,7 @@ impl Editor {
                 let start = this.word_start(this.vim.cursor);
                 this.completion = Some(CompletionMenu {
                     items,
+                    ranks,
                     filtered: Vec::new(),
                     selected: 0,
                     start,
@@ -2491,18 +2495,20 @@ impl Editor {
             ..frizbee::Config::default()
         };
         let matches = frizbee::Matcher::new(typed.as_str(), &config).match_list(&haystacks);
-        // Best score first; the server's `sort_text` breaks ties.
-        let mut scored: Vec<(std::cmp::Reverse<u16>, &str, usize)> = matches
+        // Best score first; among equals the server asked first, then that
+        // server's `sort_text`: one server's cannot be weighed against
+        // another's.
+        let mut scored: Vec<(std::cmp::Reverse<u16>, usize, &str, usize)> = matches
             .into_iter()
             .map(|m| {
                 let index = m.index as usize;
                 let item = &menu.items[index];
                 let order = item.sort_text.as_deref().unwrap_or(&item.label);
-                (std::cmp::Reverse(m.score), order, index)
+                (std::cmp::Reverse(m.score), menu.ranks[index], order, index)
             })
             .collect();
         scored.sort();
-        let filtered: Vec<usize> = scored.into_iter().map(|(_, _, i)| i).take(200).collect();
+        let filtered: Vec<usize> = scored.into_iter().map(|(_, _, _, i)| i).take(200).collect();
         if filtered.is_empty() {
             self.completion = None;
         } else {

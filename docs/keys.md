@@ -349,11 +349,13 @@ adds to that one's files and keeps its highlighting.
 Every server of a file's language serves it, in the order they were set
 up, but of med's own that are alternatives, as the three for Python, the
 first one found. All of them are told of the file's text, and the
-diagnostics and code actions of all of them are shown; a code action is
-run by the server that offered it. Everything else (hover, definition,
-references, rename, completion, signature help, inlay hints, formatting)
-goes to the first that says it can do it, so a second server's
-completions are not shown.
+diagnostics, code actions and completions of all of them are shown; a
+code action is run by the server that offered it. Completions are asked
+of every server that offers them, but after a character that triggers
+them only of the servers that named that character; among equal matches,
+those of the first server come first. Everything else (hover,
+definition, references, rename, signature help, inlay hints, formatting)
+goes to the first that says it can do it.
 
 A server keeps what it was started with: after the init file is changed
 and run again (`:workspace.reload_init`), `:workspace.reload_env` starts

@@ -2,9 +2,10 @@
 //! (`lsp_config`), starting them on demand, document sync, and collected
 //! diagnostics.
 //!
-//! A file can have several servers (tsserver and eslint). Every one of them
-//! is told of its text and gives diagnostics and code actions; anything
-//! else asked about the file goes to the first that says it can answer.
+//! A file can have several servers (tsserver and tailwind). Every one of
+//! them is told of its text and gives diagnostics, code actions and
+//! completions; anything else asked about the file goes to the first that
+//! says it can answer.
 
 use crate::env::{EnvCell, ProjectEnv};
 use crate::lsp_config::{self, ServerConfig};
@@ -708,13 +709,6 @@ impl LspStore {
         (!parts.is_empty()).then(|| parts.join(", "))
     }
 
-    /// Characters that should trigger completion for `path`: those of the
-    /// server completions are asked of.
-    pub fn completion_triggers(&self, path: &Path) -> &[char] {
-        self.ready_server(path, |c| c.completion_provider.is_some())
-            .map_or(&[], |s| s.triggers.as_slice())
-    }
-
     /// Characters after which to ask for the signature of what is called.
     pub fn signature_triggers(&self, path: &Path) -> &[char] {
         self.ready_server(path, |c| c.signature_help_provider.is_some())
@@ -814,13 +808,39 @@ impl LspStore {
         )
     }
 
+    /// The servers of `path` to ask for completions after `trigger`, or
+    /// when asked or a word is typed (`None`).
+    fn completion_servers(&self, path: &Path, trigger: Option<char>) -> Vec<&Server> {
+        let servers: Vec<&Server> = self.ready_servers(path).collect();
+        let offers: Vec<(bool, &[char])> = servers
+            .iter()
+            .map(|s| (s.caps.completion_provider.is_some(), s.triggers.as_slice()))
+            .collect();
+        completion_askees(&offers, trigger, self.all_ready(path))
+            .into_iter()
+            .map(|i| servers[i])
+            .collect()
+    }
+
+    /// Whether typing `c` in `path` asks for completions: whether a server
+    /// of it said so.
+    pub fn triggers_completion(&self, path: &Path, c: char) -> bool {
+        !self.completion_servers(path, Some(c)).is_empty()
+    }
+
+    /// What may be typed at `position`, from every server of `path` that
+    /// has any, each item with the place of its server among those asked:
+    /// the one asked first first.
     pub fn completion(
         &self,
         path: &Path,
         position: lsp::Position,
         trigger: Option<char>,
-    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::CompletionResponse>>> + use<>> {
-        let server = self.ready_server(path, |c| c.completion_provider.is_some())?;
+    ) -> Option<impl Future<Output = Vec<(usize, lsp::CompletionItem)>> + use<>> {
+        let servers = self.completion_servers(path, trigger);
+        if servers.is_empty() {
+            return None;
+        }
         let context = match trigger {
             Some(c) => lsp::CompletionContext {
                 trigger_kind: lsp::CompletionTriggerKind::TRIGGER_CHARACTER,
@@ -831,17 +851,63 @@ impl LspStore {
                 trigger_character: None,
             },
         };
-        Some(
-            server
-                .client
-                .request::<lsp::request::Completion>(lsp::CompletionParams {
-                    text_document_position: Self::position_params(path, position)?,
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                    context: Some(context),
-                }),
-        )
+        let params = lsp::CompletionParams {
+            text_document_position: Self::position_params(path, position)?,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: Some(context),
+        };
+        let requests: Vec<_> = servers
+            .into_iter()
+            .map(|server| {
+                let request = server
+                    .client
+                    .request::<lsp::request::Completion>(params.clone());
+                // One that fails hides nothing the others have.
+                async move { request.await.ok().flatten() }
+            })
+            .collect();
+        Some(async move { completion_items(futures::future::join_all(requests).await) })
     }
+}
+
+/// Of a file's servers, each as whether it offers completions and the
+/// characters it said trigger them, the ones to ask after `trigger`, or
+/// when asked or a word is typed (`None`): every one that offers them and
+/// registered the trigger. With none offering them, once all are ready,
+/// the first, which may know more than it said.
+fn completion_askees(
+    servers: &[(bool, &[char])],
+    trigger: Option<char>,
+    all_ready: bool,
+) -> Vec<usize> {
+    let mut askees: Vec<usize> = (0..servers.len()).filter(|&i| servers[i].0).collect();
+    if askees.is_empty() && all_ready && !servers.is_empty() {
+        askees.push(0);
+    }
+    if let Some(c) = trigger {
+        askees.retain(|&i| servers[i].1.contains(&c));
+    }
+    askees
+}
+
+/// The items of each server's answer, in the order the servers were
+/// asked, each with the place of its server.
+fn completion_items(
+    answers: Vec<Option<lsp::CompletionResponse>>,
+) -> Vec<(usize, lsp::CompletionItem)> {
+    answers
+        .into_iter()
+        .enumerate()
+        .flat_map(|(rank, answer)| {
+            let items = match answer {
+                Some(lsp::CompletionResponse::Array(items)) => items,
+                Some(lsp::CompletionResponse::List(list)) => list.items,
+                None => Vec::new(),
+            };
+            items.into_iter().map(move |item| (rank, item))
+        })
+        .collect()
 }
 
 impl LspStore {
@@ -1124,6 +1190,57 @@ mod tests {
         store.update(cx, |store, cx| store.restart(cx));
         store.read_with(cx, |store, _| assert_eq!(store.status(&file), None));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every server that offers completions is asked, but after a trigger
+    /// only those that registered it; with none offering them, the first,
+    /// once all are ready.
+    #[test]
+    fn completions_are_asked_of_every_server() {
+        let ts: &[char] = &['.', '"'];
+        let tailwind: &[char] = &['"', ' ', '-'];
+        let servers = [(true, ts), (false, &[][..]), (true, tailwind)];
+        assert_eq!(completion_askees(&servers, None, true), [0, 2]);
+        assert_eq!(completion_askees(&servers, Some('.'), true), [0]);
+        assert_eq!(completion_askees(&servers, Some('-'), true), [2]);
+        assert_eq!(completion_askees(&servers, Some('"'), false), [0, 2]);
+        assert!(completion_askees(&servers, Some('('), true).is_empty());
+
+        let silent = [(false, &[][..]), (false, &[][..])];
+        assert_eq!(completion_askees(&silent, None, true), [0]);
+        assert!(completion_askees(&silent, None, false).is_empty());
+        assert!(completion_askees(&silent, Some('.'), true).is_empty());
+        assert!(completion_askees(&[], None, true).is_empty());
+    }
+
+    /// Each server's items, in the order they were asked, with its place;
+    /// one that gave nothing or failed leaves the others'.
+    #[test]
+    fn completions_of_every_server_are_merged() {
+        let item = |label: &str| lsp::CompletionItem {
+            label: label.into(),
+            ..Default::default()
+        };
+        let answers = vec![
+            Some(lsp::CompletionResponse::Array(vec![item("useState")])),
+            None,
+            Some(lsp::CompletionResponse::List(lsp::CompletionList {
+                is_incomplete: true,
+                items: vec![item("bg-red-500"), item("flex")],
+            })),
+        ];
+        let merged: Vec<_> = completion_items(answers)
+            .into_iter()
+            .map(|(rank, item)| (rank, item.label))
+            .collect();
+        assert_eq!(
+            merged,
+            [
+                (0, "useState".to_string()),
+                (2, "bg-red-500".to_string()),
+                (2, "flex".to_string()),
+            ]
+        );
     }
 
     /// Each item asked for gets its section of the settings, or all of them.
