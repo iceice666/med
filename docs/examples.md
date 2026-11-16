@@ -101,7 +101,7 @@ expression. On the marked files, or else the one on the line, `C` copies,
 a regular expression, `D` deletes (`x` the flagged), `M` and `O` change
 the mode and the owner, `T` touches, `Z` compresses and uncompresses, `!`
 runs a shell command (`*` alone in it for all the files, `?` for each),
-and `=` diffs; `+` makes a directory. What asks for a name, or for a y,
+and `=` diffs; `+` makes a directory, and `c` an empty file. What asks for a name, or for a y,
 asks in a popup. `s` lists newest first, `(` hides the details, `g r`
 reads the disk again, `q` closes the listing. With `(set!
 dired-dwim-target true)`, as in Emacs, `C`, `R`, `S` and `H` offer the

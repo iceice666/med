@@ -4690,6 +4690,15 @@ fn a_listing_marks_files_and_does_things_to_them(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("+");
     answer("made", cx);
     assert!(project.path("made").is_dir());
+    // c makes an empty file, and the directories it is in; never one in
+    // the place of a file that is there.
+    cx.simulate_keystrokes("c");
+    answer("new/empty.txt", cx);
+    assert_eq!(std::fs::read(project.path("new/empty.txt")).unwrap(), b"");
+    assert!(text(&ws, cx).lines().any(|line| line == "new/"));
+    cx.simulate_keystrokes("c");
+    answer("a.txt", cx);
+    assert_eq!(project.read("a.txt"), "a\n");
 
     // ! runs a shell command on the file, ? standing for it.
     to(

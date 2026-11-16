@@ -35,6 +35,7 @@
 ;   M O       chmod (755, or u+x) and chown (user, user:group or :group)
 ;   T Z       touch; compress, or uncompress
 ;   + =       make a directory; diff with another file
+;   c         make an empty file, and the directories it is in
 ;   ! & X     a shell command on the files: * in it alone stands for all
 ;             of them, ? for each in turn, and without either they go
 ;             after it
@@ -942,6 +943,13 @@
       (fn (text)
         (let ((wrong (make-dir (dired-expand dir text))))
           (dired-finish dir "made" (if wrong 0 1) (when wrong (list wrong))))))))
+(dired-command "dired.create_file" "Make an empty file"
+  (fn (dir)
+    (dired-ask "Make file:" (dired-tab-name dir)
+      (fn (text)
+        (let ((path (dired-expand dir text)))
+          (let ((wrong (or (make-dir (path-parent path)) (make-file path))))
+            (dired-finish dir "made" (if wrong 0 1) (when wrong (list wrong)))))))))
 (dired-command "dired.chmod" "Change the permissions of the files"
   (fn (dir)
     (let ((files (dired-targets dir)))
@@ -1055,13 +1063,13 @@
     "%C" "dired.copy_regex"  "%R" "dired.rename_regex"
     "~" "dired.flag_backups"  "#" "dired.flag_autosaves"
     "C" "dired.copy"  "R" "dired.rename"  "S" "dired.symlink"  "H" "dired.hardlink"
-    "D" "dired.delete"  "x" "dired.execute"  "+" "dired.mkdir"
+    "D" "dired.delete"  "x" "dired.execute"  "+" "dired.mkdir"  "c" "dired.create_file"
     "M" "dired.chmod"  "O" "dired.chown"  "T" "dired.touch"  "Z" "dired.compress"
     "!" "dired.shell"  "&" "dired.shell"  "X" "dired.shell"  "=" "dired.diff"
     "i" "dired.edit"  "<C-x><C-q>" "dired.edit"
     "p" "motion.up"
     ; Vim's edits that are none of dired's.
-    "A" "dired.read_only"  "I" "dired.read_only"  "c" "dired.read_only"
+    "A" "dired.read_only"  "I" "dired.read_only"
     "r" "dired.read_only"  "P" "dired.read_only"  "J" "dired.read_only"
     "." "dired.read_only"))
 
