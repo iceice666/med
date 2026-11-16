@@ -60,7 +60,7 @@
 | `:lsp` | 檔案的語言伺服器正在做什麼 |
 | `:branch` | 專案目前所在的分支 |
 
-沒有開啟任何檔案時，會有一個空的 `[No Name]` 緩衝區，下一個開啟的檔案會取代它：它有 `:mode`，但沒有任何來自檔案的資訊。省略 `:cmdline` 的狀態列會讓 `:` 的輸入看不見。要畫出命令列的游標，把 `(caret)` 放在 `:cmdline-before` 與其餘部分之間：它沒有寬度，但輸入法會把候選視窗放在它所在的位置；沒有 `(caret)` 時，候選視窗會在列的角落。範例見英文版文件或 [`examples/statusline.mlisp`](../examples/statusline.mlisp)。[`examples/statusline.mlisp`](../examples/statusline.mlisp) 就是視窗原本的狀態列，各列的顏色是 `'status-bar`、`'title-bar`、`'title-bar-border` 和 `'tab-bar`。
+沒有開啟任何檔案時，會有一個空的 `[No Name]` 分頁，下一個開啟的檔案會取代它：它有 `:mode`，但沒有任何來自檔案的資訊。省略 `:cmdline` 的狀態列會讓 `:` 的輸入看不見。要畫出命令列的游標，把 `(caret)` 放在 `:cmdline-before` 與其餘部分之間：它沒有寬度，但輸入法會把候選視窗放在它所在的位置；沒有 `(caret)` 時，候選視窗會在列的角落。範例見英文版文件或 [`examples/statusline.mlisp`](../examples/statusline.mlisp)。[`examples/statusline.mlisp`](../examples/statusline.mlisp) 就是視窗原本的狀態列，各列的顏色是 `'status-bar`、`'title-bar`、`'title-bar-border` 和 `'tab-bar`。
 
 ### 版面
 

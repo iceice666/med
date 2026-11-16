@@ -129,7 +129,7 @@ impl Item {
         }
     }
 
-    /// The empty buffer there for want of a file.
+    /// The empty tab there for want of a file.
     fn is_pristine(&self, cx: &App) -> bool {
         match self {
             Item::Editor(editor) => editor.read(cx).is_pristine(),
@@ -1238,7 +1238,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// An unnamed, empty buffer, so that with no file open the keys still
+    /// An unnamed, empty tab, so that with no file open the keys still
     /// have an editor to go to (`:e`, the leader keys…).
     fn open_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Watched once, by `empty_editor`: `add_tab` would watch it again,
@@ -1248,7 +1248,7 @@ impl Workspace {
         self.activate(index, window, cx);
     }
 
-    /// An unnamed, empty buffer, not yet in a pane.
+    /// The editor of an unnamed, empty tab, not yet in a pane.
     fn empty_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Editor> {
         let lsp = self.lsp.clone();
         let editor = cx.new(|cx| Editor::new(None, "", Some(lsp), cx));
@@ -1272,7 +1272,7 @@ impl Workspace {
 
     /// Put a tab in the focused pane, after the one shown, and say where.
     fn place_tab(&mut self, item: Item, cx: &App) -> usize {
-        // The empty buffer there for want of a file gives way to the first
+        // The empty tab there for want of a file gives way to the first
         // thing opened, as in vim.
         let pristine = self
             .active_editor()
@@ -1289,7 +1289,7 @@ impl Workspace {
 
     /// The tab `tab` of the pane `pane`, in the focused pane: where it is
     /// if it is there, or else brought over from the other, which shows
-    /// the tab before it, or an empty buffer if that was its only one.
+    /// the tab before it, or an empty one if that was its only one.
     /// Not shown yet.
     fn bring_tab(
         &mut self,
@@ -1502,7 +1502,7 @@ impl Workspace {
         self.activate(active, window, cx);
     }
 
-    /// Split the focused pane: a new one with an empty buffer goes right
+    /// Split the focused pane: a new one with an empty tab goes right
     /// of it, or below it, and has the keys.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let editor = self.empty_editor(window, cx);
@@ -1588,7 +1588,7 @@ impl Workspace {
     }
 
     /// Tabs of a pane that is gone, at the end of the focused pane's; its
-    /// empty buffers are dropped.
+    /// empty tabs are dropped.
     fn adopt(&mut self, tabs: Vec<Item>, cx: &App) {
         let kept = tabs.into_iter().filter(|tab| !tab.is_pristine(cx));
         self.pane_mut().tabs.extend(kept);
@@ -2936,12 +2936,12 @@ pub(crate) fn register(commands: &mut Commands) {
     );
     commands.register(
         "workspace.split_right",
-        "Split the pane: a new one with an empty buffer, to the right",
+        "Split the pane: a new one with an empty tab, to the right",
         W(|ws, _, window, cx| ws.split(Axis::Row, window, cx)),
     );
     commands.register(
         "workspace.split_down",
-        "Split the pane: a new one with an empty buffer, below",
+        "Split the pane: a new one with an empty tab, below",
         W(|ws, _, window, cx| ws.split(Axis::Column, window, cx)),
     );
     commands.register(

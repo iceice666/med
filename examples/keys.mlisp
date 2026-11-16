@@ -36,7 +36,7 @@
 (bind '(normal visual) "<Tab>" "workspace.jump_forward")
 
 ; Panes, as vim's windows: ctrl-w, then a letter. A new pane has an empty
-; buffer; a tab is in one pane, and opening it in another brings it over.
+; tab; a tab is in one pane, and opening it in another brings it over.
 (bind 'normal "<C-w>v" "workspace.split_right")
 (bind 'normal "<C-w>s" "workspace.split_down")
 (bind 'normal "<C-w>h" "workspace.pane_left")

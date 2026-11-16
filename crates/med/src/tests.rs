@@ -3426,7 +3426,7 @@ fn programs_read_and_edit_the_file(cx: &mut TestAppContext) {
         eval("(set-cursor 0 1)", cx),
         "1:1: set-cursor: expected a place, (line column) counted from 1, got (0 1)"
     );
-    // With no file there is an empty buffer, which is no file.
+    // With no file there is an empty tab, which is no file.
     cx.simulate_keystrokes(":");
     cx.simulate_input("bd!");
     cx.simulate_keystrokes("enter");
@@ -3446,12 +3446,12 @@ fn an_empty_buffer_stands_in_for_no_file(cx: &mut TestAppContext) {
     assert_eq!(active_file(&ws, cx), None);
 
     // The keys have an editor to go to: `:e` opens a file, which takes
-    // the empty buffer's place.
+    // the empty tab's place.
     cx.simulate_keystrokes(": e space a . t x t enter");
     assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
     assert_eq!(tabs(&ws, cx), 1);
 
-    // Closing the last file leaves an empty buffer again.
+    // Closing the last file leaves an empty tab again.
     cx.simulate_keystrokes(":");
     cx.simulate_input("bd");
     cx.simulate_keystrokes("enter");
@@ -5320,7 +5320,7 @@ fn tab_completes_the_command_line(cx: &mut TestAppContext) {
 }
 
 /// What the panes show, from the top left: each's file name or scratch
-/// name ("" for an empty buffer), the focused one with a * after it.
+/// name ("" for an empty tab), the focused one with a * after it.
 fn panes(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
     workspace.read_with(cx, |ws, cx| {
         let infos = ws.pane_infos(cx);
@@ -5355,7 +5355,7 @@ fn splits_into_panes_and_moves_between_them(cx: &mut TestAppContext) {
     let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
     assert_eq!(panes(&ws, cx), ["a.txt*"]);
 
-    // A new pane, to the right, with an empty buffer and the keys.
+    // A new pane, to the right, with an empty tab and the keys.
     cx.simulate_keystrokes("ctrl-w v");
     assert_eq!(panes(&ws, cx), ["a.txt", "*"]);
     assert_eq!(active_file(&ws, cx), None);

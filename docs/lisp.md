@@ -82,7 +82,7 @@ show, `nil` where there is nothing to show:
 | `:lsp` | what the file's language server is doing |
 | `:branch` | the branch the project is on |
 
-With no file open there is an empty `[No Name]` buffer, which the next
+With no file open there is an empty `[No Name]` tab, which the next
 file opened takes the place of: it has a `:mode`, but nothing that comes
 from a file. A status bar that leaves out `:cmdline` has `:` typed blind.
 To draw the command line's cursor, put `(caret)` between
