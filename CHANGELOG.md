@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/iceice666/med/compare/v0.1.0...v0.1.1) - 2026-11-16
+
+### Added
+
+- *(med/workspace)* preview Markdown in a split pane
+- *(med/panel)* render Markdown in panel layouts
+- *(med/examples)* offer the next pane's listing in dired
+- *(med/workspace)* split the window into panes
+- *(med/cmdline)* move the cursor and recall history
+- *(med/examples)* read Tsoding's feeds in a hidden newsticker
+- *(med/env)* run servers in the project environment
+- *(med/completion)* rank completions with frizbee
+- *(med/cmdline)* complete the command line with tab
+
+### Fixed
+
+- *(med/app)* start from the launch dir in an AppImage
+- *(med/app)* open home instead of / from Finder
+
+### Other
+
+- *(med/readme)* move the reference into docs
+
 ## [0.1.0](https://github.com/iceice666/med/releases/tag/v0.1.0) - 2026-11-15
 
 ### Added
