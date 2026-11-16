@@ -2224,6 +2224,7 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
                (unbind 'normal "<Space>s")
                (unbind 'normal "<Space>ci")
                (unbind 'normal "<Space>co")
+               (unbind 'normal "<Space>l")
                (unbind 'normal "<Space>=")
                (unbind 'normal "<Space>r")
                (unbind 'normal "<Space>m")

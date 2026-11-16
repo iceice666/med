@@ -1904,6 +1904,15 @@ impl Workspace {
             EditorEvent::WorkspaceEdit(edit) => {
                 self.apply_workspace_edit(edit.clone(), window, cx);
             }
+            EditorEvent::Run { command, cwd } => {
+                let cwd = cwd.clone().unwrap_or_else(|| self.root.clone());
+                if self
+                    .open_terminal(Some(command.clone()), cwd, true, window, cx)
+                    .is_none()
+                {
+                    self.set_message(format!("Could not run {command}"), cx);
+                }
+            }
             EditorEvent::PushJump(offset) => {
                 if let Some(path) = editor.read(cx).path.clone() {
                     self.push_jump(path, *offset);

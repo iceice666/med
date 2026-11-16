@@ -40,6 +40,7 @@ any case.
 | `gD` / `gy` / `gi` | declaration / type definition / implementations |
 | `space s` | the symbols of the file, to go to one |
 | `space c i` / `space c o` | what calls the function under the cursor / what it calls |
+| `space l` | the lenses of the file (run a test, its references…), to run one |
 | `]d` / `[d` | next / previous diagnostic |
 | `]h` / `[h` | next / previous change from HEAD that the gutter marks |
 | `space r` | rename: the new name is typed after `:rename` |

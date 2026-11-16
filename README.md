@@ -12,9 +12,9 @@ English | [繁體中文](README.zh-TW.md)
 - LSP: diagnostics, completion, hover, signature help, go to definition,
   declaration, type definition and implementation, references, the
   places of the name under the cursor, call hierarchy, document and
-  project symbols, semantic tokens, snippets, rename, code actions,
-  formatting; servers, their settings and several to a file set up from
-  the init file
+  project symbols, semantic tokens, code lenses, snippets, rename, code
+  actions, formatting; servers, their settings and several to a file set
+  up from the init file
 - No built-in keys. The vim layout, an oil.nvim-style directory editor,
   the fuzzy finder, a lazygit-style git screen and which-key are Lisp
   programs in

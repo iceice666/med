@@ -127,6 +127,12 @@ pub enum EditorEvent {
     },
     /// Edits a language server asked for, in this file or in others.
     WorkspaceEdit(lsp::WorkspaceEdit),
+    /// A program for a terminal to run, as a language server's command
+    /// comes to: from `cwd`, or the project's root.
+    Run {
+        command: String,
+        cwd: Option<PathBuf>,
+    },
     /// The cursor is about to jump away from this offset.
     PushJump(usize),
     Message(String),
@@ -2911,11 +2917,81 @@ impl Editor {
         if let Some(edit) = edit {
             cx.emit(EditorEvent::WorkspaceEdit(edit));
         }
+        let Some(command) = command else {
+            return;
+        };
+        // One med runs itself.
+        match crate::lsp::client_command(&command) {
+            Some(Ok(crate::lsp::ClientCommand::Locations(locations))) => {
+                cx.emit(EditorEvent::Locations {
+                    what: "references",
+                    places: locations
+                        .into_iter()
+                        .map(|location| Place {
+                            location,
+                            label: None,
+                        })
+                        .collect(),
+                });
+                return;
+            }
+            Some(Ok(crate::lsp::ClientCommand::Run { command, cwd })) => {
+                cx.emit(EditorEvent::Run { command, cwd });
+                return;
+            }
+            Some(Err(problem)) => {
+                cx.emit(EditorEvent::Message(problem));
+                return;
+            }
+            None => {}
+        }
         // What the command edits comes back through the server.
-        if let (Some(command), Some(lsp), Some(path)) = (command, &self.lsp, &self.path) {
+        if let (Some(lsp), Some(path)) = (&self.lsp, &self.path) {
             lsp.read(cx)
                 .execute_command(path, server.as_deref(), command);
         }
+    }
+
+    /// List the lenses of the file to run one: the commands a language
+    /// server puts above a function or a type, such as running a test.
+    /// The one nearest above the cursor is chosen first.
+    fn code_lens(&mut self, cx: &mut Context<Self>) {
+        let (Some(lsp), Some(path)) = (&self.lsp, &self.path) else {
+            return;
+        };
+        let Some(request) = lsp.read(cx).code_lenses(path) else {
+            cx.emit(EditorEvent::Message("No language server".into()));
+            return;
+        };
+        let line = self.buf.line_of(self.vim.cursor) as u32;
+        let version = self.buf.version();
+        self.request_task = Some(cx.spawn(async move |this, cx| {
+            let lenses = request.await;
+            this.update(cx, |this, cx| {
+                if this.buf.version() != version {
+                    return;
+                }
+                if lenses.is_empty() {
+                    cx.emit(EditorEvent::Message("No lenses in this file".into()));
+                    return;
+                }
+                let selected = lenses
+                    .iter()
+                    .rposition(|(_, lens)| lens.range.start.line <= line)
+                    .unwrap_or(0);
+                let actions = lenses
+                    .into_iter()
+                    .filter_map(|(server, lens)| {
+                        let mut command = lens.command?;
+                        command.title = format!("{}: {}", lens.range.start.line + 1, command.title);
+                        Some((Some(server), lsp::CodeActionOrCommand::Command(command)))
+                    })
+                    .collect();
+                this.menu = Some(ActionMenu { actions, selected });
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Ask for the signature of what is being called at the cursor.
@@ -4818,6 +4894,11 @@ pub(crate) fn register(commands: &mut Commands) {
         "editor.goto_implementation",
         "Go to the implementations of the symbol under the cursor",
         E(|editor, _, cx| editor.goto_implementation(cx)),
+    );
+    commands.register(
+        "editor.code_lens",
+        "List the lenses of the file, such as running a test, to run one",
+        E(|editor, _, cx| editor.code_lens(cx)),
     );
     commands.register(
         "editor.incoming_calls",

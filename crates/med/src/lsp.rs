@@ -4,8 +4,8 @@
 //!
 //! A file can have several servers (tsserver and tailwind). Every one of
 //! them is told of its text and gives diagnostics, code actions,
-//! completions and hover; anything else asked about the file goes to the
-//! first that says it can answer.
+//! completions, hover and lenses; anything else asked about the file goes
+//! to the first that says it can answer.
 
 use crate::env::{EnvCell, ProjectEnv};
 use crate::lsp_config::{self, ServerConfig};
@@ -123,9 +123,19 @@ fn offers<T>(capability: &Option<lsp::OneOf<bool, T>>) -> bool {
 
 impl EventEmitter<LspEvent> for LspStore {}
 
+/// Commands servers ask the client to run, which med runs itself.
+pub const CLIENT_COMMANDS: &[&str] = &[
+    "rust-analyzer.runSingle",
+    "rust-analyzer.showReferences",
+    "editor.action.showReferences",
+];
+
 fn client_capabilities() -> lsp::ClientCapabilities {
     serde_json::from_value(json!({
         "general": { "positionEncodings": ["utf-16"] },
+        // The commands of lenses med runs itself; rust-analyzer offers
+        // those lenses only to a client that says so.
+        "experimental": { "commands": { "commands": CLIENT_COMMANDS } },
         "window": { "workDoneProgress": true },
         "workspace": {
             "configuration": true,
@@ -167,6 +177,7 @@ fn client_capabilities() -> lsp::ClientCapabilities {
             "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
             "documentHighlight": {},
             "callHierarchy": {},
+            "codeLens": {},
             "semanticTokens": {
                 "requests": { "full": { "delta": true } },
                 "tokenTypes": [
@@ -1212,6 +1223,72 @@ impl LspStore {
         })
     }
 
+    /// The lenses of `path`, from every server of it that has any, each
+    /// with the server that gave it, from the top of the file down. A
+    /// lens is asked for its command when it came without one; one that
+    /// still has none is left out.
+    pub fn code_lenses(
+        &self,
+        path: &Path,
+    ) -> Option<impl Future<Output = Vec<(ServerName, lsp::CodeLens)>> + use<>> {
+        let uri = path_to_uri(path)?;
+        let servers: Vec<&Server> = self
+            .ready_servers(path)
+            .filter(|server| server.caps.code_lens_provider.is_some())
+            .collect();
+        if servers.is_empty() {
+            return None;
+        }
+        let requests: Vec<_> = servers
+            .into_iter()
+            .map(|server| {
+                let client = server.client.clone();
+                let name = server.config.name.clone();
+                let resolves = server
+                    .caps
+                    .code_lens_provider
+                    .as_ref()
+                    .and_then(|c| c.resolve_provider)
+                    .unwrap_or(false);
+                let request =
+                    client.request::<lsp::request::CodeLensRequest>(lsp::CodeLensParams {
+                        text_document: lsp::TextDocumentIdentifier { uri: uri.clone() },
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    });
+                async move {
+                    let lenses = request.await.ok().flatten().unwrap_or_default();
+                    let resolved = lenses.into_iter().map(|lens| {
+                        let client = client.clone();
+                        async move {
+                            if lens.command.is_some() || !resolves {
+                                return lens;
+                            }
+                            let request =
+                                client.request::<lsp::request::CodeLensResolve>(lens.clone());
+                            request.await.unwrap_or(lens)
+                        }
+                    });
+                    futures::future::join_all(resolved)
+                        .await
+                        .into_iter()
+                        .filter(|lens| lens.command.is_some())
+                        .map(|lens| (name.clone(), lens))
+                        .collect::<Vec<_>>()
+                }
+            })
+            .collect();
+        Some(async move {
+            let mut lenses: Vec<_> = futures::future::join_all(requests)
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
+            lenses.sort_by_key(|(_, lens)| (lens.range.start.line, lens.range.start.character));
+            lenses
+        })
+    }
+
     /// Have a server of `path` run one of its commands: `server`, the one
     /// that offered it, or else the first. What that edits comes back as
     /// [`LspEvent::ApplyEdit`].
@@ -1406,6 +1483,116 @@ fn configuration(settings: &Value, params: &Value) -> Value {
             .map(|item| lsp_config::section(settings, item["section"].as_str()))
             .collect(),
     )
+}
+
+// ---- commands med runs itself -------------------------------------------
+
+/// What a command a server asks the client to run comes to.
+#[derive(Debug, PartialEq)]
+pub enum ClientCommand {
+    /// Places to choose among.
+    Locations(Vec<lsp::Location>),
+    /// A program to run in a terminal, from a directory.
+    Run {
+        command: String,
+        cwd: Option<PathBuf>,
+    },
+}
+
+/// A word as a shell reads it.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// What `command` comes to, if it is one med runs itself rather than ask
+/// a server to: `None` for the rest. A command med knows but cannot make
+/// sense of is an error.
+pub fn client_command(command: &lsp::Command) -> Option<Result<ClientCommand, String>> {
+    let arguments = command.arguments.as_deref().unwrap_or_default();
+    match command.command.as_str() {
+        // The uri and position of the name, and its places.
+        "rust-analyzer.showReferences" | "editor.action.showReferences" => {
+            let locations = arguments
+                .get(2)
+                .cloned()
+                .and_then(|value| serde_json::from_value::<Vec<lsp::Location>>(value).ok());
+            Some(
+                locations
+                    .map(ClientCommand::Locations)
+                    .ok_or_else(|| format!("{}: no places to show", command.command)),
+            )
+        }
+        // rust-analyzer's runnable: cargo with its arguments, or a program
+        // of its own, from where it says.
+        "rust-analyzer.runSingle" => Some(
+            runnable(arguments.first())
+                .ok_or_else(|| format!("{}: nothing to run", command.command)),
+        ),
+        _ => None,
+    }
+}
+
+fn runnable(runnable: Option<&Value>) -> Option<ClientCommand> {
+    let args = &runnable?["args"];
+    let strings = |value: &Value| -> Vec<String> {
+        value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut words: Vec<String> = Vec::new();
+    if let Some(env) = args["environment"].as_object() {
+        for (name, value) in env {
+            if let Some(value) = value.as_str() {
+                words.push(format!("{name}={}", shell_word(value)));
+            }
+        }
+    }
+    let program_words: Vec<String> = match runnable?["kind"].as_str()? {
+        "cargo" => {
+            let mut all = vec![
+                args["overrideCargo"]
+                    .as_str()
+                    .unwrap_or("cargo")
+                    .to_string(),
+            ];
+            all.extend(strings(&args["cargoArgs"]));
+            let executable = strings(&args["executableArgs"]);
+            if !executable.is_empty() {
+                all.push("--".into());
+                all.extend(executable);
+            }
+            all
+        }
+        "shell" => {
+            let mut all = vec![args["program"].as_str()?.to_string()];
+            all.extend(strings(&args["args"]));
+            all
+        }
+        _ => return None,
+    };
+    words.extend(program_words.iter().map(|w| shell_word(w)));
+    let cwd = args["cwd"]
+        .as_str()
+        .or(args["workspaceRoot"].as_str())
+        .map(PathBuf::from);
+    Some(ClientCommand::Run {
+        command: words.join(" "),
+        cwd,
+    })
 }
 
 // ---- semantic tokens ---------------------------------------------------
@@ -2170,6 +2357,67 @@ mod tests {
         assert_eq!(drawn(3, 0), None);
         assert_eq!(drawn(4, 0), Some("function"));
         assert_eq!(drawn(9, 0), None);
+    }
+
+    /// rust-analyzer's lenses: the places of a name, to choose among, and
+    /// a test to run, as a shell would read it; any other command is the
+    /// server's.
+    #[test]
+    fn commands_med_runs_itself() {
+        let command = |name: &str, arguments: Value| lsp::Command {
+            title: "t".into(),
+            command: name.into(),
+            arguments: Some(arguments.as_array().unwrap().clone()),
+        };
+        let place = json!({ "uri": "file:///p/a.rs", "range": {
+            "start": { "line": 3, "character": 4 }, "end": { "line": 3, "character": 7 } } });
+        let shown = client_command(&command(
+            "rust-analyzer.showReferences",
+            json!(["file:///p/a.rs", { "line": 0, "character": 0 }, [place]]),
+        ));
+        match shown {
+            Some(Ok(ClientCommand::Locations(locations))) => {
+                assert_eq!(locations.len(), 1);
+                assert_eq!(locations[0].range.start.line, 3);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let run = client_command(&command(
+            "rust-analyzer.runSingle",
+            json!([{ "label": "test it", "kind": "cargo", "args": {
+                "cwd": "/p",
+                "cargoArgs": ["test", "--package", "med", "--lib"],
+                "executableArgs": ["tests::it", "--exact", "--nocapture"],
+                "environment": { "RUST_BACKTRACE": "short" },
+            } }]),
+        ));
+        assert_eq!(
+            run,
+            Some(Ok(ClientCommand::Run {
+                command: "RUST_BACKTRACE=short cargo test --package med --lib -- \
+                          tests::it --exact --nocapture"
+                    .into(),
+                cwd: Some(PathBuf::from("/p")),
+            }))
+        );
+        let shell = client_command(&command(
+            "rust-analyzer.runSingle",
+            json!([{ "label": "x", "kind": "shell", "args": {
+                "program": "my tool", "args": ["it's"], "cwd": "/p" } }]),
+        ));
+        assert_eq!(
+            shell,
+            Some(Ok(ClientCommand::Run {
+                command: "'my tool' 'it'\\''s'".into(),
+                cwd: Some(PathBuf::from("/p")),
+            }))
+        );
+        assert!(matches!(
+            client_command(&command("rust-analyzer.runSingle", json!([]))),
+            Some(Err(_))
+        ));
+        assert_eq!(client_command(&command("clangd.applyFix", json!([]))), None);
     }
 
     /// Each item asked for gets its section of the settings, or all of them.
