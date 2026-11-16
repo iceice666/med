@@ -387,10 +387,13 @@ fn navigates_the_file_tree(cx: &mut TestAppContext) {
     let names =
         |cx: &mut VisualTestContext| lisp("(map (fn (entry) (get entry :name)) tree-entries)", cx);
 
-    // Directories sort first: dir/, a.txt, z.txt. The open file is revealed.
+    // Directories sort first: dir/, a.txt, z.txt. The tree is put away
+    // until space e puts it up; the open file is revealed.
     assert_eq!(names(cx), r#"("dir" "a.txt" "z.txt")"#);
+    assert!(!shown("tree", cx));
     cx.simulate_keystrokes("space e");
     cx.run_until_parked();
+    assert!(shown("tree", cx));
     assert_eq!(lisp("(get (tree-entry) :name)", cx), "\"z.txt\"");
     cx.simulate_keystrokes("g g l");
     cx.run_until_parked();
@@ -404,7 +407,7 @@ fn navigates_the_file_tree(cx: &mut TestAppContext) {
     assert_eq!(text(&ws, cx), "nner\n");
 
     // h on a file goes to its directory, and on that folds it; G is the
-    // last row, and space e from the tree is the way back out of it.
+    // last row, and space e from the tree puts it away, back to the editor.
     cx.simulate_keystrokes("space e h");
     cx.run_until_parked();
     assert_eq!(lisp("(get (tree-entry) :name)", cx), "\"dir\"");
@@ -412,16 +415,24 @@ fn navigates_the_file_tree(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(names(cx), r#"("dir" "a.txt" "z.txt")"#);
     assert_eq!(lisp("(get (tree-entry) :name)", cx), "\"z.txt\"");
-    cx.simulate_keystrokes("space e x");
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert!(!shown("tree", cx));
+    // q puts it away as well.
+    cx.simulate_keystrokes("space e q");
+    cx.run_until_parked();
+    assert!(!shown("tree", cx));
+    cx.simulate_keystrokes("x");
     cx.run_until_parked();
     assert_eq!(text(&ws, cx), "ner\n");
 
     // A file that appears on disk is in the tree once the editor has
-    // reason to look: here, a file being written.
+    // reason to look: here, a file being written. Going to the tree just
+    // now revealed the open file, so dir/ is unfolded again.
     fs::write(project.path("b.txt"), "b\n").unwrap();
     cx.simulate_keystrokes(": w enter");
     cx.run_until_parked();
-    assert_eq!(names(cx), r#"("dir" "a.txt" "b.txt" "z.txt")"#);
+    assert_eq!(names(cx), r#"("dir" "inner.txt" "a.txt" "b.txt" "z.txt")"#);
 
     // ⌘B puts the tree away and back; put away while it has the keyboard,
     // it hands the keyboard to the editor.
@@ -463,6 +474,8 @@ fn the_file_tree_shows_what_git_says(cx: &mut TestAppContext) {
 fn the_file_tree_is_a_panel_like_any_other(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
     let (ws, cx) = open_with(&[TREE], &project, &[], cx);
+    lisp("(show-panel 'tree)", cx);
+    cx.run_until_parked();
     // `y` from the top of the tree, which is under the title bar.
     let click = |y: f32, cx: &mut VisualTestContext| {
         cx.simulate_click(point(px(40.), px(TITLE + y)), Modifiers::none());
@@ -1731,7 +1744,7 @@ fn shows_the_keys_that_can_come_next(cx: &mut TestAppContext) {
     );
     assert_eq!(
         listed("e", cx),
-        r#"("Go to the file tree, or back from it" nil)"#
+        r#"("Go to the file tree, or put it away" nil)"#
     );
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();

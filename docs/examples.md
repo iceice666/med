@@ -25,8 +25,8 @@ there. Each brings its commands and its keys:
 | --- | --- | --- |
 | `vim.lisp` | | vim's keys, in every mode: see [Keys](keys.md#keys) |
 | `keys.lisp` | | the language server's, the tabs', flash's, the `space` leader keys and the `⌘` shortcuts |
-| `tree.lisp` | `space e` / `⌘⇧E` | focus file tree (`j k h l`, `enter`, `R` refresh, `q` back) |
-| | `⌘B` | show/hide file tree |
+| `tree.lisp` | `space e` / `⌘⇧E` | open and focus the file tree, or from it put it away (`j k h l`, `enter`, `R` refresh, `q` put away) |
+| | `⌘B` | show/hide file tree (hidden at start) |
 | `picker.lisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |

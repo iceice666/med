@@ -20,8 +20,8 @@
 | --- | --- | --- |
 | `vim.lisp` | | 各模式的 vim 按鍵：見[按鍵](keys.zh-TW.md#按鍵) |
 | `keys.lisp` | | 語言伺服器、分頁、flash 的按鍵，`space` leader 鍵與 `⌘` 快捷鍵 |
-| `tree.lisp` | `space e` / `⌘⇧E` | 聚焦檔案樹（`j k h l`、`enter`、`R` 重新整理、`q` 返回） |
-| | `⌘B` | 顯示 / 隱藏檔案樹 |
+| `tree.lisp` | `space e` / `⌘⇧E` | 開啟並聚焦檔案樹，在檔案樹中再按一次則收起（`j k h l`、`enter`、`R` 重新整理、`q` 收起） |
+| | `⌘B` | 顯示 / 隱藏檔案樹（啟動時隱藏） |
 | `picker.lisp` | `space f` / `⌘P` | 尋找檔案 |
 | | `space /` / `⌘⇧F` | 在專案中搜尋 |
 | `git.lisp` | `space g` / `⌘⇧G` | git 畫面 |

@@ -2,9 +2,11 @@
 ;
 ;   (load "tree.lisp")
 ;
-; space e, or ⌘⇧E, goes to the tree and back; ⌘B shows and hides it. In
-; the tree: j k move, h l fold and unfold, enter opens, R reads the disk
-; again, q goes back to the editor. A click does what enter does. With
+; The tree is put away until it is asked for. space e, or ⌘⇧E, puts it
+; up and goes to it, and from the tree puts it away again; ⌘B shows and
+; hides it without moving the keyboard. In the tree: j k move, h l fold
+; and unfold, enter opens, R reads the disk again, q or escape puts it
+; away and goes back to the editor. A click does what enter does. With
 ; which-key.lisp, init.lisp makes ? list all of the tree's keys.
 ;
 ; Everything here is an ordinary program: what the tree shows is kept in
@@ -94,7 +96,7 @@
 
 ; ---- how it looks
 
-(defpanel 'tree :at 'left :width 260 :shown true
+(defpanel 'tree :at 'left :width 260
   (fn (panel)
     (col :width 'full :height 'full
          :bg 'sidebar :color 'sidebar-foreground
@@ -157,12 +159,14 @@
 (defcommand "tree.open" "Open the file, or fold or unfold the directory"
   tree-activate)
 (defcommand "tree.refresh" "Read the directories again" tree-refresh)
-(defcommand "tree.close" "Go back to the editor" focus-editor)
+(defcommand "tree.close" "Put the file tree away, back to the editor"
+  (fn () (hide-panel 'tree)))
 
-(defcommand "tree.focus" "Go to the file tree, or back from it"
+; From the tree, put it away: the keyboard goes back to the editor.
+(defcommand "tree.focus" "Go to the file tree, or put it away"
   (fn ()
     (if (panel-focused? 'tree)
-        (focus-editor)
+        (hide-panel 'tree)
         (do (tree-reveal (current-file))
             (focus-panel 'tree)))))
 
