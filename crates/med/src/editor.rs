@@ -325,6 +325,26 @@ pub struct BufferOptions {
     pub relative_number: Option<bool>,
     pub format_on_save: Option<bool>,
     pub scroll_off: Option<usize>,
+    pub cursor_line: Option<bool>,
+    pub color_columns: Option<Vec<usize>>,
+}
+
+/// Where the `color-column` columns are drawn: each a cell wide, down the
+/// whole of the text, as far in as it is from the start of the line.
+pub(crate) fn column_bands(
+    columns: &[usize],
+    text: Bounds<Pixels>,
+    char_width: Pixels,
+    scroll_left: Pixels,
+) -> Vec<Bounds<Pixels>> {
+    columns
+        .iter()
+        .map(|column| {
+            let x = text.left() + char_width * column.saturating_sub(1) as f32 - scroll_left;
+            Bounds::new(point(x, text.top()), size(char_width, text.size.height))
+        })
+        .filter(|band| band.right() > text.left() && band.left() < text.right())
+        .collect()
 }
 
 /// What the gutter shows for a line, right-aligned to `digits`: its number,
@@ -892,6 +912,22 @@ impl Editor {
             cx.try_global::<Settings>()
                 .is_some_and(|s| s.format_on_save)
         })
+    }
+
+    pub(crate) fn cursor_line(&self, cx: &App) -> bool {
+        self.options
+            .cursor_line
+            .unwrap_or_else(|| cx.try_global::<Settings>().is_none_or(|s| s.cursor_line))
+    }
+
+    pub(crate) fn color_columns(&self, cx: &App) -> Vec<usize> {
+        match &self.options.color_columns {
+            Some(columns) => columns.clone(),
+            None => cx
+                .try_global::<Settings>()
+                .map(|s| s.color_columns.clone())
+                .unwrap_or_default(),
+        }
     }
 
     pub(crate) fn relative_number(&self, cx: &App) -> bool {
@@ -2048,6 +2084,8 @@ impl Editor {
     ) -> Frame {
         let settings = cx.global::<Settings>().clone();
         let relative_number = self.relative_number(cx);
+        let cursor_line_shown = self.cursor_line(cx);
+        let color_columns = self.color_columns(cx);
         let theme = cx.theme();
         let (bg, fg, muted) = (theme.background, theme.foreground, theme.muted_foreground);
         let selection_bg = theme.selection;
@@ -2058,6 +2096,9 @@ impl Editor {
             .style
             .editor_active_line
             .unwrap_or(theme.secondary.opacity(0.5));
+        // A shade of the text over whatever is behind, the cursor's line
+        // too: darker in a light theme, lighter in a dark one.
+        let color_column_bg = fg.opacity(0.07);
         let diag_colors = [theme.danger, theme.warning, theme.info, muted];
         let search_bg = theme.warning.opacity(0.35);
         // What `motion.flash` found: the place `enter` goes to stands out
@@ -2183,6 +2224,9 @@ impl Editor {
             front: Vec::new(),
             labels: Vec::new(),
         };
+        for band in column_bands(&color_columns, text_bounds, char_width, scroll_left) {
+            frame.text_back.push(fill(band, color_column_bg));
+        }
 
         for line in first..last {
             let y = y0 + line_height * (line - first) as f32;
@@ -2354,7 +2398,7 @@ impl Editor {
                 )
             };
 
-            if line == cursor_line && !mode.is_visual() {
+            if cursor_line_shown && line == cursor_line && !mode.is_visual() {
                 frame.back.push(fill(
                     Bounds::new(
                         point(bounds.left(), y),

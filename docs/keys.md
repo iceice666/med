@@ -99,6 +99,11 @@ too, but at the start and end of the file. `(set-option 'scroll-off 5)`
 makes it 5; 0 lets the cursor go to the edge, and 999 keeps it in the
 middle.
 
+The cursor's line is marked, as vim's `cursorline`, and `(set-option
+'cursor-line false)` leaves it as the others. `(set-option 'color-column
+80)` marks the 80th column down the view, as vim's `colorcolumn`; a list,
+`'(80 120)`, marks each, and `nil` none, as at first.
+
 Where a file has a syntax tree:
 
 | Key | Action |
@@ -155,7 +160,8 @@ run at startup, or from the command line with `:eval`:
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; also font-family, lsp, key-timeout,
                                               ; auto-pairs, format-on-save, tab-width,
-                                              ; relative-number, scroll-off, project-env
+                                              ; relative-number, scroll-off, cursor-line,
+                                              ; color-column, project-env
 ```
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
@@ -181,9 +187,10 @@ longer bindings that start with it. `:workspace.reload_init` runs the file
 again; what is wrong with it is said in the status bar, with the line.
 
 A tab can have options of its own as well: `tab-width`,
-`relative-number`, `format-on-save`, `auto-pairs` and `scroll-off` (the
-others are the window's or the application's). Its own value goes before
-the one `set-option` gives every tab, until it is reset. With
+`relative-number`, `format-on-save`, `auto-pairs`, `scroll-off`,
+`cursor-line` and `color-column` (the others are the window's or the
+application's). Its own value goes before the one `set-option` gives
+every tab, until it is reset. With
 `buffer-entered`, which is told of every file that comes up, and
 `buffer-language`, an option can go by the language:
 

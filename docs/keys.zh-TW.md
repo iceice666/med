@@ -57,6 +57,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 畫面會在游標與上下邊緣之間保留 3 行，如同 vim 的 `scrolloff`；`H`、`L`、`ctrl-e` 與 `ctrl-y` 也遵守這個距離，只有在檔案開頭與結尾例外。`(set-option 'scroll-off 5)` 改成 5 行；設為 0 則游標可到達邊緣，設為 999 則讓游標保持在中間。
 
+游標所在行會被標示出來，如同 vim 的 `cursorline`；`(set-option 'cursor-line false)` 讓它和其他行一樣。`(set-option 'color-column 80)` 會在畫面中標示第 80 欄，如同 vim 的 `colorcolumn`；給一個清單如 `'(80 120)` 會標示每一欄，設為 `nil` 則不標示，這也是預設值。
+
 檔案有語法樹時：
 
 | 按鍵 | 動作 |
@@ -93,7 +95,8 @@ flash.nvim 的其他功能也使用同樣的標記：
 (unbind 'normal "gt")
 (set-option 'font-size 16)                    ; 另有 font-family、lsp、key-timeout、
                                               ; auto-pairs、format-on-save、tab-width、
-                                              ; relative-number、scroll-off、project-env
+                                              ; relative-number、scroll-off、cursor-line、
+                                              ; color-column、project-env
 ```
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
@@ -110,7 +113,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 分頁的表所綁定的鍵會立即執行，即使模式的表中有以它開頭的較長綁定。`:workspace.reload_init` 會重新執行該檔案；檔案中的錯誤會連同行號顯示在狀態列。
 
-分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save`、`auto-pairs` 與 `scroll-off`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
+分頁也可以有自己的選項值：`tab-width`、`relative-number`、`format-on-save`、`auto-pairs`、`scroll-off`、`cursor-line` 與 `color-column`（其他選項屬於視窗或整個應用程式）。分頁自己的值優先於 `set-option` 給所有分頁的值，直到被重設為止。搭配每個檔案出現時都會通知的 `buffer-entered`，以及 `buffer-language`，選項就能依語言而定：
 
 ```lisp
 (set-buffer-option 'tab-width 8)            ; 目前顯示的分頁自己的值

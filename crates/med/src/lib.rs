@@ -51,6 +51,11 @@ pub struct Settings {
     /// Lines kept between the cursor and the top and bottom of the view,
     /// vim's `scrolloff`; as many as fit where the view is shorter.
     pub scroll_off: usize,
+    /// Mark the cursor's line, vim's `cursorline`.
+    pub cursor_line: bool,
+    /// Display columns to mark down the view, counted from 1, vim's
+    /// `colorcolumn`: a line not to write past.
+    pub color_columns: Vec<usize>,
     /// Work out each project's environment (login shell, direnv) for its
     /// language servers and programs, rather than use med's own.
     pub project_env: bool,
@@ -200,6 +205,8 @@ pub fn init(cx: &mut App) {
         tab_width: None,
         relative_number: false,
         scroll_off: Settings::SCROLL_OFF,
+        cursor_line: true,
+        color_columns: Vec::new(),
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
         // Turned on by `run` too: tests must not write to $HOME.

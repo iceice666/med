@@ -15,14 +15,16 @@
 //! (set-buffer-keys '(listing))         ; the tab up is in it
 //! (set-buffer-option 'tab-width 8)     ; the tab up's own; also
 //!                                      ; relative-number, format-on-save,
-//!                                      ; auto-pairs, scroll-off
+//!                                      ; auto-pairs, scroll-off,
+//!                                      ; cursor-line, color-column
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
 //! (set-option 'font-size 16)           ; also font-family, lsp, key-timeout,
 //!                                      ; auto-pairs, format-on-save,
 //!                                      ; tab-width, relative-number,
-//!                                      ; scroll-off, project-env
+//!                                      ; scroll-off, cursor-line,
+//!                                      ; color-column, project-env
 //! (message "ready")                    ; shown in the status bar
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
@@ -729,6 +731,19 @@ fn scroll_off(value: &Value) -> Result<usize, Error> {
     }
 }
 
+/// The columns `color-column` marks: one, a list of them, or nil for none.
+fn columns(value: &Value) -> Result<Vec<usize>, Error> {
+    let column = |value: &Value| match value.as_int()? {
+        n @ 1..=999 => Ok(n as usize),
+        _ => Err(failed(format!("{value} is no column"))),
+    };
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Pair(_) => value.to_vec()?.iter().map(column).collect(),
+        one => Ok(vec![column(one)?]),
+    }
+}
+
 /// Columns to a tab, as `tab-width` takes them.
 fn tab_width(value: &Value) -> Result<usize, Error> {
     match value.as_int()? {
@@ -740,7 +755,8 @@ fn tab_width(value: &Value) -> Result<usize, Error> {
 fn no_buffer_option(option: &str) -> Error {
     failed(format!(
         "{option} is not an option a tab has its own of \
-         (tab-width relative-number format-on-save auto-pairs scroll-off)"
+         (tab-width relative-number format-on-save auto-pairs scroll-off \
+         cursor-line color-column)"
     ))
 }
 
@@ -1099,6 +1115,8 @@ fn define_functions(interp: &mut Interp) {
             // Each line's number its distance from the cursor's.
             "relative-number" => settings.relative_number = flag(value)?,
             "scroll-off" => settings.scroll_off = scroll_off(value)?,
+            "cursor-line" => settings.cursor_line = flag(value)?,
+            "color-column" => settings.color_columns = columns(value)?,
             // Read when a window opens, as `lsp` is.
             "project-env" => settings.project_env = flag(value)?,
             // Close brackets and quotes as they are typed.
@@ -1109,7 +1127,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off project-env)"
+                     (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column project-env)"
                 )));
             }
         }
@@ -1138,6 +1156,14 @@ fn define_functions(interp: &mut Interp) {
                 let lines = scroll_off(value)?;
                 Box::new(move |editor| editor.options.scroll_off = Some(lines))
             }
+            "cursor-line" => {
+                let on = flag(value)?;
+                Box::new(move |editor| editor.options.cursor_line = Some(on))
+            }
+            "color-column" => {
+                let columns = columns(value)?;
+                Box::new(move |editor| editor.options.color_columns = Some(columns))
+            }
             "auto-pairs" => {
                 let on = flag(value)?;
                 Box::new(move |editor| editor.vim.auto_pairs = Some(on))
@@ -1155,6 +1181,8 @@ fn define_functions(interp: &mut Interp) {
             "relative-number" => Box::new(|editor| editor.options.relative_number = None),
             "format-on-save" => Box::new(|editor| editor.options.format_on_save = None),
             "scroll-off" => Box::new(|editor| editor.options.scroll_off = None),
+            "cursor-line" => Box::new(|editor| editor.options.cursor_line = None),
+            "color-column" => Box::new(|editor| editor.options.color_columns = None),
             "auto-pairs" => Box::new(|editor| editor.vim.auto_pairs = None),
             other => return Err(no_buffer_option(other)),
         };

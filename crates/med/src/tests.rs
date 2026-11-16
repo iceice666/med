@@ -681,7 +681,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off project-env)"
+        "1:1: font-sise is not an option (font-size font-family lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),
@@ -928,6 +928,68 @@ fn the_view_keeps_lines_about_the_cursor(cx: &mut TestAppContext) {
 
     for bad in ["-1", "1000", "true"] {
         let source = format!("(set-option 'scroll-off {bad})");
+        assert!(
+            cx.update(|_, cx| crate::script::eval(&source, cx)).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn color_columns_are_a_cell_wide_down_the_text() {
+    use crate::editor::column_bands;
+    use gpui::{Bounds, point, size};
+    let text = Bounds::new(point(px(40.), px(0.)), size(px(800.), px(600.)));
+    let cell = px(10.);
+    let lefts = |columns: &[usize], scroll: f32| -> Vec<f32> {
+        column_bands(columns, text, cell, px(scroll))
+            .iter()
+            .map(|band| {
+                assert_eq!(
+                    (band.size.width, band.top(), band.size.height),
+                    (cell, px(0.), px(600.))
+                );
+                f32::from(band.left())
+            })
+            .collect()
+    };
+    // Column 1 is the first cell; 80 the 80th.
+    assert_eq!(lefts(&[1, 80], 0.), [40., 830.]);
+    // Scrolled sideways, they go with the text, and off it are not drawn.
+    assert_eq!(lefts(&[1, 80], 100.), [730.]);
+    assert_eq!(lefts(&[200], 0.), Vec::<f32>::new());
+}
+
+#[gpui::test]
+fn the_cursor_line_and_color_column_options(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let options = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            (editor.cursor_line(cx), editor.color_columns(cx))
+        })
+    };
+    // The line marked, no column: as before there were options.
+    assert_eq!(options(&ws, cx), (true, vec![]));
+    assert_eq!(lisp("(set-option 'cursor-line false)", cx), "nil");
+    assert_eq!(lisp("(set-option 'color-column 80)", cx), "nil");
+    assert_eq!(options(&ws, cx), (false, vec![80]));
+    assert_eq!(lisp("(set-option 'color-column '(80 120))", cx), "nil");
+    assert_eq!(options(&ws, cx), (false, vec![80, 120]));
+
+    // This tab's own; nil is none of its own, until it is reset.
+    eval_in(&ws, "(set-buffer-option 'cursor-line true)", cx);
+    eval_in(&ws, "(set-buffer-option 'color-column nil)", cx);
+    assert_eq!(options(&ws, cx), (true, vec![]));
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    assert_eq!(options(&ws, cx), (false, vec![80, 120]));
+    cx.simulate_keystrokes(": e space a . t x t enter");
+    eval_in(&ws, "(reset-buffer-option 'color-column)", cx);
+    assert_eq!(options(&ws, cx), (true, vec![80, 120]));
+
+    for bad in ["0", "1000", "'(80 \"x\")", "true"] {
+        let source = format!("(set-option 'color-column {bad})");
         assert!(
             cx.update(|_, cx| crate::script::eval(&source, cx)).is_err(),
             "{bad}"
