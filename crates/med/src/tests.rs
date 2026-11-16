@@ -1835,6 +1835,89 @@ fn shows_the_keys_that_can_come_next(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_help_key_lists_every_key_at_once(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+    let help = r#"(which-key-help-key 'tree "?")
+                  (which-key-help-key 'dired "?")"#;
+    let (ws, cx) = open_with(&[TREE, WHICH_KEY, DIRED, help], &project, &["a.txt"], cx);
+    let listed = |key: &str, cx: &mut VisualTestContext| {
+        let find = format!(
+            r#"(let ((item (car (filter (fn (item) (= (get item :key) "{key}"))
+                                        which-key-items))))
+                 (list (get item :label) (get item :group)))"#
+        );
+        lisp(&find, cx)
+    };
+
+    // In a listing: up without waiting, with the listing's keys, groups
+    // and all.
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "a.txt\nb.txt\nc.txt\n");
+    cx.simulate_keystrokes("?");
+    cx.run_until_parked();
+    assert!(shown("which-key", cx));
+    assert_eq!(lisp("which-key-typed", cx), "\"?\"");
+    assert_eq!(listed("q", cx), r#"("Close the listing" nil)"#);
+    assert_eq!(listed("*", cx), r#"(nil "+6 keys")"#);
+    // The key typed then does what it does in the listing, and the list
+    // goes.
+    cx.simulate_keystrokes("m");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(cursor(&ws, cx).0, 2);
+    assert_eq!(
+        lisp(r#"(dired-mark-of (car dired-states) "a.txt")"#, cx),
+        "\"*\""
+    );
+    // So does a key of a group.
+    cx.simulate_keystrokes("? * !");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(
+        lisp(r#"(dired-mark-of (car dired-states) "a.txt")"#, cx),
+        "nil"
+    );
+    // A key that is none of the listing's does what it does without `?`:
+    // it is not searched for backwards, as vim's `?` would.
+    cx.simulate_keystrokes("? j");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+    assert_eq!(cursor(&ws, cx).0, 3);
+    assert_eq!(text(&ws, cx), "a.txt\nb.txt\nc.txt\n");
+    cx.simulate_keystrokes("k");
+    // Escape gives up, and the listing is as it was.
+    cx.simulate_keystrokes("?");
+    cx.run_until_parked();
+    assert!(shown("which-key", cx));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(cursor(&ws, cx).0, 2);
+    assert_eq!(mode(&ws, cx), Mode::Normal);
+
+    // In the tree, the same.
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert_eq!(eval_here(&ws, "(panel-focused? 'tree)", cx), "true");
+    cx.simulate_keystrokes("?");
+    cx.run_until_parked();
+    assert!(shown("which-key", cx));
+    assert_eq!(listed("G", cx), r#"("Select the last entry" nil)"#);
+    cx.simulate_keystrokes("G");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(lisp("tree-selected", cx), "2");
+    // Escape gives up the key, and leaves the tree as it is.
+    cx.simulate_keystrokes("? escape");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
+    assert_eq!(eval_here(&ws, "(panel-focused? 'tree)", cx), "true");
+    assert_eq!(lisp("tree-selected", cx), "2");
+}
+
+#[gpui::test]
 fn stages_and_commits_from_the_git_screen(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\n")]);
     project.git_init();

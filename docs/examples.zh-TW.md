@@ -26,6 +26,7 @@
 | | `space /` / `⌘⇧F` | 在專案中搜尋 |
 | `git.lisp` | `space g` / `⌘⇧G` | git 畫面 |
 | `which-key.lisp` | | 停頓片刻後，列出接下來可按的鍵 |
+| | `?` | 在檔案樹或 dired 清單中：立即列出它的所有按鍵（由 `init.lisp` 設定） |
 | `todo.lisp` | `]T` / `[T` | 在含有 TODO、FIXME 或 NOTE 的行旁加上標示，並在它們之間跳轉 |
 | `dired.lisp` | `space -` | 檔案所在的目錄，如同 Emacs 的 dired |
 | | `enter` / `-` | 在清單中：開啟該行的檔案或目錄 / 往上一層 |
@@ -34,7 +35,7 @@
 | `titlebar.lisp` | | 標題列：正在編輯的內容、專案及其分支 |
 | | 點擊分支 | 切換分支（也可用 `:titlebar.branches`） |
 
-有了 `which-key.lisp`，輸入到一半的命令（`g`、`space`、`d g`）在 300 毫秒（`which-key-delay`）內沒有新輸入時，會在視窗底部列出接下來可以按的鍵，在編輯器和面板中都一樣，按 escape 則放棄該命令。只作為較長綁定開頭的按鍵，會顯示以它開頭的綁定數量，或顯示一個名稱：`(which-key-name "<Space>g" "git")`。它會把 `key-timeout` 設為 `nil`：`space` 不會在一秒後自行向右移動，而是等待下一個按鍵。
+有了 `which-key.lisp`，輸入到一半的命令（`g`、`space`、`d g`）在 300 毫秒（`which-key-delay`）內沒有新輸入時，會在視窗底部列出接下來可以按的鍵，在編輯器和面板中都一樣，按 escape 則放棄該命令。只作為較長綁定開頭的按鍵，會顯示以它開頭的綁定數量，或顯示一個名稱：`(which-key-name "<Space>g" "git")`。它會把 `key-timeout` 設為 `nil`：`space` 不會在一秒後自行向右移動，而是等待下一個按鍵。`(which-key-help-key 'tree "?")` 讓 `?` 在某個按鍵表中立即列出其中所有按鍵，接著按下的鍵就照它在那裡的綁定執行；`init.lisp` 在檔案樹與 dired 清單的按鍵都綁好之後替它們這樣設定，因為之後才綁的鍵不會出現在清單上。
 
 有了 `picker.lisp`，`gr` 會列出參照讓你選擇；沒有它時，`gr` 會直接跳到第一個。
 

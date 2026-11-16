@@ -31,6 +31,7 @@ there. Each brings its commands and its keys:
 | | `space /` / `⌘⇧F` | search in project |
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.lisp` | | the keys that can come next, after a pause |
+| | `?` | in the tree or a listing: all of its keys at once (as `init.lisp` sets it up) |
 | `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
 | `dired.lisp` | `space -` | the file's directory, as Emacs's dired |
 | | `enter` / `-` | in a listing: open the line's file or directory / go up |
@@ -46,6 +47,10 @@ and escape gives up on the command. A key that only starts longer
 bindings is listed by how many they are, or by a name: `(which-key-name
 "<Space>g" "git")`. It sets `key-timeout` to `nil`: `space` no longer
 moves right by itself after a second, but waits for the next key.
+`(which-key-help-key 'tree "?")` makes `?` in a table of keys list
+all of them straight away, and the key typed then does what it does
+there; `init.lisp` does so for the tree and for dired's listings, after
+their keys are bound, as a key bound later is not on the list.
 
 With `picker.lisp`, `gr` lists the references to choose from; without it,
 `gr` goes to the first.

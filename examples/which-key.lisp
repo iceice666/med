@@ -11,6 +11,11 @@
 ; name it was given, or else by how many keys follow it:
 ;
 ;   (which-key-name "<Space>g" "git")
+;
+; A key can also ask for the list straight away, with every key of a
+; table on it: `?` in the tree, and in a listing of dired.
+;
+;   (which-key-help-key 'tree "?")
 
 (def which-key-delay 300)        ; how long to wait before showing, in ms
 (def which-key-columns 4)        ; how many columns the keys are laid out in
@@ -22,6 +27,7 @@
 (def which-key-typed "")         ; the keys of the command so far
 (def which-key-items nil)        ; what is on show, each (:key :label :group)
 (def which-key-timer nil)        ; the wait before showing
+(def which-key-help-keys nil)    ; the keys that show it without waiting
 
 ; A key that is a binding by itself and starts longer ones (`space`) would
 ; act after a second, and take the list away with it. Have it wait for the
@@ -96,10 +102,44 @@
     (cancel which-key-timer)
     (cond
       ((not (which-key-wanted? pending)) (hide-panel 'which-key))
-      ; Already up: the next key is not waited for again.
-      ((panel-shown? 'which-key) (which-key-show pending))
+      ; Already up, or asked for: the next key is not waited for again.
+      ((or (panel-shown? 'which-key)
+           (member? (get pending :keys) which-key-help-keys))
+       (which-key-show pending))
       (true (set! which-key-timer
                   (after which-key-delay (fn () (which-key-show pending))))))))
+
+; ---- a key that asks for the list
+
+; `key` in `table` starts every binding of the table over again: typed,
+; it waits for the next key with all of them on show, and that key does
+; what it does in the table. Escape puts the list away. The bindings are
+; those of the table when this is called: one made later wants another
+; call.
+
+(defcommand "which-key.close" "Put the list of keys away"
+  (fn () (hide-panel 'which-key)))
+
+(defn which-key-copy (table key keys)
+  (map (fn (next)
+         (let ((from (get next :keys))
+               (to (str key from)))
+           ; Not the key itself, nor escape, which is to give up.
+           (unless (or (= from key) (= from "<Esc>"))
+             (when (get next :command) (bind table to (get next :command)))
+             (when (get next :to) (bind-keys table to (get next :to)))
+             (when (get next :prefix) (which-key-copy table key from)))))
+       (bindings table keys)))
+
+(defn which-key-help-key (table key)
+  (which-key-copy table key "")
+  (bind table (str key "<Esc>") "which-key.close")
+  ; Bound by itself as well: a key the table does not have then does
+  ; what it does without `key`, rather than after the mode's `key` (vim's
+  ; `?`, a search backwards).
+  (bind table key "which-key.close")
+  (unless (member? key which-key-help-keys)
+    (set! which-key-help-keys (cons key which-key-help-keys))))
 
 ; ---- how it looks
 

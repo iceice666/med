@@ -4,7 +4,8 @@
 ;
 ; space e, or ⌘⇧E, goes to the tree and back; ⌘B shows and hides it. In
 ; the tree: j k move, h l fold and unfold, enter opens, R reads the disk
-; again, q goes back to the editor. A click does what enter does.
+; again, q goes back to the editor. A click does what enter does. With
+; which-key.lisp, init.lisp makes ? list all of the tree's keys.
 ;
 ; Everything here is an ordinary program: what the tree shows is kept in
 ; the names below, the commands change them, and the layout draws them.

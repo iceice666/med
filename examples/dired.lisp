@@ -13,6 +13,7 @@
 ;   - ^         the directory above        > <   the next, the last directory
 ;   g r         read the disk again        s     by name, or newest first
 ;   (           the details, or not        q     close the listing
+;   ?           all of these keys, with which-key.lisp (as init.lisp has it)
 ;
 ; Marks, beside the line numbers: m marks a file (*), d flags it for
 ; deletion (D), u takes either off, backspace the one above's, U all of

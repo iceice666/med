@@ -24,3 +24,8 @@
 (bind 'tree "<Space>f" "picker.files")
 (bind 'tree "<Space>/" "picker.search")
 (bind 'tree "<Space>g" "git.toggle")
+
+; ? in the tree, or in a listing, shows all of their keys at once. Last,
+; so that every key bound to them above is there.
+(which-key-help-key 'tree "?")
+(which-key-help-key 'dired "?")
