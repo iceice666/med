@@ -118,6 +118,11 @@ static LANGS: &[LangInfo] = &[
     },
 ];
 
+/// One of med's own languages, by name.
+pub fn lang_named(name: &str) -> Option<&'static LangInfo> {
+    LANGS.iter().find(|l| l.name == name)
+}
+
 pub fn lang_for_path(path: &Path) -> Option<&'static LangInfo> {
     let file_name = path.file_name()?.to_str()?;
     if let Some(lang) = LANGS.iter().find(|l| l.filenames.contains(&file_name)) {

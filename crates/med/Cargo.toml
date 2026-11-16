@@ -40,6 +40,10 @@ trash = "5.3.0"
 name = "lsp"
 harness = false
 
+[[test]]
+name = "lsp_config"
+harness = false
+
 [dev-dependencies]
 # gpui-kit's own `test-support` feature drags in an unpublished gpui-fast;
 # enabling it on the underlying GPUI crate is enough for `#[gpui::test]`.

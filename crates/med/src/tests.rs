@@ -5715,3 +5715,63 @@ fn keeps_the_session_of_a_project(cx: &mut TestAppContext) {
     let message = ws.read_with(vcx, |ws, _| ws.message.clone().unwrap_or_default());
     assert!(message.starts_with("Session not restored"), "{message}");
 }
+
+/// A language med knows only by name, from the init file: its files are
+/// of it, and comment and indent as it says.
+#[gpui::test]
+fn a_program_names_a_language_and_its_servers(cx: &mut TestAppContext) {
+    let project = Project::new(&[("main.dart", "void main() {}\n"), ("a.rs", "fn a() {}\n")]);
+    let program = r#"
+        (deflanguage "dart" :extensions '("dart") :comment "//" :tab-width 2)
+        (lsp-server "dartls" :command "dart" :args '("language-server" "--protocol=lsp")
+          :languages '("dart") :settings '(:dart (:lineLength 100)))
+        (lsp-server "rust-analyzer" :settings "{\"rust-analyzer\": {}}")
+        (lsp-server "pylsp" :enabled false)
+    "#;
+    let (ws, cx) = open_with(&[program], &project, &["main.dart"], cx);
+    assert_eq!(eval_in(&ws, "(buffer-language)", cx), r#""dart""#);
+    cx.simulate_keystrokes("g c c");
+    assert_eq!(text(&ws, cx), "// void main() {}\n");
+
+    assert_eq!(
+        lisp(
+            "(map (fn (s) (get s :name)) (filter (fn (s) (get s :enabled)) (lsp-servers)))",
+            cx
+        )
+        .matches("\"pylsp\"")
+        .count(),
+        0
+    );
+    assert_eq!(
+        lisp(
+            "(get (car (filter (fn (s) (= (get s :name) \"dartls\")) (lsp-servers))) :args)",
+            cx
+        ),
+        r#"("language-server" "--protocol=lsp")"#
+    );
+    let dart = cx.update(|_, cx| crate::lsp_config::servers_for("dart", cx));
+    assert_eq!(
+        dart[0].settings,
+        serde_json::json!({ "dart": { "lineLength": 100 } })
+    );
+
+    // A new server needs a command and languages; options are checked.
+    for bad in [
+        r#"(lsp-server "eslint")"#,
+        r#"(lsp-server "eslint" :command "x")"#,
+        r#"(lsp-server "rust-analyzer" :settings '(1 2))"#,
+        r#"(lsp-server "rust-analyzer" :settings "{oops")"#,
+        r#"(lsp-server "rust-analyzer" :colour "red")"#,
+        r#"(deflanguage "x" :tab-width 0)"#,
+    ] {
+        assert!(
+            cx.update(|_, cx| crate::script::eval(bad, cx)).is_err(),
+            "{bad}"
+        );
+    }
+
+    // Running the init file again starts from med's own.
+    cx.update(|_, cx| crate::lsp_config::reset(cx));
+    let dart = cx.update(|_, cx| crate::lsp_config::servers_for("dart", cx));
+    assert!(dart.is_empty());
+}

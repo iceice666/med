@@ -6,7 +6,7 @@
 
 - 自有的編輯核心：具分組復原的 rope 緩衝區（`med-core`），以及不需 UI 就能執行的 vim 引擎（`med-vim`）
 - 約 35 種語言的 Tree-sitter 語法高亮，以及依循語法樹的文字物件與移動（函式、型別、引數、註解）
-- LSP：診斷、自動完成、懸停說明、簽章提示、跳至定義、參照、重新命名、程式碼動作、格式化
+- LSP：診斷、自動完成、懸停說明、簽章提示、跳至定義、參照、重新命名、程式碼動作、格式化；伺服器、其設定與同一檔案的多個伺服器都在 init 檔中設定
 - 沒有內建按鍵。vim 按鍵配置、oil.nvim 風格的目錄編輯器、模糊搜尋器、lazygit 風格的 git 畫面和 which-key 都是 [`examples/`](examples) 裡的 Lisp 程式，由你載入、修改或替換
 
 ## 安裝
@@ -86,7 +86,7 @@ cargo test --workspace
 
 程式也能加入面板、讀取與編輯緩衝區、裝飾行，以及回應 hook。參考文件在 `docs/`：
 
-- [按鍵與命令](docs/keys.zh-TW.md)：預設按鍵、按鍵表、`bind`、`defcommand`、選項
+- [按鍵與命令](docs/keys.zh-TW.md)：預設按鍵、按鍵表、`bind`、`defcommand`、選項、語言伺服器（`lsp-server`、`deflanguage`）
 - [範例程式](docs/examples.zh-TW.md)：oil、檔案樹、搜尋器、git 畫面、which-key 與 dired 的詳細說明
 - [腳本](docs/lisp.zh-TW.md)：面板、版面、狀態列與標題列、宿主函式、hook、緩衝區 API 以及 Lisp 本身
 

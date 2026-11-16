@@ -154,3 +154,45 @@ flash.nvim 的其他功能也使用同樣的標記：
 `:user.note today` 會開啟 `notes/today.md`。除了代表命令列其餘部分的 `command-arg`，還有 `command-bang`（是否有 `!`）和 `command-count`（按鍵前輸入的次數，或 `nil`）。`(current-file)` 和 `(project-root)` 告訴你編輯器目前的位置。命令不能使用編輯器內建命令的名稱。
 
 一個本身就有綁定、同時也是較長綁定開頭的按鍵（例如會向右移動的 `space`），會等待一秒讓你輸入其餘部分，然後才執行。`(set-option 'key-timeout 300)` 可設定另一個等待時間，單位為毫秒；設為 `nil` 則會一直等到下一個按鍵，不論多久。
+
+## 語言伺服器
+
+檔案由其語言的語言伺服器負責，只要能在專案的 `PATH` 中找到。med 為它認得的語言內建了伺服器（`rust-analyzer`、`clangd`、`basedpyright-langserver`，找不到時依序是 `pyright-langserver`、`pylsp`，以及 `typescript-language-server`、`gopls` 等），各以其程式名稱稱呼；`(lsp-servers)` 會全部列出。init 檔可以修改、關閉它們，也可以加入其他伺服器：
+
+```lisp
+; med 內建的：只改給出的部分，其餘不變。
+(lsp-server "rust-analyzer"
+  :settings '(:rust-analyzer (:check (:command "clippy") :cargo (:features "all"))))
+(lsp-server "pylsp" :enabled false)
+
+; 自己加的需要指令與它負責的語言。
+(lsp-server "eslint"
+  :command "vscode-eslint-language-server" :args '("--stdio")
+  :languages '("javascript" "typescript" "tsx")
+  :settings "{\"validate\": \"on\", \"run\": \"onType\", \"quiet\": false,
+              \"useESLintClass\": false, \"experimental\": {}, \"nodePath\": \"\",
+              \"problems\": {\"shortenToSingleLine\": false},
+              \"rulesCustomizations\": [], \"onIgnoredFiles\": \"off\",
+              \"codeActionOnSave\": {\"enable\": false, \"mode\": \"all\"},
+              \"codeAction\": {\"disableRuleComment\": {\"enable\": true, \"location\": \"separateLine\"},
+                             \"showDocumentation\": {\"enable\": true}},
+              \"workingDirectory\": {\"mode\": \"auto\"}}")
+```
+
+有些伺服器（例如 eslint）不會自行補上沒給的設定：它們的設定要寫齊文件（或 nvim-lspconfig 對它們的設定）列出的所有項目。
+
+`:settings` 是伺服器詢問設定時（`workspace/configuration`，一次一個 section，例如 `"python.analysis"`）得到的回答，伺服器啟動後也會送給它一次；`:init-options` 隨 `initialize` 送出。兩者都可以寫成 keyword 與值交錯的串列，`'(:a 1 :b (:c true))` 即 `{"a": 1, "b": {"c": true}}`，其他串列則是陣列；也可以直接寫成 JSON 字串，照抄伺服器文件上的寫法。`:enabled false` 讓伺服器不會啟動。
+
+med 不認得的語言用 `deflanguage` 命名，讓這些檔案在 `buffer-language` 與伺服器眼中有了語言，但沒有語法高亮：
+
+```lisp
+(deflanguage "dart" :extensions '("dart") :comment "//" :tab-width 2)
+(lsp-server "dartls" :command "dart" :args '("language-server" "--protocol=lsp")
+  :languages '("dart"))
+```
+
+選項有 `:extensions`、`:filenames`（`"Justfile"`）、`:lsp-id`（告訴伺服器的 `languageId`，預設為名稱）、`:comment`、`:tab-width` 與 `:expand-tab`。若以 med 已有的語言命名，則是為該語言增加檔案，並保留其語法高亮。
+
+檔案語言的每個伺服器都會負責它，順序依設定的先後；但 med 內建、彼此可替代的伺服器（例如 Python 的三個）只取第一個找到的。所有伺服器都會收到檔案的內容，所有伺服器的診斷與 code action 都會顯示；code action 由提供它的伺服器執行。其他功能（hover、定義、參照、重新命名、補全、signature help、inlay hint、格式化）交給第一個表示能做的伺服器，因此第二個伺服器的補全不會顯示。
+
+伺服器會沿用啟動時的設定：修改 init 檔並重新執行（`:workspace.reload_init`）之後，`:workspace.reload_env` 會以新的設定重新啟動伺服器。

@@ -1,7 +1,13 @@
-//! Language server management: which server speaks which language, starting
-//! them on demand, document sync, and collected diagnostics.
+//! Language server management: which servers speak which language
+//! (`lsp_config`), starting them on demand, document sync, and collected
+//! diagnostics.
+//!
+//! A file can have several servers (tsserver and eslint). Every one of them
+//! is told of its text and gives diagnostics and code actions; anything
+//! else asked about the file goes to the first that says it can answer.
 
 use crate::env::{EnvCell, ProjectEnv};
+use crate::lsp_config::{self, ServerConfig};
 use crate::syntax::LangInfo;
 use futures::StreamExt;
 use gpui::{Context, EventEmitter, Task};
@@ -12,33 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-type Candidate = (&'static str, &'static [&'static str]);
-
-/// Servers to try for a language, in order of preference.
-fn candidates(lang: &str) -> &'static [Candidate] {
-    match lang {
-        "rust" => &[("rust-analyzer", &[])],
-        "c" | "cpp" => &[("clangd", &[])],
-        "python" => &[
-            ("basedpyright-langserver", &["--stdio"]),
-            ("pyright-langserver", &["--stdio"]),
-            ("pylsp", &[]),
-        ],
-        "javascript" | "typescript" | "tsx" => &[("typescript-language-server", &["--stdio"])],
-        "go" => &[("gopls", &[])],
-        "nix" => &[("nixd", &[]), ("nil", &[])],
-        "lua" => &[("lua-language-server", &[])],
-        "zig" => &[("zls", &[])],
-        "swift" => &[("sourcekit-lsp", &[])],
-        "toml" => &[("taplo", &["lsp", "stdio"])],
-        "json" => &[("vscode-json-language-server", &["--stdio"])],
-        "html" => &[("vscode-html-language-server", &["--stdio"])],
-        "css" => &[("vscode-css-language-server", &["--stdio"])],
-        "yaml" => &[("yaml-language-server", &["--stdio"])],
-        "bash" => &[("bash-language-server", &["start"])],
-        _ => &[],
-    }
-}
+/// A server, by the name it is configured under.
+pub type ServerName = Arc<str>;
 
 pub fn path_to_uri(path: &Path) -> Option<lsp::Uri> {
     let mut out = String::from("file://");
@@ -80,6 +61,10 @@ type Queued = Box<dyn FnOnce(&Client, bool)>;
 
 struct Server {
     client: Arc<Client>,
+    /// What it was started with, and is to be told.
+    config: ServerConfig,
+    /// What it said it can do, once it is ready.
+    caps: lsp::ServerCapabilities,
     ready: bool,
     incremental: bool,
     /// Messages held back until the server has been initialized.
@@ -109,16 +94,25 @@ pub struct LspStore {
     root: PathBuf,
     /// When false no server is ever started.
     enabled: bool,
-    servers: HashMap<&'static str, Server>,
+    servers: HashMap<ServerName, Server>,
     /// Servers that crashed or failed to start; not retried.
-    failed: HashSet<&'static str>,
+    failed: HashSet<ServerName>,
     /// The environment servers are started in.
     env: Arc<EnvCell>,
     /// Files opened while the environment was still being worked out,
     /// with their language and latest text.
     waiting: HashMap<PathBuf, (&'static LangInfo, String)>,
-    docs: HashMap<PathBuf, &'static str>,
+    /// The servers of each open file, the one asked first first.
+    docs: HashMap<PathBuf, Vec<ServerName>>,
+    /// What each server said of each file.
+    published: HashMap<PathBuf, Vec<(ServerName, Vec<lsp::Diagnostic>)>>,
+    /// All of those, file by file.
     diagnostics: HashMap<PathBuf, Vec<lsp::Diagnostic>>,
+}
+
+/// Whether a server offers something it may also have turned off.
+fn offers<T>(capability: &Option<lsp::OneOf<bool, T>>) -> bool {
+    !matches!(capability, None | Some(lsp::OneOf::Left(false)))
 }
 
 impl EventEmitter<LspEvent> for LspStore {}
@@ -188,6 +182,7 @@ impl LspStore {
             env,
             waiting: HashMap::new(),
             docs: HashMap::new(),
+            published: HashMap::new(),
             diagnostics: HashMap::new(),
         }
     }
@@ -207,22 +202,18 @@ impl LspStore {
         self.failed.clear();
         self.docs.clear();
         self.waiting.clear();
+        self.published.clear();
         for (path, _) in std::mem::take(&mut self.diagnostics) {
             cx.emit(LspEvent::Diagnostics(path));
         }
         cx.emit(LspEvent::Status);
     }
 
-    fn start(
-        &mut self,
-        env: &ProjectEnv,
-        program: &'static str,
-        args: &[&str],
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let mut command = env.command(program);
-        command.args(args).current_dir(&self.root);
-        let Ok((client, mut incoming)) = Client::spawn_command(program, command) else {
+    fn start(&mut self, env: &ProjectEnv, config: ServerConfig, cx: &mut Context<Self>) -> bool {
+        let program: ServerName = config.name.clone();
+        let mut command = env.command(&config.command);
+        command.args(&config.args).current_dir(&self.root);
+        let Ok((client, mut incoming)) = Client::spawn_command(&program, command) else {
             self.failed.insert(program);
             return false;
         };
@@ -248,16 +239,21 @@ impl LspStore {
                 name: "med".into(),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
             }),
+            initialization_options: config.init_options.clone(),
             ..Default::default()
         };
         let init = client.request::<lsp::request::Initialize>(params);
+        let name = program.clone();
         let reader = cx.spawn(async move |this, cx| {
+            let program = name;
             let result = init.await;
             if let Err(error) = &result {
                 eprintln!("med: {program} failed to initialize: {error:#}");
             }
             let ok = this
-                .update(cx, |this, cx| this.on_initialized(program, result.ok(), cx))
+                .update(cx, |this, cx| {
+                    this.on_initialized(&program, result.ok(), cx)
+                })
                 .unwrap_or(false);
             if !ok {
                 return;
@@ -265,7 +261,7 @@ impl LspStore {
             while let Some(message) = incoming.next().await {
                 let exited = matches!(message, Incoming::Exited);
                 if this
-                    .update(cx, |this, cx| this.on_incoming(program, message, cx))
+                    .update(cx, |this, cx| this.on_incoming(&program, message, cx))
                     .is_err()
                     || exited
                 {
@@ -277,6 +273,8 @@ impl LspStore {
             program,
             Server {
                 client,
+                config,
+                caps: lsp::ServerCapabilities::default(),
                 ready: false,
                 incremental: false,
                 queued: Vec::new(),
@@ -293,13 +291,13 @@ impl LspStore {
 
     fn on_initialized(
         &mut self,
-        program: &'static str,
+        program: &str,
         result: Option<lsp::InitializeResult>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(result) = result else {
             self.servers.remove(program);
-            self.failed.insert(program);
+            self.failed.insert(program.into());
             cx.emit(LspEvent::Status);
             return false;
         };
@@ -325,12 +323,29 @@ impl LspStore {
             .and_then(|c| c.trigger_characters.as_ref())
             .map(|chars| chars.iter().filter_map(|s| s.chars().next()).collect())
             .unwrap_or_default();
-        server.inlay_hints = caps.inlay_hint_provider.is_some();
+        server.inlay_hints = offers(&caps.inlay_hint_provider);
+        server.caps = result.capabilities;
         server.ready = true;
         server.status = None;
         server
             .client
             .notify::<lsp::notification::Initialized>(lsp::InitializedParams {});
+        // As well as answering for them, as lspconfig does: some servers
+        // only read what they are sent.
+        if server
+            .config
+            .settings
+            .as_object()
+            .is_some_and(|s| !s.is_empty())
+        {
+            server
+                .client
+                .notify::<lsp::notification::DidChangeConfiguration>(
+                    lsp::DidChangeConfigurationParams {
+                        settings: server.config.settings.clone(),
+                    },
+                );
+        }
         for message in std::mem::take(&mut server.queued) {
             message(&server.client, server.incremental);
         }
@@ -338,7 +353,7 @@ impl LspStore {
         true
     }
 
-    fn on_incoming(&mut self, program: &'static str, message: Incoming, cx: &mut Context<Self>) {
+    fn on_incoming(&mut self, program: &str, message: Incoming, cx: &mut Context<Self>) {
         match message {
             Incoming::Notification { method, params } => match method.as_str() {
                 "textDocument/publishDiagnostics" => {
@@ -348,7 +363,7 @@ impl LspStore {
                         return;
                     };
                     if let Some(path) = uri_to_path(&params.uri) {
-                        self.diagnostics.insert(path.clone(), params.diagnostics);
+                        self.publish(program, path.clone(), params.diagnostics);
                         cx.emit(LspEvent::Diagnostics(path));
                     }
                 }
@@ -387,8 +402,7 @@ impl LspStore {
                 };
                 let result = match method.as_str() {
                     "workspace/configuration" => {
-                        let count = params["items"].as_array().map_or(0, Vec::len);
-                        Ok(Value::Array(vec![Value::Null; count]))
+                        Ok(configuration(&server.config.settings, &params))
                     }
                     "client/registerCapability"
                     | "client/unregisterCapability"
@@ -419,38 +433,85 @@ impl LspStore {
             }
             Incoming::Exited => {
                 self.servers.remove(program);
-                self.failed.insert(program);
+                self.failed.insert(program.into());
                 cx.emit(LspEvent::Status);
             }
         }
     }
 
-    fn server(&self, path: &Path) -> Option<&Server> {
-        self.servers.get(self.docs.get(path)?)
+    /// The servers of `path` that are ready, the one asked first first.
+    fn ready_servers<'a>(&'a self, path: &Path) -> impl Iterator<Item = &'a Server> + 'a {
+        self.docs
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter_map(|name| self.servers.get(name))
+            .filter(|server| server.ready)
     }
 
-    fn ready_server(&self, path: &Path) -> Option<&Server> {
-        self.server(path).filter(|s| s.ready)
+    /// Whether every server of `path` that is running is ready.
+    fn all_ready(&self, path: &Path) -> bool {
+        self.docs
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter_map(|name| self.servers.get(name))
+            .all(|server| server.ready)
     }
 
-    /// Send now, or once the document's server is initialized.
-    fn send(&mut self, path: &Path, message: impl FnOnce(&Client, bool) + 'static) {
-        let Some(program) = self.docs.get(path) else {
-            return;
-        };
-        let Some(server) = self.servers.get_mut(program) else {
+    /// The first ready server of `path` that says it can do what `can`
+    /// asks. Failing that, once all are ready, the first, which may know
+    /// more than it said; while one is starting it may be the one to ask.
+    fn ready_server(
+        &self,
+        path: &Path,
+        can: impl Fn(&lsp::ServerCapabilities) -> bool,
+    ) -> Option<&Server> {
+        self.ready_servers(path)
+            .find(|server| can(&server.caps))
+            .or_else(|| {
+                self.all_ready(path)
+                    .then(|| self.ready_servers(path).next())
+                    .flatten()
+            })
+    }
+
+    /// Send to one server now, or once it is initialized.
+    fn send_to(&mut self, name: &str, message: Queued) {
+        let Some(server) = self.servers.get_mut(name) else {
             return;
         };
         if server.ready {
             message(&server.client, server.incremental);
         } else {
-            server.queued.push(Box::new(message));
+            server.queued.push(message);
         }
+    }
+
+    /// Send to every server of the document, each its own message.
+    fn send(&mut self, path: &Path, message: impl Fn() -> Queued) {
+        for name in self.docs.get(path).cloned().unwrap_or_default() {
+            self.send_to(&name, message());
+        }
+    }
+
+    /// What a server said of a file, in place of what it said before.
+    fn publish(&mut self, server: &str, path: PathBuf, diagnostics: Vec<lsp::Diagnostic>) {
+        let published = self.published.entry(path.clone()).or_default();
+        match published.iter_mut().find(|(name, _)| &**name == server) {
+            Some((_, known)) => *known = diagnostics,
+            None => published.push((server.into(), diagnostics)),
+        }
+        let all = published
+            .iter()
+            .flat_map(|(_, d)| d.iter().cloned())
+            .collect();
+        self.diagnostics.insert(path, all);
     }
 
     // ---- document lifecycle --------------------------------------------
 
-    /// Announce an opened file, starting its language server if needed.
+    /// Announce an opened file, starting its language servers if needed.
     pub fn open(
         &mut self,
         path: &Path,
@@ -469,43 +530,56 @@ impl LspStore {
             cx.emit(LspEvent::Status);
             return;
         };
-        let running = candidates(lang.name)
-            .iter()
-            .find(|(program, _)| self.servers.contains_key(program))
-            .map(|(program, _)| *program);
-        let mut program = running;
-        if program.is_none() {
-            for (candidate, args) in candidates(lang.name) {
-                if !self.failed.contains(candidate)
-                    && env.find_program(candidate).is_some()
-                    && self.start(&env, candidate, args, cx)
+        // Of each group, one: the one running, or else the first that starts.
+        let configs = lsp_config::servers_for(lang.name, cx);
+        let mut groups: Vec<Vec<ServerConfig>> = Vec::new();
+        for config in configs {
+            match groups.iter_mut().find(|g| g[0].group == config.group) {
+                Some(group) => group.push(config),
+                None => groups.push(vec![config]),
+            }
+        }
+        let mut names = Vec::new();
+        for group in groups {
+            if let Some(running) = group.iter().find(|c| self.servers.contains_key(&c.name)) {
+                names.push(running.name.clone());
+                continue;
+            }
+            for config in group {
+                let name = config.name.clone();
+                if !self.failed.contains(&name)
+                    && env.find_program(&config.command).is_some()
+                    && self.start(&env, config, cx)
                 {
-                    program = Some(*candidate);
+                    names.push(name);
                     break;
                 }
             }
         }
-        let Some(program) = program else {
+        if names.is_empty() {
             return;
-        };
-        self.docs.insert(path.to_path_buf(), program);
+        }
+        self.docs.insert(path.to_path_buf(), names);
         let language_id = lang.lsp_id.to_string();
-        self.send(path, move |client, _| {
-            client.notify::<lsp::notification::DidOpenTextDocument>(
-                lsp::DidOpenTextDocumentParams {
-                    text_document: lsp::TextDocumentItem {
-                        uri,
-                        language_id,
-                        version: 0,
-                        text,
+        self.send(path, || {
+            let (uri, language_id, text) = (uri.clone(), language_id.clone(), text.clone());
+            Box::new(move |client, _| {
+                client.notify::<lsp::notification::DidOpenTextDocument>(
+                    lsp::DidOpenTextDocumentParams {
+                        text_document: lsp::TextDocumentItem {
+                            uri,
+                            language_id,
+                            version: 0,
+                            text,
+                        },
                     },
-                },
-            );
+                );
+            })
         });
     }
 
-    /// Report edits. `full_text` is only called for servers that cannot take
-    /// incremental changes (or are not initialized yet).
+    /// Report edits. `full_text` is only called if some server cannot take
+    /// incremental changes (or is not initialized yet).
     pub fn change(
         &mut self,
         path: &Path,
@@ -520,29 +594,32 @@ impl LspStore {
             *text = full_text();
             return;
         }
-        let Some(server) = self.server(path) else {
+        let Some(names) = self.docs.get(path) else {
             return;
         };
-        let full = if server.ready && server.incremental {
-            None
-        } else {
-            Some(full_text())
-        };
-        self.send(path, move |client, incremental| {
-            let content_changes = match full {
-                Some(text) if !incremental => vec![lsp::TextDocumentContentChangeEvent {
-                    range: None,
-                    range_length: None,
-                    text,
-                }],
-                _ => changes,
-            };
-            client.notify::<lsp::notification::DidChangeTextDocument>(
-                lsp::DidChangeTextDocumentParams {
-                    text_document: lsp::VersionedTextDocumentIdentifier { uri, version },
-                    content_changes,
-                },
-            );
+        let wants_full = names
+            .iter()
+            .filter_map(|name| self.servers.get(name))
+            .any(|server| !(server.ready && server.incremental));
+        let full = wants_full.then(full_text);
+        self.send(path, || {
+            let (uri, changes, full) = (uri.clone(), changes.clone(), full.clone());
+            Box::new(move |client, incremental| {
+                let content_changes = match full {
+                    Some(text) if !incremental => vec![lsp::TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text,
+                    }],
+                    _ => changes,
+                };
+                client.notify::<lsp::notification::DidChangeTextDocument>(
+                    lsp::DidChangeTextDocumentParams {
+                        text_document: lsp::VersionedTextDocumentIdentifier { uri, version },
+                        content_changes,
+                    },
+                );
+            })
         });
     }
 
@@ -550,28 +627,35 @@ impl LspStore {
         let Some(uri) = path_to_uri(path) else {
             return;
         };
-        self.send(path, move |client, _| {
-            client.notify::<lsp::notification::DidSaveTextDocument>(
-                lsp::DidSaveTextDocumentParams {
-                    text_document: lsp::TextDocumentIdentifier { uri },
-                    text: None,
-                },
-            );
+        self.send(path, || {
+            let uri = uri.clone();
+            Box::new(move |client, _| {
+                client.notify::<lsp::notification::DidSaveTextDocument>(
+                    lsp::DidSaveTextDocumentParams {
+                        text_document: lsp::TextDocumentIdentifier { uri },
+                        text: None,
+                    },
+                );
+            })
         });
     }
 
     pub fn close(&mut self, path: &Path, cx: &mut Context<Self>) {
         if let Some(uri) = path_to_uri(path) {
-            self.send(path, move |client, _| {
-                client.notify::<lsp::notification::DidCloseTextDocument>(
-                    lsp::DidCloseTextDocumentParams {
-                        text_document: lsp::TextDocumentIdentifier { uri },
-                    },
-                );
+            self.send(path, || {
+                let uri = uri.clone();
+                Box::new(move |client, _| {
+                    client.notify::<lsp::notification::DidCloseTextDocument>(
+                        lsp::DidCloseTextDocumentParams {
+                            text_document: lsp::TextDocumentIdentifier { uri },
+                        },
+                    );
+                })
             });
         }
         self.docs.remove(path);
         self.waiting.remove(path);
+        self.published.remove(path);
         if self.diagnostics.remove(path).is_some() {
             cx.emit(LspEvent::Diagnostics(path.to_path_buf()));
         }
@@ -603,28 +687,36 @@ impl LspStore {
         counts
     }
 
-    /// Status-bar text for the server attached to `path`.
+    /// Status-bar text for the servers attached to `path`.
     pub fn status(&self, path: &Path) -> Option<String> {
         if self.waiting.contains_key(path) {
             return Some("loading the environment".into());
         }
-        let program = self.docs.get(path)?;
-        let server = self.servers.get(program)?;
-        Some(match &server.status {
-            Some(status) => format!("{program}: {status}"),
-            None => program.to_string(),
-        })
+        let parts: Vec<String> = self
+            .docs
+            .get(path)?
+            .iter()
+            .filter_map(|name| {
+                let server = self.servers.get(name)?;
+                Some(match &server.status {
+                    Some(status) => format!("{name}: {status}"),
+                    None => name.to_string(),
+                })
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(", "))
     }
 
-    /// Characters that should trigger completion for `path`.
+    /// Characters that should trigger completion for `path`: those of the
+    /// server completions are asked of.
     pub fn completion_triggers(&self, path: &Path) -> &[char] {
-        self.ready_server(path)
+        self.ready_server(path, |c| c.completion_provider.is_some())
             .map_or(&[], |s| s.triggers.as_slice())
     }
 
     /// Characters after which to ask for the signature of what is called.
     pub fn signature_triggers(&self, path: &Path) -> &[char] {
-        self.ready_server(path)
+        self.ready_server(path, |c| c.signature_help_provider.is_some())
             .map_or(&[], |s| s.signature_triggers.as_slice())
     }
 
@@ -645,7 +737,11 @@ impl LspStore {
         path: &Path,
         position: lsp::Position,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::Hover>>> + use<>> {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| {
+            c.hover_provider
+                .as_ref()
+                .is_some_and(|h| !matches!(h, lsp::HoverProviderCapability::Simple(false)))
+        })?;
         Some(
             server
                 .client
@@ -662,7 +758,7 @@ impl LspStore {
         position: lsp::Position,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::GotoDefinitionResponse>>> + use<>>
     {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| offers(&c.definition_provider))?;
         Some(
             server
                 .client
@@ -679,7 +775,7 @@ impl LspStore {
         path: &Path,
         position: lsp::Position,
     ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::Location>>>> + use<>> {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| offers(&c.references_provider))?;
         Some(
             server
                 .client
@@ -700,7 +796,7 @@ impl LspStore {
         position: lsp::Position,
         trigger: Option<char>,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::CompletionResponse>>> + use<>> {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| c.completion_provider.is_some())?;
         let context = match trigger {
             Some(c) => lsp::CompletionContext {
                 trigger_kind: lsp::CompletionTriggerKind::TRIGGER_CHARACTER,
@@ -730,7 +826,7 @@ impl LspStore {
         path: &Path,
         position: lsp::Position,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::SignatureHelp>>> + use<>> {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| c.signature_help_provider.is_some())?;
         Some(server.client.request::<lsp::request::SignatureHelpRequest>(
             lsp::SignatureHelpParams {
                 context: None,
@@ -746,7 +842,7 @@ impl LspStore {
         position: lsp::Position,
         new_name: String,
     ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::WorkspaceEdit>>> + use<>> {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| offers(&c.rename_provider))?;
         Some(
             server
                 .client
@@ -759,39 +855,78 @@ impl LspStore {
     }
 
     /// What can be done about `range`: fixes for the diagnostics in it,
-    /// and refactorings.
+    /// and refactorings, from every server of the file that has any, each
+    /// with the server it came from.
     pub fn code_actions(
         &self,
         path: &Path,
         range: lsp::Range,
-    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::CodeActionResponse>>> + use<>> {
-        let server = self.ready_server(path)?;
+    ) -> Option<impl Future<Output = Vec<(ServerName, lsp::CodeActionOrCommand)>> + use<>> {
+        let uri = path_to_uri(path)?;
+        let mut servers: Vec<&Server> =
+            self.ready_servers(path)
+                .filter(|s| {
+                    s.caps.code_action_provider.as_ref().is_some_and(|c| {
+                        !matches!(c, lsp::CodeActionProviderCapability::Simple(false))
+                    })
+                })
+                .collect();
+        if servers.is_empty() && self.all_ready(path) {
+            servers.extend(self.ready_servers(path).next());
+        }
+        if servers.is_empty() {
+            return None;
+        }
         let touches =
             |d: &&lsp::Diagnostic| d.range.start <= range.end && d.range.end >= range.start;
-        let diagnostics = self.diagnostics(path).iter().filter(touches).cloned();
-        Some(
-            server
-                .client
-                .request::<lsp::request::CodeActionRequest>(lsp::CodeActionParams {
-                    text_document: lsp::TextDocumentIdentifier {
-                        uri: path_to_uri(path)?,
+        let requests: Vec<_> = servers
+            .into_iter()
+            .map(|server| {
+                // A server is told of its own diagnostics only.
+                let diagnostics = self
+                    .published
+                    .get(path)
+                    .and_then(|p| p.iter().find(|(name, _)| *name == server.config.name))
+                    .map(|(_, d)| d.iter().filter(touches).cloned().collect())
+                    .unwrap_or_default();
+                let name = server.config.name.clone();
+                let request = server.client.request::<lsp::request::CodeActionRequest>(
+                    lsp::CodeActionParams {
+                        text_document: lsp::TextDocumentIdentifier { uri: uri.clone() },
+                        range,
+                        context: lsp::CodeActionContext {
+                            diagnostics,
+                            only: None,
+                            trigger_kind: Some(lsp::CodeActionTriggerKind::INVOKED),
+                        },
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
                     },
-                    range,
-                    context: lsp::CodeActionContext {
-                        diagnostics: diagnostics.collect(),
-                        only: None,
-                        trigger_kind: Some(lsp::CodeActionTriggerKind::INVOKED),
-                    },
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                }),
-        )
+                );
+                async move {
+                    let actions = request.await.ok().flatten().unwrap_or_default();
+                    actions.into_iter().map(move |a| (name.clone(), a))
+                }
+            })
+            .collect();
+        Some(async move {
+            futures::future::join_all(requests)
+                .await
+                .into_iter()
+                .flatten()
+                .collect()
+        })
     }
 
-    /// Have the server of `path` run one of its commands. What that edits
-    /// comes back as [`LspEvent::ApplyEdit`].
-    pub fn execute_command(&self, path: &Path, command: lsp::Command) {
-        let Some(server) = self.ready_server(path) else {
+    /// Have a server of `path` run one of its commands: `server`, the one
+    /// that offered it, or else the first. What that edits comes back as
+    /// [`LspEvent::ApplyEdit`].
+    pub fn execute_command(&self, path: &Path, server: Option<&str>, command: lsp::Command) {
+        let server = match server {
+            Some(name) => self.ready_servers(path).find(|s| &*s.config.name == name),
+            None => self.ready_server(path, |c| c.execute_command_provider.is_some()),
+        };
+        let Some(server) = server else {
             return;
         };
         let request =
@@ -812,9 +947,7 @@ impl LspStore {
         path: &Path,
         range: lsp::Range,
     ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::InlayHint>>>> + use<>> {
-        let server = self
-            .ready_server(path)
-            .filter(|server| server.inlay_hints)?;
+        let server = self.ready_servers(path).find(|server| server.inlay_hints)?;
         Some(
             server
                 .client
@@ -834,7 +967,7 @@ impl LspStore {
         tab_size: u32,
         insert_spaces: bool,
     ) -> Option<impl Future<Output = anyhow::Result<Option<Vec<lsp::TextEdit>>>> + use<>> {
-        let server = self.ready_server(path)?;
+        let server = self.ready_server(path, |c| offers(&c.document_formatting_provider))?;
         Some(
             server
                 .client
@@ -851,6 +984,18 @@ impl LspStore {
                 }),
         )
     }
+}
+
+/// The answer to `workspace/configuration`: for each item, the part of the
+/// settings at its section, or all of them for an item with none.
+fn configuration(settings: &Value, params: &Value) -> Value {
+    let items = params["items"].as_array().map_or(&[][..], Vec::as_slice);
+    Value::Array(
+        items
+            .iter()
+            .map(|item| lsp_config::section(settings, item["section"].as_str()))
+            .collect(),
+    )
 }
 
 /// The edits a server asked for, file by file. Creating, renaming and
@@ -954,6 +1099,94 @@ mod tests {
 
         store.update(cx, |store, cx| store.restart(cx));
         store.read_with(cx, |store, _| assert_eq!(store.status(&file), None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Each item asked for gets its section of the settings, or all of them.
+    #[test]
+    fn answers_for_the_configuration() {
+        let settings = json!({ "python": { "analysis": { "strict": true } }, "validate": "on" });
+        let params = json!({ "items": [
+            { "section": "python.analysis" },
+            { "scopeUri": "file:///p/a.js" },
+            { "section": "nothing" },
+        ] });
+        assert_eq!(
+            configuration(&settings, &params),
+            json!([{ "strict": true }, settings, null])
+        );
+    }
+
+    /// Every server set up for a file's language serves it, one of each
+    /// group of med's own, in the order they were set up; one turned off
+    /// does not.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_file_has_every_server_of_its_language(cx: &mut gpui::TestAppContext) {
+        use crate::lsp_config::LspConfig;
+        use gpui::AppContext as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("med-lsp-many-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for program in [
+            "typescript-language-server",
+            "eslint-ls",
+            "tailwind-ls",
+            "off-ls",
+        ] {
+            let server = dir.join(program);
+            std::fs::write(&server, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+            std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!("{}:/usr/bin:/bin", dir.display());
+        let cell = EnvCell::ready(ProjectEnv::from_vars([("PATH", path.as_str())]));
+        cx.update(|cx| {
+            crate::script::init(cx);
+            let program = r#"
+                (lsp-server "eslint" :command "eslint-ls" :languages '("typescript"))
+                (lsp-server "tailwind" :command "tailwind-ls" :languages '("typescript" "css"))
+                (lsp-server "off" :command "off-ls" :languages '("typescript") :enabled false)
+                (lsp-server "missing" :command "not-there-ls" :languages '("typescript"))
+            "#;
+            crate::script::eval(program, cx).unwrap();
+            assert!(cx.has_global::<LspConfig>());
+        });
+
+        let file = dir.join("a.ts");
+        let lang = crate::syntax::lang_for_path(&file).unwrap();
+        let store = cx.new(|_| LspStore::with_env(dir.clone(), true, cell));
+        store.update(cx, |store, cx| {
+            store.open(&file, lang, "let a = 1".into(), cx)
+        });
+        store.read_with(cx, |store, _| {
+            assert_eq!(
+                store.status(&file).as_deref(),
+                Some("typescript-language-server: starting, eslint: starting, tailwind: starting")
+            );
+            assert!(store.failed.is_empty());
+        });
+
+        // What each server says of a file is its own, and all are shown.
+        let diagnostic = |message: &str| lsp::Diagnostic {
+            message: message.into(),
+            ..Default::default()
+        };
+        store.update(cx, |store, _| {
+            store.publish("eslint", file.clone(), vec![diagnostic("unused")]);
+            store.publish(
+                "typescript-language-server",
+                file.clone(),
+                vec![diagnostic("type")],
+            );
+            store.publish("eslint", file.clone(), vec![diagnostic("semicolon")]);
+            let messages: Vec<_> = store
+                .diagnostics(&file)
+                .iter()
+                .map(|d| &d.message)
+                .collect();
+            assert_eq!(messages, ["semicolon", "type"]);
+        });
+        store.update(cx, |store, cx| store.restart(cx));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

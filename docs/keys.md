@@ -280,3 +280,72 @@ A key that is a binding by itself and also starts longer ones (`space`, which
 moves right) waits a second for the rest before acting. `(set-option
 'key-timeout 300)` gives it another time, in milliseconds, and `nil` has it
 wait for the next key however long that takes.
+
+## Language servers
+
+A file is served by the language servers of its language that are found
+on the project's `PATH`. med has servers of its own for the languages it
+knows (`rust-analyzer`, `clangd`, `basedpyright-langserver` or else
+`pyright-langserver` or else `pylsp`, `typescript-language-server`,
+`gopls`, …), each known by the name of its program; `(lsp-servers)` lists
+them all. The init file changes them, turns them off and adds others:
+
+```lisp
+; One of med's: what is given changes, the rest stays.
+(lsp-server "rust-analyzer"
+  :settings '(:rust-analyzer (:check (:command "clippy") :cargo (:features "all"))))
+(lsp-server "pylsp" :enabled false)
+
+; One of your own needs a command and the languages it serves.
+(lsp-server "eslint"
+  :command "vscode-eslint-language-server" :args '("--stdio")
+  :languages '("javascript" "typescript" "tsx")
+  :settings "{\"validate\": \"on\", \"run\": \"onType\", \"quiet\": false,
+              \"useESLintClass\": false, \"experimental\": {}, \"nodePath\": \"\",
+              \"problems\": {\"shortenToSingleLine\": false},
+              \"rulesCustomizations\": [], \"onIgnoredFiles\": \"off\",
+              \"codeActionOnSave\": {\"enable\": false, \"mode\": \"all\"},
+              \"codeAction\": {\"disableRuleComment\": {\"enable\": true, \"location\": \"separateLine\"},
+                             \"showDocumentation\": {\"enable\": true}},
+              \"workingDirectory\": {\"mode\": \"auto\"}}")
+```
+
+Some servers, as eslint, read nothing they are not given: their
+settings are all of what their documentation (or nvim-lspconfig's
+configuration of them) lists.
+
+`:settings` is what the server is answered when it asks for its
+configuration (`workspace/configuration`, a section at a time, as
+`"python.analysis"`), and is sent to it once it has started;
+`:init-options` goes with `initialize`. Both are written as lists of
+keywords and values, `'(:a 1 :b (:c true))` being `{"a": 1, "b": {"c":
+true}}` and any other list an array, or as a JSON string, as a server's
+documentation has them. `:enabled false` keeps a server from starting.
+
+A language med does not know is named with `deflanguage`, which gives its
+files a language for `buffer-language` and its servers, though no
+highlighting:
+
+```lisp
+(deflanguage "dart" :extensions '("dart") :comment "//" :tab-width 2)
+(lsp-server "dartls" :command "dart" :args '("language-server" "--protocol=lsp")
+  :languages '("dart"))
+```
+
+Its options are `:extensions`, `:filenames` (`"Justfile"`), `:lsp-id` (the
+`languageId` servers are told, the name by default), `:comment`,
+`:tab-width` and `:expand-tab`. Named after one of med's languages, it
+adds to that one's files and keeps its highlighting.
+
+Every server of a file's language serves it, in the order they were set
+up, but of med's own that are alternatives, as the three for Python, the
+first one found. All of them are told of the file's text, and the
+diagnostics and code actions of all of them are shown; a code action is
+run by the server that offered it. Everything else (hover, definition,
+references, rename, completion, signature help, inlay hints, formatting)
+goes to the first that says it can do it, so a second server's
+completions are not shown.
+
+A server keeps what it was started with: after the init file is changed
+and run again (`:workspace.reload_init`), `:workspace.reload_env` starts
+the servers again with what it now says.

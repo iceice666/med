@@ -10,7 +10,8 @@ framework behind Zed.
 - Tree-sitter highlighting for ~35 languages, plus text objects and motions
   that follow the syntax tree (functions, types, arguments, comments)
 - LSP: diagnostics, completion, hover, signature help, go to definition,
-  references, rename, code actions, formatting
+  references, rename, code actions, formatting; servers, their settings
+  and several to a file set up from the init file
 - No built-in keys. The vim layout, an oil.nvim-style directory editor,
   the fuzzy finder, a lazygit-style git screen and which-key are Lisp
   programs in
@@ -125,7 +126,7 @@ Programs can also add panels, read and edit the buffer, decorate lines and
 react to hooks. The reference is in `docs/`:
 
 - [Keys and commands](docs/keys.md): the default keys, key tables, `bind`,
-  `defcommand`, options
+  `defcommand`, options, language servers (`lsp-server`, `deflanguage`)
 - [The example programs](docs/examples.md): oil, the tree, picker, git
   screen, which-key and dired in detail
 - [Scripting](docs/lisp.md): panels, layouts, the bars, host functions,

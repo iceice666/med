@@ -2,8 +2,8 @@
 //! draw it and feed it input.
 
 use crate::commands::{Args, Commands, Handler};
-use crate::lsp::{LspEvent, LspStore, uri_to_path};
-use crate::syntax::{self, LangInfo, Syntax};
+use crate::lsp::{LspEvent, LspStore, ServerName, uri_to_path};
+use crate::syntax::{LangInfo, Syntax};
 use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
 use gpui::component::ActiveTheme as _;
@@ -141,7 +141,8 @@ struct CompletionMenu {
 
 /// The code actions on offer, to choose one from.
 struct ActionMenu {
-    actions: Vec<lsp::CodeActionOrCommand>,
+    /// Each with the server that offered it, which is to run its command.
+    actions: Vec<(Option<ServerName>, lsp::CodeActionOrCommand)>,
     selected: usize,
 }
 
@@ -807,7 +808,7 @@ impl Editor {
         if let (Some(lsp), Some(old)) = (&self.lsp, &self.path) {
             lsp.update(cx, |store, cx| store.close(old, cx));
         }
-        self.lang = syntax::lang_for_path(&path);
+        self.lang = crate::lsp_config::lang_for_path(&path, cx);
         self.syntax = self.lang.and_then(|lang| Syntax::new(lang, &self.buf));
         let text = self.buf.text();
         let detected = detect_indent(&text);
@@ -2190,12 +2191,16 @@ impl Editor {
         };
         let version = self.buf.version();
         self.request_task = Some(cx.spawn(async move |this, cx| {
-            let actions = request.await.ok().flatten().unwrap_or_default();
-            let offered = |action: &lsp::CodeActionOrCommand| match action {
+            let actions = request.await;
+            let offered = |(_, action): &(ServerName, lsp::CodeActionOrCommand)| match action {
                 lsp::CodeActionOrCommand::CodeAction(action) => action.disabled.is_none(),
                 lsp::CodeActionOrCommand::Command(_) => true,
             };
-            let actions: Vec<_> = actions.into_iter().filter(offered).collect();
+            let actions: Vec<_> = actions
+                .into_iter()
+                .filter(offered)
+                .map(|(server, action)| (Some(server), action))
+                .collect();
             this.update(cx, |this, cx| {
                 if this.buf.version() != version {
                     return;
@@ -2216,7 +2221,7 @@ impl Editor {
 
     /// The titles of the code actions on offer, if the menu is up.
     pub fn code_action_titles(&self) -> Vec<String> {
-        let title = |action: &lsp::CodeActionOrCommand| match action {
+        let title = |(_, action): &(Option<ServerName>, lsp::CodeActionOrCommand)| match action {
             lsp::CodeActionOrCommand::CodeAction(action) => action.title.clone(),
             lsp::CodeActionOrCommand::Command(command) => command.title.clone(),
         };
@@ -2256,6 +2261,7 @@ impl Editor {
         let Some(action) = menu.actions.into_iter().nth(menu.selected) else {
             return;
         };
+        let (server, action) = action;
         let (edit, command) = match action {
             lsp::CodeActionOrCommand::CodeAction(action) => (action.edit, action.command),
             lsp::CodeActionOrCommand::Command(command) => (None, Some(command)),
@@ -2265,7 +2271,8 @@ impl Editor {
         }
         // What the command edits comes back through the server.
         if let (Some(command), Some(lsp), Some(path)) = (command, &self.lsp, &self.path) {
-            lsp.read(cx).execute_command(path, command);
+            lsp.read(cx)
+                .execute_command(path, server.as_deref(), command);
         }
     }
 
@@ -2300,7 +2307,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.menu = (!actions.is_empty()).then_some(ActionMenu {
-            actions,
+            actions: actions.into_iter().map(|action| (None, action)).collect(),
             selected: 0,
         });
         self.signature = signature.and_then(signature_of);

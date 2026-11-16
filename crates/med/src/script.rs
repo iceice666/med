@@ -196,6 +196,7 @@ pub fn init(cx: &mut App) {
     crate::user_panel::define_functions(&mut interp);
     crate::host::define_functions(&mut interp);
     crate::buffer_api::define_functions(&mut interp);
+    crate::lsp_config::define_functions(&mut interp);
     for (name, value) in INVOCATION.iter().zip(invocation(&Args::default())) {
         interp.define(name, value);
     }
@@ -218,6 +219,7 @@ pub fn init(cx: &mut App) {
 /// waiting to do, as before the init file is run again.
 fn reset_panels(cx: &mut App) {
     crate::user_panel::reset(cx);
+    crate::lsp_config::reset(cx);
     let script = cx.global_mut::<Script>();
     script.hooks.clear();
     script.timers.clear();
