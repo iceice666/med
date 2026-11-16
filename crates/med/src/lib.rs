@@ -14,6 +14,7 @@ mod pane;
 pub mod panel;
 pub mod script;
 pub mod search;
+mod session;
 pub mod syntax;
 pub mod terminal;
 #[cfg(test)]
@@ -47,6 +48,9 @@ pub struct Settings {
     /// Work out each project's environment (login shell, direnv) for its
     /// language servers and programs, rather than use med's own.
     pub project_env: bool,
+    /// Where each project's session is kept: the panes and files it had
+    /// open, written when med quits. `None` to keep none.
+    pub session_dir: Option<PathBuf>,
 }
 
 impl Settings {
@@ -134,6 +138,24 @@ pub fn config_dir() -> Option<PathBuf> {
     }
 }
 
+/// Where med keeps what it remembers between runs: `$MED_STATE_DIR`,
+/// `$XDG_STATE_HOME/med` or `~/.local/state/med`.
+pub fn state_dir() -> Option<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if let Some(dir) = var("MED_STATE_DIR") {
+        Some(PathBuf::from(dir))
+    } else if let Some(dir) = var("XDG_STATE_HOME") {
+        Some(PathBuf::from(dir).join("med"))
+    } else {
+        Some(
+            PathBuf::from(var("HOME")?)
+                .join(".local")
+                .join("state")
+                .join("med"),
+        )
+    }
+}
+
 /// The globals views read: vim state, commands, key tables, panels, the
 /// script interpreter. Needs no window system, so headless code can
 /// stop here.
@@ -171,6 +193,8 @@ pub fn init(cx: &mut App) {
         tab_width: None,
         // Turned on by `run`: tests must not start the user's shell.
         project_env: false,
+        // Turned on by `run` too: tests must not write to $HOME.
+        session_dir: None,
     });
     init_globals(cx);
     // With no window to ask about unsaved work, quitting just quits.
@@ -188,8 +212,13 @@ pub fn run() {
         .with_assets(gpui::assets::Assets)
         .run(move |cx| {
             init(cx);
-            cx.global_mut::<Settings>().project_env =
-                std::env::var_os("MED_NO_PROJECT_ENV").is_none();
+            let settings = cx.global_mut::<Settings>();
+            settings.project_env = std::env::var_os("MED_NO_PROJECT_ENV").is_none();
+            settings.session_dir = std::env::var_os("MED_NO_SESSION")
+                .is_none()
+                .then(state_dir)
+                .flatten()
+                .map(|dir| dir.join("sessions"));
             // Not in `init`: tests must not depend on what is in $HOME.
             script::load_init(cx);
             cx.activate(true);

@@ -24,6 +24,7 @@ pub const EX: &[(&[&str], &str)] = &[
     (&["wq", "x", "xit"], "workspace.save_and_quit"),
     (&["wa", "wall"], "workspace.save_all"),
     (&["qa", "qall"], "workspace.quit_all"),
+    (&["mks", "mksession"], "workspace.save_session"),
     (&["e", "edit"], "workspace.edit"),
     (&["eval"], "workspace.eval"),
     (&["h", "help"], "workspace.help"),

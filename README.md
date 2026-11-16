@@ -46,8 +46,20 @@ directory). `scripts/bundle.sh [debug|release]` wraps the binary in a
 `med.app`.
 
 Environment variables: `MED_FONT`, `MED_FONT_SIZE` (default 14),
-`MED_NO_LSP`, `MED_NO_PROJECT_ENV`, `MED_CONFIG_DIR` (default
-`$XDG_CONFIG_HOME/med`, else `~/.config/med`).
+`MED_NO_LSP`, `MED_NO_PROJECT_ENV`, `MED_NO_SESSION`, `MED_CONFIG_DIR`
+(default `$XDG_CONFIG_HOME/med`, else `~/.config/med`), `MED_STATE_DIR`
+(default `$XDG_STATE_HOME/med`, else `~/.local/state/med`).
+
+### Sessions
+
+Started with no file named (`med` or `med dir`), med opens what the project
+had open when it last quit there: the panes as they were split, the files in
+each and where the cursor was. Files no longer on disk are left out, and
+terminals and the texts of programs are never kept. Started with files,
+med opens only those, and quitting leaves the project's session as it was;
+`:mksession` (`:mks`) keeps what is open now either way. Sessions are kept
+in `sessions/` under `MED_STATE_DIR`, one file per project; `MED_NO_SESSION`
+turns them off.
 
 ### Project environment
 

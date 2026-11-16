@@ -31,7 +31,11 @@ cargo test --workspace
 
 `med` 接受一個專案目錄、要開啟的檔案，或什麼都不給（即目前目錄）。`scripts/bundle.sh [debug|release]` 會把執行檔包成 `med.app`。
 
-環境變數：`MED_FONT`、`MED_FONT_SIZE`（預設 14）、`MED_NO_LSP`、`MED_NO_PROJECT_ENV`、`MED_CONFIG_DIR`（預設為 `$XDG_CONFIG_HOME/med`，否則為 `~/.config/med`）。
+環境變數：`MED_FONT`、`MED_FONT_SIZE`（預設 14）、`MED_NO_LSP`、`MED_NO_PROJECT_ENV`、`MED_NO_SESSION`、`MED_CONFIG_DIR`（預設為 `$XDG_CONFIG_HOME/med`，否則為 `~/.config/med`）、`MED_STATE_DIR`（預設為 `$XDG_STATE_HOME/med`，否則為 `~/.local/state/med`）。
+
+### Session
+
+沒有指定檔案啟動時（`med` 或 `med dir`），med 會開啟這個專案上次結束時開著的內容：pane 的分割方式、每個 pane 裡的檔案，以及游標所在位置。已經不在磁碟上的檔案會略過，終端機與程式的文字永遠不會保存。指定了檔案啟動時，med 只開那些檔案，結束時也不會動到專案的 session；不論哪種情況，`:mksession`（`:mks`）都會把目前開著的內容存起來。Session 存在 `MED_STATE_DIR` 底下的 `sessions/`，每個專案一個檔案；`MED_NO_SESSION` 可關閉此功能。
 
 ### 專案環境
 

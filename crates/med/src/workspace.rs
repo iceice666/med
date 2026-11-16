@@ -7,6 +7,7 @@ use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::env::{self, EnvCell, ProjectEnv};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
 use crate::pane::{Axis, Direction, Layout, PaneId};
+use crate::session::{self, Saved, SavedPane, SavedTab, Session};
 use crate::terminal::{TermView, TermViewEvent};
 use crate::user_panel::{At, PanelView, UserPanel, UserPanels};
 use crate::{help, script};
@@ -16,7 +17,8 @@ use gpui::*;
 use lsp_types as lsp;
 use med_lisp::Value;
 use med_vim::Mode;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -45,6 +47,9 @@ pub struct Workspace {
     jump_index: usize,
     /// The editor programs were last told about, and how it was then.
     seen: Option<Seen>,
+    /// Keep what is open as the project's session on quitting: it was
+    /// opened with no files named, as it would be restored.
+    keeps_session: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -235,8 +240,15 @@ impl Workspace {
         // Closing the window must not silently drop unsaved work.
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |this, cx| this.can_quit(cx))
-                .unwrap_or(true)
+            weak.update(cx, |this, cx| {
+                let quitting = this.can_quit(cx);
+                if quitting {
+                    let session = this.session_on_quit(cx);
+                    this.keep_session(session);
+                }
+                quitting
+            })
+            .unwrap_or(true)
         });
 
         let subscriptions = vec![
@@ -285,19 +297,26 @@ impl Workspace {
             jumps: Vec::new(),
             jump_index: 0,
             seen: None,
+            keeps_session: files.is_empty(),
             _subscriptions: subscriptions,
+        };
+        // With no file named, what the project had open when med last quit.
+        let (restored, session_problem) = match this.keeps_session {
+            true => this.restore_session(window, cx),
+            false => (false, None),
         };
         for file in files {
             this.open_path(&file, window, cx);
         }
         if this.tabs().is_empty() {
             this.open_empty(window, cx);
-        } else {
+        } else if !restored {
             this.activate(0, window, cx);
         }
         // What the init file had to say, or what was wrong with it; or, with
         // no keys bound, how to get some.
         this.message = script::take_message(cx)
+            .or(session_problem)
             .or_else(|| defaults::no_keys_hint(cx))
             .map(SharedString::from);
         this.read_branch(cx);
@@ -752,6 +771,15 @@ impl Workspace {
             self.activate(index, window, cx);
             return self.tabs().get(index).and_then(Item::editor).cloned();
         }
+        let editor = self.read_file(path, cx)?;
+        self.add_tab(editor.clone(), window, cx);
+        Some(editor)
+    }
+
+    /// An editor of the file at `path`, which is absolute, not yet in a
+    /// pane or watched. `None`, said in the status bar, if it cannot be
+    /// read: a path that is not there is a new file.
+    fn read_file(&mut self, path: PathBuf, cx: &mut Context<Self>) -> Option<Entity<Editor>> {
         let text = match std::fs::read(&path) {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(text) => text,
@@ -771,9 +799,7 @@ impl Workspace {
             }
         };
         let lsp = self.lsp.clone();
-        let editor = cx.new(|cx| Editor::new(Some(path), &text, Some(lsp), cx));
-        self.add_tab(editor.clone(), window, cx);
-        Some(editor)
+        Some(cx.new(|cx| Editor::new(Some(path), &text, Some(lsp), cx)))
     }
 
     /// Go to the tab of a program's text called `name`, or make one. Given
@@ -1220,6 +1246,186 @@ impl Workspace {
             self.panes[pane].tabs.push(Item::Editor(empty));
         }
         self.place_tab(item, cx)
+    }
+
+    // ---- session -------------------------------------------------------
+
+    /// What is open, as it would be restored: the panes as they are split,
+    /// each with its files and where the cursor is in them. `None` if no
+    /// file is open.
+    pub(crate) fn session(&self, cx: &App) -> Option<Session> {
+        let layout = self.saved_layout(&self.layout, cx)?;
+        // A tab that is no file is left out like a file that went.
+        let layout = session::prune(layout, &|tab| !tab.path.as_os_str().is_empty())?;
+        Some(Session::new(layout))
+    }
+
+    fn saved_layout(&self, layout: &Layout, cx: &App) -> Option<Saved> {
+        match layout {
+            Layout::Pane(id) => {
+                let index = self.pane_index(*id)?;
+                let pane = &self.panes[index];
+                let tabs = pane.tabs.iter().map(|item| {
+                    // A terminal's copy in normal mode is an editor, but no
+                    // file's.
+                    let file = match item {
+                        Item::Editor(editor) => {
+                            let editor = editor.read(cx);
+                            editor
+                                .path
+                                .clone()
+                                .filter(|_| editor.scratch.is_none())
+                                .map(|path| (path, editor.cursor_position()))
+                        }
+                        Item::Terminal { .. } => None,
+                    };
+                    let (path, (line, col)) = file.unwrap_or_default();
+                    SavedTab {
+                        path,
+                        line: line.saturating_sub(1),
+                        col: col.saturating_sub(1),
+                    }
+                });
+                Some(Saved::Pane(SavedPane {
+                    tabs: tabs.collect(),
+                    active: pane.active,
+                    focused: index == self.focused,
+                }))
+            }
+            Layout::Split(axis, parts) => {
+                let parts = parts.iter().filter_map(|part| self.saved_layout(part, cx));
+                Some(Saved::Split((*axis).into(), parts.collect()))
+            }
+        }
+    }
+
+    /// What to keep on quitting, and where: `None` if this workspace keeps
+    /// no session. Taken before the last tab closes, as `:q` closes it.
+    fn session_on_quit(&self, cx: &App) -> Option<(PathBuf, Option<Session>)> {
+        if !self.keeps_session {
+            return None;
+        }
+        let dir = cx.global::<crate::Settings>().session_dir.clone()?;
+        Some((dir, self.session(cx)))
+    }
+
+    /// Keep what [`Self::session_on_quit`] took, once: whatever closes on
+    /// the way out (the window, after `:q`) is not to write over it. There
+    /// is no status bar to say what went wrong by now.
+    fn keep_session(&mut self, kept: Option<(PathBuf, Option<Session>)>) {
+        let Some((dir, session)) = kept else {
+            return;
+        };
+        self.keeps_session = false;
+        if let Err(error) = session::write(&dir, &self.root, session.as_ref()) {
+            eprintln!("med: could not keep the session: {error}");
+        }
+    }
+
+    /// Keep what is open as the project's session now, as `:mksession`.
+    fn write_session(&mut self, cx: &mut Context<Self>) {
+        let Some(dir) = cx.global::<crate::Settings>().session_dir.clone() else {
+            self.set_message("Sessions are off (MED_NO_SESSION)", cx);
+            return;
+        };
+        let session = self.session(cx);
+        let message = match session::write(&dir, &self.root, session.as_ref()) {
+            Ok(()) if session.is_none() => "No file is open: the session is forgotten".to_string(),
+            Ok(()) => format!(
+                "Session written to {}",
+                session::file(&dir, &self.root).display()
+            ),
+            Err(error) => format!("Could not write the session: {error}"),
+        };
+        self.set_message(message, cx);
+    }
+
+    /// Open what the project's session has, in its panes, in place of the
+    /// one empty pane there is so far. Whether there was anything to open,
+    /// and what was wrong with the session if it could not be read. Files
+    /// no longer there are left out, and the panes left with none.
+    fn restore_session(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (bool, Option<String>) {
+        let Some(dir) = cx.global::<crate::Settings>().session_dir.clone() else {
+            return (false, None);
+        };
+        let session = match session::read(&dir, &self.root) {
+            Ok(Some(session)) => session,
+            Ok(None) => return (false, None),
+            Err(error) => return (false, Some(format!("Session not restored: {error}"))),
+        };
+        // A file has one buffer: the first pane to have it keeps it.
+        let seen = RefCell::new(HashSet::new());
+        let keep =
+            |tab: &SavedTab| tab.path.is_file() && seen.borrow_mut().insert(tab.path.clone());
+        let Some(saved) = session::prune(session.layout, &keep) else {
+            return (false, None);
+        };
+        let mut panes = Vec::new();
+        let mut focused = 0;
+        let layout = self.rebuild(saved, &mut panes, &mut focused, window, cx);
+        // Every file could have failed to read after all.
+        let Some(layout) = layout else {
+            return (false, None);
+        };
+        self.panes = panes;
+        self.layout = layout;
+        self.focused = focused;
+        let active = self.pane().active;
+        self.activate(active, window, cx);
+        (true, None)
+    }
+
+    /// The panes of `saved`, read into `panes`, and how they are laid out.
+    fn rebuild(
+        &mut self,
+        saved: Saved,
+        panes: &mut Vec<Pane>,
+        focused: &mut usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Layout> {
+        match saved {
+            Saved::Pane(pane) => {
+                let mut tabs = Vec::new();
+                let mut active = 0;
+                for (index, tab) in pane.tabs.into_iter().enumerate() {
+                    let Some(editor) = self.read_file(tab.path, cx) else {
+                        continue;
+                    };
+                    self.watch(&editor, window, cx);
+                    editor.update(cx, |editor, cx| editor.goto_line_col(tab.line, tab.col, cx));
+                    if index <= pane.active {
+                        active = tabs.len();
+                    }
+                    tabs.push(Item::Editor(editor));
+                }
+                if tabs.is_empty() {
+                    return None;
+                }
+                let id = self.next_pane;
+                self.next_pane += 1;
+                if pane.focused {
+                    *focused = panes.len();
+                }
+                panes.push(Pane { id, tabs, active });
+                Some(Layout::Pane(id))
+            }
+            Saved::Split(axis, parts) => {
+                let mut built: Vec<Layout> = parts
+                    .into_iter()
+                    .filter_map(|part| self.rebuild(part, panes, focused, window, cx))
+                    .collect();
+                match built.len() {
+                    0 => None,
+                    1 => built.pop(),
+                    _ => Some(Layout::Split(axis.into(), built)),
+                }
+            }
+        }
     }
 
     // ---- panes ---------------------------------------------------------
@@ -2386,8 +2592,10 @@ pub(crate) fn register(commands: &mut Commands) {
         W(|ws, args, window, cx| {
             // Closing the last tab leaves an empty one; quitting it quits.
             let last = ws.last_tab();
+            let session = last.then(|| ws.session_on_quit(cx)).flatten();
             let active = ws.pane().active;
             if ws.close_tab(active, args.bang, window, cx) && last {
+                ws.keep_session(session);
                 cx.quit();
             }
         }),
@@ -2398,9 +2606,11 @@ pub(crate) fn register(commands: &mut Commands) {
         W(|ws, args, window, cx| {
             if ws.save_active(args, window, cx) {
                 let last = ws.last_tab();
+                let session = last.then(|| ws.session_on_quit(cx)).flatten();
                 let active = ws.pane().active;
                 ws.close_tab(active, true, window, cx);
                 if last {
+                    ws.keep_session(session);
                     cx.quit();
                 }
             }
@@ -2411,9 +2621,16 @@ pub(crate) fn register(commands: &mut Commands) {
         "Quit; with ! even if there are unsaved changes",
         W(|ws, args, _, cx| {
             if args.bang || ws.can_quit(cx) {
+                let session = ws.session_on_quit(cx);
+                ws.keep_session(session);
                 cx.quit();
             }
         }),
+    );
+    commands.register(
+        "workspace.save_session",
+        "Keep the panes and files open as the project's session, to open again when med starts in it",
+        W(|ws, _, _, cx| ws.write_session(cx)),
     );
     commands.register(
         "workspace.next_tab",

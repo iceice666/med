@@ -4896,3 +4896,125 @@ fn edits_directories_as_oil_does(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("notes.md")));
 }
+
+#[gpui::test]
+fn keeps_the_session_of_a_project(cx: &mut TestAppContext) {
+    use crate::session::{Saved, SavedAxis, SavedPane, SavedTab};
+    let project = Project::new(&[
+        ("a.txt", "one\ntwo\nthree\n"),
+        ("b.txt", "b1\nb2\n"),
+        ("c.txt", "c\n"),
+        ("gone.txt", "x\n"),
+    ]);
+    let state = project.path(".state");
+    cx.update(|cx| {
+        crate::init(cx);
+        let settings = cx.global_mut::<crate::Settings>();
+        settings.lsp = false;
+        settings.session_dir = Some(state.clone());
+        bind_example_keys(cx);
+    });
+    let ex = |line: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(":");
+        cx.simulate_input(line);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+    let session = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| ws.session(cx).map(|session| session.layout))
+    };
+    let tab = |name: &str, line: usize, col: usize| SavedTab {
+        path: project.path(name),
+        line,
+        col,
+    };
+
+    // a.txt (and gone.txt, shown) | b.txt, c.txt (shown) and help, with
+    // the keys.
+    let root = project.0.clone();
+    let (ws, vcx) = cx.add_window_view(|window, cx| Workspace::new(root, Vec::new(), window, cx));
+    vcx.run_until_parked();
+    ex("e a.txt", vcx);
+    vcx.simulate_keystrokes("j j l");
+    ex("e gone.txt", vcx);
+    ex("vs", vcx);
+    ex("e b.txt", vcx);
+    vcx.simulate_keystrokes("j");
+    ex("e c.txt", vcx);
+    ex("h", vcx);
+    // A program's text is no file to open again.
+    let before = Saved::Split(
+        SavedAxis::Row,
+        vec![
+            Saved::Pane(SavedPane {
+                tabs: vec![tab("a.txt", 2, 1), tab("gone.txt", 0, 0)],
+                active: 1,
+                focused: false,
+            }),
+            Saved::Pane(SavedPane {
+                tabs: vec![tab("b.txt", 1, 0), tab("c.txt", 0, 0)],
+                active: 1,
+                focused: true,
+            }),
+        ],
+    );
+    assert_eq!(session(&ws, vcx), Some(before));
+    ex("mks", vcx);
+    assert!(
+        ws.read_with(vcx, |ws, _| ws.message.clone().unwrap_or_default())
+            .starts_with("Session written to"),
+    );
+
+    // Started again in the project with no file named: as it was, but
+    // for the file that went.
+    fs::remove_file(project.path("gone.txt")).unwrap();
+    let root = project.0.clone();
+    let (ws, vcx) = cx.add_window_view(|window, cx| Workspace::new(root, Vec::new(), window, cx));
+    vcx.run_until_parked();
+    let after = Saved::Split(
+        SavedAxis::Row,
+        vec![
+            Saved::Pane(SavedPane {
+                tabs: vec![tab("a.txt", 2, 1)],
+                active: 0,
+                focused: false,
+            }),
+            Saved::Pane(SavedPane {
+                tabs: vec![tab("b.txt", 1, 0), tab("c.txt", 0, 0)],
+                active: 1,
+                focused: true,
+            }),
+        ],
+    );
+    assert_eq!(session(&ws, vcx), Some(after));
+    assert_eq!(active_file(&ws, vcx), Some(project.path("c.txt")));
+    // The panes are the panes, not just a picture of them.
+    vcx.simulate_keystrokes("ctrl-w h");
+    vcx.run_until_parked();
+    assert_eq!(active_file(&ws, vcx), Some(project.path("a.txt")));
+    assert_eq!(cursor(&ws, vcx), (3, 2));
+
+    // Named files are opened, not the session.
+    let root = project.0.clone();
+    let files = vec![project.path("b.txt")];
+    let (ws, vcx) = cx.add_window_view(|window, cx| Workspace::new(root, files, window, cx));
+    vcx.run_until_parked();
+    assert_eq!(
+        session(&ws, vcx),
+        Some(Saved::Pane(SavedPane {
+            tabs: vec![tab("b.txt", 0, 0)],
+            active: 0,
+            focused: true,
+        }))
+    );
+
+    // One that cannot be read is said so, and opens nothing.
+    let file = crate::session::file(&state, &project.0);
+    fs::write(&file, "nope").unwrap();
+    let root = project.0.clone();
+    let (ws, vcx) = cx.add_window_view(|window, cx| Workspace::new(root, Vec::new(), window, cx));
+    vcx.run_until_parked();
+    assert_eq!(session(&ws, vcx), None);
+    let message = ws.read_with(vcx, |ws, _| ws.message.clone().unwrap_or_default());
+    assert!(message.starts_with("Session not restored"), "{message}");
+}
