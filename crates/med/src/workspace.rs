@@ -1216,8 +1216,11 @@ impl Workspace {
     /// An unnamed, empty buffer, so that with no file open the keys still
     /// have an editor to go to (`:e`, the leader keys…).
     fn open_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Watched once, by `empty_editor`: `add_tab` would watch it again,
+        // and every command it asks for would run twice.
         let editor = self.empty_editor(window, cx);
-        self.add_tab(editor, window, cx);
+        let index = self.place_tab(Item::Editor(editor), cx);
+        self.activate(index, window, cx);
     }
 
     /// An unnamed, empty buffer, not yet in a pane.

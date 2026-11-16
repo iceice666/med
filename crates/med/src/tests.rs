@@ -6070,3 +6070,22 @@ fn quitting_closes_one_window_or_all(cx: &mut TestAppContext) {
     assert_eq!(count(&mut vcx_b), 1);
     assert_eq!(cx.windows().len(), 1);
 }
+
+/// The empty tab, at the start and after the last one is closed, asks for
+/// a command once a key: heard twice, a toggle undid itself.
+#[gpui::test]
+fn the_empty_tab_runs_a_command_once(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let count = r#"
+        (def presses 0)
+        (defcommand "test.count" "Count" (fn () (set! presses (+ presses 1))))
+        (bind 'normal "<Space>z" "test.count")"#;
+    let (_, cx) = open_with(&[count], &project, &[], cx);
+    cx.simulate_keystrokes("space z");
+    assert_eq!(lisp("presses", cx), "1");
+    // The last tab closed, an empty one in its place.
+    cx.simulate_keystrokes(": b d enter space z");
+    assert_eq!(lisp("presses", cx), "2");
+    cx.simulate_keystrokes(": e space a . t x t enter : b d enter space z");
+    assert_eq!(lisp("presses", cx), "3");
+}
