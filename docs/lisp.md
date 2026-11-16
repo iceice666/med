@@ -196,8 +196,9 @@ is the project's:
 The hooks are `opened` (a window is up, and there is a project),
 `files-changed` (a file was saved, the window came to the front, or
 `workspace.sync` was run), `locations` (a list of places to choose
-from, such as the references to a name), `keys-pending` (below), and the
-ones about the file being edited (further below).
+from, such as the references to a name), `keys-pending` (below),
+`terminal-exited` (see Terminals), and the ones about the file being
+edited (further below).
 
 ### The keys being typed
 
@@ -289,7 +290,7 @@ own:
 (open-scratch "notes" "one\ntwo")            ; with this text, as written
 (open-scratch "notes" nil (fn (text) (message (length (lines text)) " lines")))
 (scratch-name)                               ; "notes" while it is up, else nil
-(panes)                                      ; ((:focused true :scratch "notes" :path nil)...)
+(panes)                                      ; ((:focused true :scratch "notes" :path nil :terminal nil)...)
 (with-pane 1 (fn () (scratch-name)))         ; in the second pane, the keys staying
 ```
 
@@ -307,6 +308,42 @@ that pane shows the tab before it. `(panes)` says what each pane shows,
 from the top left, and `(with-pane n f)` calls `f` with the `n`th of them
 (from 0) as the one being edited, the keys staying where they are: dired
 reads every listing up again with it.
+
+## Terminals
+
+A program can start a program of its own in a terminal, in a pane split
+off below that gets the keys, and talk to it. A terminal is known by a
+number:
+
+| Function | Does, or gives |
+| --- | --- |
+| `(open-terminal [command [dir]])` | a new terminal running `command` (with the shell, `$SHELL -c`), or the shell, in `dir` or the project's root, in the project's environment: its number. With neither, the terminal still running, if there is one |
+| `(terminals)` | every terminal, from the top left pane: `((:id :title :command :running :exit)...)`, `:command` `nil` for the shell, `:exit` its exit code once it is done, `nil` until then or if it was killed |
+| `(terminal-send id text)` | `text` to the program, as if typed (`"\r"` is enter); `false` if the program is done |
+| `(terminal-keys id keys)` | keys to the program, as `bind` writes them: `"<C-c>"`, `"q<CR>"`; `false` if the program is done |
+| `(terminal-text id)` | what went by and what is on its screen, as text, a line for each row |
+| `(close-terminal id)` | closes its tab, hanging up on the program; `false` if there is no such terminal |
+
+The `terminal-exited` hook is called with a terminal's number and its
+exit code (`nil` if the program was killed) once its program is done.
+`(panes)` gives the number of the terminal a pane shows as `:terminal`.
+
+A `:make` of a sort: the build in a terminal of its own, the one before
+closed, the keys going back to the file, and a word when it is done.
+
+```lisp
+(def make-terminal nil)
+(defcommand "user.make" "Build the project in a terminal of its own"
+  (fn ()
+    (when make-terminal (close-terminal make-terminal))
+    (set! make-terminal (open-terminal "cargo build"))
+    (run "workspace.prev_pane")))
+(add-hook 'terminal-exited
+  (fn (id code)
+    (when (= id make-terminal)
+      (message (if (= code 0) "Built" (str "The build failed: " code))))))
+(bind 'normal "<Space>b" "user.make")
+```
 
 ## Scripting language
 

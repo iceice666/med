@@ -166,6 +166,23 @@ pub(crate) struct PaneInfo {
     pub focused: bool,
     pub scratch: Option<SharedString>,
     pub path: Option<PathBuf>,
+    /// The terminal it shows, by its number.
+    pub terminal: Option<u64>,
+}
+
+/// What a program is told of a terminal: see `(terminals)`.
+pub(crate) struct TerminalInfo {
+    pub id: u64,
+    pub title: String,
+    pub command: Option<String>,
+    pub running: bool,
+    /// How it exited: its code, or `None` if killed. `None` while running.
+    pub exit_code: Option<i32>,
+}
+
+/// The number a program knows a terminal by.
+pub(crate) fn terminal_id(view: &Entity<TermView>) -> u64 {
+    view.entity_id().as_u64()
 }
 
 /// The pane to go back to after `(with-pane)`, and what had the keyboard
@@ -327,7 +344,12 @@ impl Workspace {
     /// Where the editor's tab is that `which` is true of, as (pane, tab):
     /// the focused pane's first.
     fn find_tab(&self, cx: &App, which: impl Fn(&Editor) -> bool) -> Option<(usize, usize)> {
-        self.find_item(|item| item.editor().is_some_and(|editor| which(editor.read(cx))))
+        // Not a terminal's copy in normal mode, which is no file or tab of
+        // a program's.
+        self.find_item(|item| match item {
+            Item::Editor(editor) => which(editor.read(cx)),
+            Item::Terminal { .. } => false,
+        })
     }
 
     /// Where the tab is that `which` is true of, as (pane, tab): the
@@ -860,14 +882,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if command.is_none() && !new {
-            if self
+        if command.is_none()
+            && !new
+            && self
                 .active_item()
                 .is_some_and(|item| item.terminal().is_some())
-            {
-                self.leave_terminal(window, cx);
-                return;
-            }
+        {
+            self.leave_terminal(window, cx);
+            return;
+        }
+        let cwd = self.root.clone();
+        self.open_terminal(command, cwd, new, window, cx);
+    }
+
+    /// Without `command`, and unless `new`, to the terminal still running,
+    /// out of normal mode, if there is one. Otherwise, a new one in a pane
+    /// split off below, in `cwd` and the project's environment, running
+    /// `command` if given rather than the shell. The terminal that has the
+    /// keys, if one could be started.
+    pub(crate) fn open_terminal(
+        &mut self,
+        command: Option<String>,
+        cwd: PathBuf,
+        new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TermView>> {
+        if command.is_none() && !new {
             let running = self.find_item(|item| {
                 item.terminal()
                     .is_some_and(|terminal| terminal.read(cx).is_running())
@@ -875,7 +916,7 @@ impl Workspace {
             if let Some((pane, tab)) = running {
                 // To the terminal itself, out of normal mode.
                 self.terminal_insert(pane, tab, window, cx);
-                return;
+                return self.panes[pane].tabs[tab].terminal().cloned();
             }
         }
         // Not to be waited for here: direnv evaluating a flake can take
@@ -905,7 +946,7 @@ impl Workspace {
         let options = med_term::Options {
             program,
             args,
-            cwd: Some(self.root.clone()),
+            cwd: Some(cwd),
             env: vars,
             // Sized when it is first drawn.
             cols: 80,
@@ -915,13 +956,65 @@ impl Workspace {
             Ok(spawned) => spawned,
             Err(error) => {
                 self.set_message(format!("Could not start a terminal: {error:#}"), cx);
-                return;
+                return None;
             }
         };
         let view = cx.new(|cx| TermView::new(terminal, events, command, cx));
         self._subscriptions
             .push(cx.subscribe_in(&view, window, Self::on_terminal_event));
-        self.split_with(Axis::Column, Item::terminal_of(view), window, cx);
+        self.split_with(Axis::Column, Item::terminal_of(view.clone()), window, cx);
+        Some(view)
+    }
+
+    /// The terminal a program knows by `id`, in any pane.
+    pub(crate) fn terminal_by_id(&self, id: u64) -> Option<Entity<TermView>> {
+        self.panes
+            .iter()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Item::terminal))
+            .find(|view| terminal_id(view) == id)
+            .cloned()
+    }
+
+    /// Every terminal, from the top left pane, for `(terminals)`.
+    pub(crate) fn terminal_infos(&self, cx: &App) -> Vec<TerminalInfo> {
+        let order = self.layout.panes();
+        order
+            .iter()
+            .filter_map(|id| self.pane_index(*id))
+            .flat_map(|index| self.panes[index].tabs.iter().filter_map(Item::terminal))
+            .map(|view| {
+                let terminal = view.read(cx);
+                TerminalInfo {
+                    id: terminal_id(view),
+                    title: terminal.title(),
+                    command: terminal.command().map(str::to_string),
+                    running: terminal.is_running(),
+                    exit_code: terminal.exit_code(),
+                }
+            })
+            .collect()
+    }
+
+    /// Close the tab of the terminal `id`, hanging up on its program.
+    /// False if there is no such terminal.
+    pub(crate) fn close_terminal(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let found = self.find_item(|item| item.terminal().is_some_and(|v| terminal_id(v) == id));
+        let Some((pane, tab)) = found else {
+            return false;
+        };
+        let other = (pane != self.focused).then(|| self.panes[self.focused].id);
+        self.focused = pane;
+        self.close_tab(tab, true, window, cx);
+        // The keys stay where they were, if that pane is still there.
+        if let Some(index) = other.and_then(|id| self.pane_index(id)) {
+            self.focus_pane(index, window, cx);
+        }
+        true
     }
 
     fn on_terminal_event(
@@ -955,6 +1048,15 @@ impl Workspace {
                     window.set_window_title(&self.title(cx));
                 }
                 cx.notify();
+            }
+            TermViewEvent::Exited(code) => {
+                if self.active_item() == Some(&item) {
+                    window.set_window_title(&self.title(cx));
+                }
+                cx.notify();
+                let id = Value::from(terminal_id(terminal) as i64);
+                let code = code.map_or(Value::Nil, |code| Value::from(code as i64));
+                script::run_hook("terminal-exited", vec![id, code], window, cx);
             }
         }
     }
@@ -1248,12 +1350,17 @@ impl Workspace {
             .filter_map(|id| self.pane_index(*id))
             .map(|index| {
                 let pane = &self.panes[index];
-                let editor = pane.tabs.get(pane.active).and_then(Item::editor);
-                let editor = editor.map(|tab| tab.read(cx));
+                let item = pane.tabs.get(pane.active);
+                // A file or a program's text: not a terminal's copy.
+                let editor = match item {
+                    Some(Item::Editor(editor)) => Some(editor.read(cx)),
+                    _ => None,
+                };
                 PaneInfo {
                     focused: index == self.focused,
                     scratch: editor.and_then(|e| e.scratch.as_ref().map(|s| s.name.clone())),
                     path: editor.and_then(|e| e.path.clone()),
+                    terminal: item.and_then(Item::terminal).map(terminal_id),
                 }
             })
             .collect()

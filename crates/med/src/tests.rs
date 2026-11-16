@@ -1506,7 +1506,8 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     assert_eq!(
         error("(add-hook 'closed (fn () 1))", cx),
         "1:1: closed is not a hook (opened files-changed locations keys-pending \
-         buffer-entered buffer-changed cursor-moved mode-changed diagnostics-changed)"
+         buffer-entered buffer-changed cursor-moved mode-changed diagnostics-changed \
+         terminal-exited)"
     );
     assert!(
         error("(load \"/nowhere/at/all.lisp\")", cx).starts_with("1:1: /nowhere/at/all.lisp: ")
@@ -4421,4 +4422,118 @@ fn a_terminal_has_a_normal_mode_as_in_vim(cx: &mut TestAppContext) {
     let panes = ws.read_with(cx, |ws, cx| ws.pane_infos(cx).len());
     assert_eq!(panes, 1);
     assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+}
+
+#[gpui::test]
+fn programs_drive_terminals(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n"), ("sub/b.txt", "two\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+
+    // A command, in a directory of the project, told when it is done.
+    let id = eval_here(
+        &ws,
+        r#"(do (def done nil)
+               (add-hook 'terminal-exited (fn (id code) (set! done (list id code))))
+               (def t (open-terminal "pwd; read line; echo got $line; exit 3" "sub"))
+               (message t))"#,
+        cx,
+    );
+    assert!(id.parse::<u64>().is_ok(), "a number: {id}");
+    assert!(terminal_live(&ws, cx));
+    let said = eval_here(
+        &ws,
+        "(message (map (fn (t) (get t :running)) (terminals)))",
+        cx,
+    );
+    assert_eq!(said, "(true)");
+    let said = eval_here(
+        &ws,
+        "(message (map (fn (p) (get p :terminal)) (panes)))",
+        cx,
+    );
+    assert_eq!(said, format!("(nil {id})"));
+
+    // What it is sent, it reads as typed.
+    eval_here(&ws, r#"(terminal-send t "hi\r")"#, cx);
+    wait_for_terminal(&ws, cx, |terminal| !terminal.is_running());
+    cx.run_until_parked();
+    assert_eq!(eval_here(&ws, "(message done)", cx), format!("({id} 3)"));
+    let text = eval_here(&ws, "(message (terminal-text t))", cx);
+    assert!(
+        text.contains(&project.path("sub").display().to_string()),
+        "{text}"
+    );
+    assert!(text.contains("got hi"), "{text}");
+    let said = eval_here(&ws, "(message (get (first (terminals)) :exit))", cx);
+    assert_eq!(said, "3");
+    assert_eq!(
+        eval_here(&ws, r#"(message (terminal-send t "more"))"#, cx),
+        "false"
+    );
+
+    // Closed, it is gone, and the keys stay where they were.
+    eval_here(&ws, "(focus-editor)", cx);
+    eval_here(&ws, "(with-pane 0 (fn () (focus-editor)))", cx);
+    assert_eq!(eval_here(&ws, "(message (close-terminal t))", cx), "true");
+    assert_eq!(ws.read_with(cx, |ws, cx| ws.pane_infos(cx).len()), 1);
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    assert_eq!(eval_here(&ws, "(message (close-terminal t))", cx), "false");
+    let said = eval_here(&ws, r#"(terminal-send t "x")"#, cx);
+    assert!(said.contains("there is no terminal"), "{said}");
+
+    // With nothing to run, the terminal still running; keys stop what it
+    // runs, and then there is none, so a new one, with the shell.
+    let first = eval_here(&ws, "(do (def s (open-terminal \"cat\")) (message s))", cx);
+    let again = eval_here(&ws, "(message (open-terminal))", cx);
+    assert_eq!(first, again, "the one still running");
+    eval_here(&ws, r#"(terminal-keys s "<C-c>")"#, cx);
+    let running = |cx: &mut VisualTestContext| {
+        eval_here(
+            &ws,
+            "(message (map (fn (t) (get t :running)) (terminals)))",
+            cx,
+        )
+    };
+    for _ in 0..500 {
+        cx.executor().advance_clock(Duration::from_millis(10));
+        if running(cx) == "(false)" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(running(cx), "(false)", "ctrl-c stopped cat");
+    let shell = eval_here(&ws, "(message (open-terminal))", cx);
+    assert_ne!(first, shell);
+    assert_eq!(running(cx), "(false true)");
+}
+
+/// The `:make` of docs/lisp.md, with a build that fails at once.
+#[gpui::test]
+fn the_make_of_the_docs_runs(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "one\n")]);
+    let docs = include_str!("../../../docs/lisp.md");
+    let example = docs
+        .split("```lisp\n(def make-terminal nil)")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("the example is in the docs");
+    let example = format!("(def make-terminal nil){example}").replace("cargo build", "exit 2");
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    eval_here(&ws, &format!("(do {example})"), cx);
+
+    for _ in 0..2 {
+        cx.simulate_keystrokes("space b");
+        // The keys went back to the file, and the build is below it.
+        assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+        assert_eq!(ws.read_with(cx, |ws, cx| ws.pane_infos(cx).len()), 2);
+        for _ in 0..500 {
+            cx.executor().advance_clock(Duration::from_millis(10));
+            cx.run_until_parked();
+            if message(&ws, cx) == "The build failed: 2" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(message(&ws, cx), "The build failed: 2");
+    }
 }

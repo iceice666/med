@@ -132,7 +132,7 @@
 | `(make-link target path [hard])` | 在 `path` 建立指向 `target`（照原樣寫入）的符號連結，或硬連結 |
 | `(set-file-mode path mode)` | 權限，如同 chmod：`493` 或 `"755"` |
 
-hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照）、`keys-pending`（見下文），以及與正在編輯的檔案相關的 hook（見後文）。
+hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照）、`keys-pending`（見下文）、`terminal-exited`（見 Terminal 一節），以及與正在編輯的檔案相關的 hook（見後文）。
 
 ### 正在輸入的按鍵
 
@@ -205,13 +205,44 @@ hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔
 (open-scratch "notes" "one\ntwo")            ; 使用這段文字，照原樣寫入
 (open-scratch "notes" nil (fn (text) (message (length (lines text)) " lines")))
 (scratch-name)                               ; 它顯示時為 "notes"，否則為 nil
-(panes)                                      ; ((:focused true :scratch "notes" :path nil)...)
+(panes)                                      ; ((:focused true :scratch "notes" :path nil :terminal nil)...)
 (with-pane 1 (fn () (scratch-name)))         ; 在第二個窗格中，按鍵焦點不動
 ```
 
 給了函式時，`:w` 會以該分頁的文字呼叫它，如同一個命令（`:w!` 時可用 `command-bang`），而文字會維持未儲存，直到程式再次給分頁設定文字。沒給函式時，分頁中沒有會遺失的東西，也沒有可寫入的地方。在那裡 `(current-file)` 為 `nil`，而 `:w name` 會把分頁變成檔案，同時不再使用該分頁自己的按鍵。[`examples/dired.lisp`](../examples/dired.lisp) 在這樣的分頁中列出目錄，對檔案做 Emacs 的 dired 會做的事，並依照寫入的內容重新命名檔案。
 
 一個分頁只存在於一個窗格中，所以一個檔案只有一個緩衝區：開啟另一個窗格已有的分頁（`open-scratch`、`open-file`、`:e`）會把它移過來，原本的窗格則顯示它之前的那個分頁。`(panes)` 從左上角開始說明每個窗格顯示什麼，`(with-pane n f)` 則把第 `n` 個窗格（從 0 開始）當作正在編輯的窗格來呼叫 `f`，而按鍵焦點維持原處：dired 用它重新讀取每個顯示中的清單。
+
+## Terminal
+
+程式可以在 terminal 中啟動另一個程式並與它互動；terminal 開在下方分割出的窗格中，並取得鍵盤焦點。每個 terminal 以一個數字識別：
+
+| 函式 | 做什麼，或給出什麼 |
+| --- | --- |
+| `(open-terminal [command [dir]])` | 開一個新的 terminal 執行 `command`（透過 shell，即 `$SHELL -c`），或執行 shell 本身，工作目錄為 `dir` 或專案根目錄，並使用專案環境：回傳它的編號。兩者都沒給時，若有仍在執行的 terminal，就回到那一個 |
+| `(terminals)` | 每個 terminal，從左上角的窗格開始：`((:id :title :command :running :exit)...)`；shell 的 `:command` 為 `nil`，`:exit` 是程式結束後的結束碼，結束前或被強制終止時為 `nil` |
+| `(terminal-send id text)` | 把 `text` 送給程式，如同打字輸入（`"\r"` 是 enter）；程式已結束時為 `false` |
+| `(terminal-keys id keys)` | 把按鍵送給程式，寫法同 `bind`：`"<C-c>"`、`"q<CR>"`；程式已結束時為 `false` |
+| `(terminal-text id)` | 先前的輸出與目前畫面上的內容，以文字表示，每列一行 |
+| `(close-terminal id)` | 關閉它的分頁並掛斷程式；沒有這個 terminal 時為 `false` |
+
+程式結束時會以 terminal 的編號與結束碼（程式被強制終止時為 `nil`）呼叫 `terminal-exited` hook。`(panes)` 以 `:terminal` 給出窗格所顯示的 terminal 編號。
+
+一個類似 `:make` 的命令：在專屬的 terminal 中建置專案，先關掉上一次的，鍵盤焦點回到檔案，完成時顯示訊息。
+
+```lisp
+(def make-terminal nil)
+(defcommand "user.make" "Build the project in a terminal of its own"
+  (fn ()
+    (when make-terminal (close-terminal make-terminal))
+    (set! make-terminal (open-terminal "cargo build"))
+    (run "workspace.prev_pane")))
+(add-hook 'terminal-exited
+  (fn (id code)
+    (when (= id make-terminal)
+      (message (if (= code 0) "Built" (str "The build failed: " code))))))
+(bind 'normal "<Space>b" "user.make")
+```
 
 ## 腳本語言
 

@@ -20,8 +20,10 @@ pub enum TermViewEvent {
     Normal,
     /// The program is done, and a key was pressed: the tab may go.
     Close,
-    /// Its title, or whether it runs, is not what it was.
+    /// Its title is not what it was.
     Changed,
+    /// The program is done: its exit code, or `None` if it was killed.
+    Exited(Option<i32>),
 }
 
 /// Where the cells are, as last drawn.
@@ -116,7 +118,7 @@ impl TermView {
             }
             Event::Exited(code) => {
                 self.exited = Some(code);
-                cx.emit(TermViewEvent::Changed);
+                cx.emit(TermViewEvent::Exited(code));
             }
         }
     }
@@ -137,6 +139,74 @@ impl TermView {
     /// Whether the program is still running.
     pub fn is_running(&self) -> bool {
         self.exited.is_none()
+    }
+
+    /// What it was started to run, if not the shell.
+    pub fn command(&self) -> Option<&str> {
+        self.command.as_deref()
+    }
+
+    /// The program's exit code, once it is done and if it was not killed.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exited.flatten()
+    }
+
+    /// Keys to the program, as vim writes them (`<C-c>`, `<CR>`, `<Up>`),
+    /// as if pressed. False if it is done.
+    pub fn send_keys(&mut self, keys: &[med_vim::Key]) -> bool {
+        use med_vim::Key;
+        if !self.is_running() {
+            return false;
+        }
+        let app_cursor = self.terminal.app_cursor();
+        let named = |name: &str, mods: Modifiers| {
+            med_term::encode_key(name, mods, app_cursor).unwrap_or_default()
+        };
+        let none = Modifiers::default();
+        let mut bytes = Vec::new();
+        for key in keys {
+            bytes.extend(match key {
+                Key::Char(c) => c.to_string().into_bytes(),
+                Key::Text(text) => text.clone().into_bytes(),
+                Key::Ctrl(c) => {
+                    let control = Modifiers {
+                        control: true,
+                        ..none
+                    };
+                    named(&c.to_string(), control)
+                }
+                Key::Esc => named("escape", none),
+                Key::Enter => named("enter", none),
+                Key::Backspace => named("backspace", none),
+                Key::Delete => named("delete", none),
+                Key::Tab => named("tab", none),
+                Key::BackTab => named(
+                    "tab",
+                    Modifiers {
+                        shift: true,
+                        ..none
+                    },
+                ),
+                Key::Left => named("left", none),
+                Key::Right => named("right", none),
+                Key::Up => named("up", none),
+                Key::Down => named("down", none),
+                Key::Home => named("home", none),
+                Key::End => named("end", none),
+                Key::PageUp => named("pageup", none),
+                Key::PageDown => named("pagedown", none),
+            });
+        }
+        self.write(bytes);
+        true
+    }
+
+    /// `text` to the program, as if typed. False if it is done.
+    pub fn send(&mut self, text: &str) -> bool {
+        if self.is_running() {
+            self.write(text.as_bytes().to_vec());
+        }
+        self.is_running()
     }
 
     /// Text from the clipboard, as the program asked to be given it.

@@ -110,6 +110,7 @@ const HOOKS: &[&str] = &[
     "cursor-moved",
     "mode-changed",
     "diagnostics-changed",
+    "terminal-exited",
 ];
 
 const KEYS_PENDING: &str = "keys-pending";
@@ -582,6 +583,25 @@ pub fn reload_init(cx: &mut App) -> Option<PathBuf> {
 /// The last thing programs had to say since this was last asked.
 pub fn take_message(cx: &mut App) -> Option<String> {
     cx.global_mut::<Script>().messages.drain(..).next_back()
+}
+
+/// The terminal a program names by its number, as `function` was given it.
+fn terminal_arg(
+    call: &mut Call<'_>,
+    id: &Value,
+    function: &str,
+) -> Result<gpui::Entity<crate::terminal::TermView>, Error> {
+    let id = id.as_int()?;
+    let cx = app(call)?;
+    let found = origin(cx).and_then(|origin| {
+        let find = |workspace: &Workspace, _: &App| {
+            u64::try_from(id)
+                .ok()
+                .and_then(|id| workspace.terminal_by_id(id))
+        };
+        origin.workspace.read_with(cx, find).ok().flatten()
+    });
+    found.ok_or_else(|| failed(format!("{function}: there is no terminal {id}")))
 }
 
 fn failed(message: impl Into<String>) -> Error {
@@ -1194,9 +1214,10 @@ fn define_functions(interp: &mut Interp) {
     });
 
     // (panes): the panes, from the top left, each as what it shows:
-    // (:focused :scratch :path), the focused one's :focused true, the
-    // others' false; :scratch the name of its tab if `open-scratch` made
-    // it, :path its file, or nil.
+    // (:focused :scratch :path :terminal), the focused one's :focused
+    // true, the others' false; :scratch the name of its tab if
+    // `open-scratch` made it, :path its file, :terminal the number of its
+    // terminal, or nil.
     interp.define_native("panes", 0, |call, _| {
         let cx = app(call)?;
         let infos = origin(cx).and_then(|origin| {
@@ -1212,6 +1233,11 @@ fn define_functions(interp: &mut Interp) {
                     (
                         "path",
                         text(info.path.map(|path| path.display().to_string())),
+                    ),
+                    (
+                        "terminal",
+                        info.terminal
+                            .map_or(Value::Nil, |id| Value::from(id as i64)),
                     ),
                 ])
             },
@@ -1264,6 +1290,103 @@ fn define_functions(interp: &mut Interp) {
             Some(()) => Ok(Value::Nil),
             None => Err(failed("there is no window with an editor")),
         }
+    });
+
+    // (open-terminal [command [dir]]): a terminal in a pane split off
+    // below, with the keys, running `command` rather than the shell, in
+    // `dir` (the project's root for nil, or what a relative path is from)
+    // and the project's environment. With neither, the terminal still
+    // running, if there is one. Its number, for the other terminal
+    // functions.
+    interp.define_native("open-terminal", Arity::between(0, 2), |call, args| {
+        let text = |index: usize| match args.get(index) {
+            None | Some(Value::Nil) => Ok(None),
+            Some(text) => text.as_str().map(|text| Some(text.to_string())),
+        };
+        let command = text(0)?.filter(|command| !command.trim().is_empty());
+        let dir = text(1)?;
+        let cx = app(call)?;
+        let opened = in_workspace(cx, |workspace, window, cx| {
+            let cwd = match &dir {
+                Some(dir) => workspace.root().join(dir),
+                None => workspace.root().to_path_buf(),
+            };
+            let new = dir.is_some();
+            let view = workspace.open_terminal(command, cwd, new, window, cx)?;
+            Some(crate::workspace::terminal_id(&view))
+        });
+        match opened {
+            Some(Some(id)) => Ok(Value::from(id as i64)),
+            Some(None) => Err(failed("open-terminal: the terminal could not be started")),
+            None => Err(failed("there is no window to open a terminal in")),
+        }
+    });
+
+    // (terminals): every terminal, from the top left pane, as
+    // (:id :title :command :running :exit): :command what it was started
+    // to run, nil for the shell; :exit its exit code once it is done, nil
+    // until then or if it was killed.
+    interp.define_native("terminals", 0, |call, _| {
+        let cx = app(call)?;
+        let infos = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| workspace.terminal_infos(cx);
+            origin.workspace.read_with(cx, read).ok()
+        });
+        Ok(Value::list(infos.unwrap_or_default().into_iter().map(
+            |info| {
+                crate::host::record([
+                    ("id", Value::from(info.id as i64)),
+                    ("title", Value::from(info.title)),
+                    ("command", info.command.map_or(Value::Nil, Value::from)),
+                    ("running", Value::Bool(info.running)),
+                    (
+                        "exit",
+                        info.exit_code
+                            .map_or(Value::Nil, |code| Value::from(code as i64)),
+                    ),
+                ])
+            },
+        )))
+    });
+
+    // (terminal-send id text): `text` to the program in terminal `id`, as
+    // if typed: "\r" is enter. False if the program is done.
+    interp.define_native("terminal-send", 2, |call, args| {
+        let text = args[1].as_str()?.to_string();
+        let view = terminal_arg(call, &args[0], "terminal-send")?;
+        let cx = app(call)?;
+        let sent = view.update(cx, |view, _| view.send(&text));
+        Ok(Value::Bool(sent))
+    });
+
+    // (terminal-keys id keys): keys to the program in terminal `id`, as
+    // `bind` writes them, "<C-c>" or "q<CR>", as if pressed. False if the
+    // program is done.
+    interp.define_native("terminal-keys", 2, |call, args| {
+        let keys = med_vim::parse_keys(args[1].as_str()?);
+        let view = terminal_arg(call, &args[0], "terminal-keys")?;
+        let cx = app(call)?;
+        let sent = view.update(cx, |view, _| view.send_keys(&keys));
+        Ok(Value::Bool(sent))
+    });
+
+    // (terminal-text id): what went by in terminal `id`, and its screen,
+    // as text, a line for each row.
+    interp.define_native("terminal-text", 1, |call, args| {
+        let view = terminal_arg(call, &args[0], "terminal-text")?;
+        let cx = app(call)?;
+        Ok(Value::from(view.read(cx).history().text))
+    });
+
+    // (close-terminal id): close the tab of terminal `id`, hanging up on
+    // its program. False if there is no such terminal.
+    interp.define_native("close-terminal", 1, |call, args| {
+        let id = args[0].as_int()?;
+        let cx = app(call)?;
+        let closed = in_workspace(cx, |workspace, window, cx| {
+            u64::try_from(id).is_ok_and(|id| workspace.close_terminal(id, window, cx))
+        });
+        Ok(Value::Bool(closed.unwrap_or(false)))
     });
 
     // (load path): run another file. A path that does not start at the
