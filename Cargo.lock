@@ -3930,7 +3930,7 @@ dependencies = [
 
 [[package]]
 name = "med"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "frizbee",
@@ -3959,25 +3959,25 @@ dependencies = [
 
 [[package]]
 name = "med-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ropey 1.6.1",
 ]
 
 [[package]]
 name = "med-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "med-lisp"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "med-lsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -3988,7 +3988,7 @@ dependencies = [
 
 [[package]]
 name = "med-vim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "med-core",
  "regex",
