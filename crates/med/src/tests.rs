@@ -5411,6 +5411,120 @@ fn splits_into_panes_and_moves_between_them(cx: &mut TestAppContext) {
     assert_eq!(tab_titles(&ws, cx), ["b.txt", "a.txt"]);
 }
 
+fn active_name(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
+    active_file(workspace, cx)
+        .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+#[gpui::test]
+fn ctrl_caret_goes_back_to_the_tab_shown_before(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+
+    // No tab was shown before the first.
+    cx.simulate_keystrokes("ctrl-^");
+    assert_eq!(active_name(&ws, cx), "a.txt");
+    assert!(
+        message(&ws, cx).contains("No alternate tab"),
+        "{}",
+        message(&ws, cx)
+    );
+
+    cx.simulate_keystrokes(": e space b . t x t enter : e space c . t x t enter");
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", "b.txt", "c.txt"]);
+    // To and fro between two, by either key and by name.
+    cx.simulate_keystrokes("ctrl-^");
+    assert_eq!(active_name(&ws, cx), "b.txt");
+    cx.simulate_keystrokes("ctrl-6");
+    assert_eq!(active_name(&ws, cx), "c.txt");
+    cx.simulate_keystrokes(": b # enter");
+    assert_eq!(active_name(&ws, cx), "b.txt");
+
+    // The tab shown is closed: the one before it is still the way back.
+    cx.simulate_keystrokes("g t g t");
+    assert_eq!(active_name(&ws, cx), "a.txt");
+    cx.simulate_keystrokes(": b d enter");
+    assert_eq!(active_name(&ws, cx), "b.txt");
+    cx.simulate_keystrokes("ctrl-^");
+    assert_eq!(active_name(&ws, cx), "c.txt");
+
+    // A tab that is closed is not gone back to.
+    cx.simulate_keystrokes(": t a b o n l y enter");
+    assert_eq!(tab_titles(&ws, cx), ["c.txt"]);
+    cx.simulate_keystrokes("ctrl-^");
+    assert_eq!(active_name(&ws, cx), "c.txt");
+    assert!(
+        message(&ws, cx).contains("No alternate tab"),
+        "{}",
+        message(&ws, cx)
+    );
+
+    // Each pane has its own.
+    cx.simulate_keystrokes(": e space a . t x t enter ctrl-w v");
+    cx.simulate_keystrokes(": e space b . t x t enter ctrl-^");
+    assert_eq!(panes(&ws, cx), ["a.txt", "b.txt*"]);
+    cx.simulate_keystrokes("ctrl-w h ctrl-^");
+    assert_eq!(panes(&ws, cx), ["c.txt*", "b.txt"]);
+}
+
+#[gpui::test]
+fn a_new_tab_is_empty_until_a_file_is_opened_in_it(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let count = |cx: &mut VisualTestContext| tab_titles(&ws, cx).len();
+
+    cx.simulate_keystrokes(": t a b n e w enter");
+    assert_eq!(count(cx), 2);
+    assert_eq!(active_file(&ws, cx), None);
+    // An empty tab is one already.
+    cx.simulate_keystrokes(": e n e w enter cmd-n");
+    assert_eq!(count(cx), 2);
+
+    // The file opened next takes its place.
+    cx.simulate_keystrokes(": e space b . t x t enter");
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", "b.txt"]);
+    cx.simulate_keystrokes("cmd-n");
+    assert_eq!(count(cx), 3);
+    assert_eq!(active_file(&ws, cx), None);
+    cx.simulate_keystrokes("ctrl-^");
+    assert_eq!(active_name(&ws, cx), "b.txt");
+
+    // With a name, the file in a tab.
+    cx.simulate_keystrokes(": t a b e space c . t x t enter");
+    assert_eq!(active_name(&ws, cx), "c.txt");
+    assert_eq!(count(cx), 4);
+}
+
+#[gpui::test]
+fn the_other_tabs_of_a_pane_are_closed(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    cx.simulate_keystrokes(": e space b . t x t enter i x escape");
+    cx.simulate_keystrokes(": e space c . t x t enter");
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", "b.txt", "c.txt"]);
+
+    // The one with unsaved changes stays, and is said to.
+    cx.simulate_keystrokes(": t a b o enter");
+    assert_eq!(tab_titles(&ws, cx), ["b.txt", "c.txt"]);
+    assert_eq!(active_name(&ws, cx), "c.txt");
+    assert!(
+        message(&ws, cx).contains("1 tab(s) with unsaved changes"),
+        "{}",
+        message(&ws, cx)
+    );
+    cx.simulate_keystrokes(": t a b o ! enter");
+    assert_eq!(tab_titles(&ws, cx), ["c.txt"]);
+    assert_eq!(project.read("b.txt"), "b\n");
+
+    // Only the pane that has the keys loses tabs.
+    cx.simulate_keystrokes("ctrl-w v : e space a . t x t enter : e space b . t x t enter");
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", "b.txt"]);
+    cx.simulate_keystrokes("cmd-alt-t");
+    assert_eq!(tab_titles(&ws, cx), ["b.txt"]);
+    assert_eq!(panes(&ws, cx), ["c.txt", "b.txt*"]);
+}
+
 #[gpui::test]
 fn an_editor_of_another_pane_that_gets_keys_is_the_focused_one(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\ntwo\n"), ("b.txt", "three\n")]);

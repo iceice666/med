@@ -52,6 +52,9 @@ any case.
 | `tab` / `shift-tab` (on `:`) | complete a command's name, a file after `:e` `:w`, or a topic after `:h`; again for the next / previous match |
 | `ctrl-o` / `ctrl-i` | jump back / forward |
 | `gt` / `gT`, `⌘⇧]` / `⌘⇧[` | next / previous tab |
+| `ctrl-^` (`ctrl-6`), `:b#` | back to the tab the pane showed before this one |
+| `⌘N`, `:tabnew` / `:enew` | a new, empty tab, which the next file opened takes the place of; `:tabnew file` opens the file |
+| `⌘⌥T`, `:tabonly` | close the other tabs of the pane; those with unsaved changes stay, unless it is `:tabonly!` |
 | `ctrl-w v` / `ctrl-w s`, `:vs` / `:sp` | split the pane: a new one, with an empty tab, to the right / below |
 | `ctrl-w h j k l`, `ctrl-w w` / `ctrl-w W` | the pane to the left, below, above, right; the next / previous one |
 | `ctrl-w c` / `:close`, `ctrl-w o` / `:only` | close the pane / every other pane: their tabs go to the pane left with the keys |

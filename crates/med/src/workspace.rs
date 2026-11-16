@@ -61,6 +61,39 @@ struct Pane {
     id: PaneId,
     tabs: Vec<Item>,
     active: usize,
+    /// The tab last shown, which `active` stops pointing at while tabs
+    /// come and go.
+    shown: Option<Item>,
+    /// The tab shown before that one, for `ctrl-^` to go back to.
+    alternate: Option<Item>,
+}
+
+impl Pane {
+    fn new(id: PaneId, tabs: Vec<Item>, active: usize) -> Self {
+        Pane {
+            id,
+            tabs,
+            active,
+            shown: None,
+            alternate: None,
+        }
+    }
+
+    /// `item` is the tab shown now: the one shown before it is the
+    /// alternate, while it is still a tab here.
+    fn show(&mut self, item: &Item) {
+        let before = self.shown.replace(item.bare());
+        if let Some(before) = before
+            && before != *item
+            && self.tabs.contains(&before)
+        {
+            self.alternate = Some(before);
+        }
+        let gone = |tab: &Item| tab == item || !self.tabs.contains(tab);
+        if self.alternate.as_ref().is_some_and(gone) {
+            self.alternate = None;
+        }
+    }
 }
 
 /// What a tab has.
@@ -89,6 +122,15 @@ impl PartialEq for Item {
 impl Item {
     fn terminal_of(view: Entity<TermView>) -> Self {
         Item::Terminal { view, normal: None }
+    }
+
+    /// The tab to know it by later, without the copy a terminal has in
+    /// normal mode.
+    fn bare(&self) -> Self {
+        match self {
+            Item::Terminal { view, .. } => Item::terminal_of(view.clone()),
+            editor => editor.clone(),
+        }
     }
 
     /// The editor of the tab: its own, or its terminal's in normal mode.
@@ -303,11 +345,7 @@ impl Workspace {
             lsp,
             env,
             _env_task: None,
-            panes: vec![Pane {
-                id: 0,
-                tabs: Vec::new(),
-                active: 0,
-            }],
+            panes: vec![Pane::new(0, Vec::new(), 0)],
             layout: Layout::Pane(0),
             focused: 0,
             next_pane: 1,
@@ -713,6 +751,8 @@ impl Workspace {
         let pane = self.pane_mut();
         if pane.tabs.is_empty() {
             pane.active = 0;
+            pane.shown = None;
+            pane.alternate = None;
             window.set_window_title("med");
             self.focus_handle.focus(window, cx);
             cx.notify();
@@ -720,6 +760,7 @@ impl Workspace {
         }
         pane.active = index.min(pane.tabs.len() - 1);
         let item = pane.tabs[pane.active].clone();
+        pane.show(&item);
         item.focus_handle(cx).focus(window, cx);
         window.set_window_title(&self.title(cx));
         self.editor_changed(window, cx);
@@ -1476,7 +1517,7 @@ impl Workspace {
                 if pane.focused {
                     *focused = panes.len();
                 }
-                panes.push(Pane { id, tabs, active });
+                panes.push(Pane::new(id, tabs, active));
                 Some(Layout::Pane(id))
             }
             Saved::Split(axis, parts) => {
@@ -1515,11 +1556,7 @@ impl Workspace {
         let id = self.next_pane;
         self.next_pane += 1;
         self.layout.split(self.pane().id, axis, id);
-        self.panes.push(Pane {
-            id,
-            tabs: vec![item],
-            active: 0,
-        });
+        self.panes.push(Pane::new(id, vec![item], 0));
         self.focus_pane(self.panes.len() - 1, window, cx);
     }
 
@@ -1734,6 +1771,47 @@ impl Workspace {
         if count > 0 {
             let index = (pane.active as isize + delta).rem_euclid(count) as usize;
             self.activate(index, window, cx);
+        }
+    }
+
+    /// Back to the tab the focused pane showed before this one, as vim's
+    /// `ctrl-^`.
+    fn alternate_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.pane();
+        let index = pane
+            .alternate
+            .as_ref()
+            .and_then(|alternate| pane.tabs.iter().position(|tab| tab == alternate));
+        match index {
+            Some(index) => self.activate(index, window, cx),
+            None => self.set_message("No alternate tab", cx),
+        }
+    }
+
+    /// Close every tab of the focused pane but the one shown. Unless
+    /// `force`, the ones with unsaved changes stay.
+    fn close_other_tabs(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.pane();
+        let Some(shown) = pane.tabs.get(pane.active).cloned() else {
+            return;
+        };
+        let (kept, closed): (Vec<Item>, Vec<Item>) = pane
+            .tabs
+            .iter()
+            .cloned()
+            .partition(|tab| *tab == shown || (!force && tab.is_dirty(cx)));
+        for tab in &closed {
+            tab.close(cx);
+        }
+        let unsaved = kept.len() - 1;
+        let index = kept.iter().position(|tab| *tab == shown).unwrap_or(0);
+        self.pane_mut().tabs = kept;
+        self.activate(index, window, cx);
+        if unsaved > 0 {
+            self.set_message(
+                format!("{unsaved} tab(s) with unsaved changes stay (add ! to override)"),
+                cx,
+            );
         }
     }
 
@@ -2933,6 +3011,32 @@ pub(crate) fn register(commands: &mut Commands) {
         "workspace.prev_tab",
         "Go to the previous tab",
         W(|ws, _, window, cx| ws.cycle_tab(-1, window, cx)),
+    );
+    commands.register(
+        "workspace.alternate_tab",
+        "Go back to the tab shown before this one",
+        W(|ws, _, window, cx| ws.alternate_tab(window, cx)),
+    );
+    commands.register(
+        "workspace.new_tab",
+        "Open an empty tab; given a name, the file in a tab",
+        W(|ws, args, window, cx| {
+            if !args.arg.is_empty() {
+                ws.open_path(Path::new(&args.arg), window, cx);
+            } else if !ws
+                .tabs()
+                .get(ws.pane().active)
+                .is_some_and(|tab| tab.is_pristine(cx))
+            {
+                // An empty tab is one already.
+                ws.open_empty(window, cx);
+            }
+        }),
+    );
+    commands.register(
+        "workspace.close_other_tabs",
+        "Close the other tabs of the pane; with ! even those with unsaved changes",
+        W(|ws, args, window, cx| ws.close_other_tabs(args.bang, window, cx)),
     );
     commands.register(
         "workspace.split_right",

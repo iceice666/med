@@ -31,6 +31,10 @@
 ; Tabs, and the places the cursor has been.
 (bind '(normal visual) "gt" "workspace.next_tab")
 (bind '(normal visual) "gT" "workspace.prev_tab")
+; Back to the tab shown before this one. `ctrl-^` is `ctrl-6` on keyboards
+; that have `^` on the `6`.
+(bind '(normal visual) "<C-^>" "workspace.alternate_tab")
+(bind '(normal visual) "<C-6>" "workspace.alternate_tab")
 (bind '(normal visual) "<C-o>" "workspace.jump_back")
 (bind '(normal visual) "<C-i>" "workspace.jump_forward")
 (bind '(normal visual) "<Tab>" "workspace.jump_forward")
@@ -86,6 +90,8 @@
 (bind 'app "cmd-q" "workspace.quit_all")
 (bind 'app "cmd-s" "workspace.save")
 (bind 'app "cmd-w" "workspace.close_tab")
+(bind 'app "cmd-n" "workspace.new_tab")
+(bind 'app "cmd-alt-t" "workspace.close_other_tabs")
 (bind 'app "cmd-shift-]" "workspace.next_tab")
 (bind 'app "cmd-shift-[" "workspace.prev_tab")
 (bind 'app "ctrl-tab" "workspace.next_tab")

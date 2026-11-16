@@ -46,6 +46,9 @@ pub const EX: &[(&[&str], &str)] = &[
         &["bp", "bprev", "bprevious", "tabp", "tabprevious"],
         "workspace.prev_tab",
     ),
+    (&["b#"], "workspace.alternate_tab"),
+    (&["tabnew", "tabe", "tabedit", "enew"], "workspace.new_tab"),
+    (&["tabo", "tabonly"], "workspace.close_other_tabs"),
 ];
 
 /// What the argument of a command is, for `Tab` to complete it.
@@ -61,6 +64,7 @@ pub enum ExArg {
 pub const EX_ARGS: &[(&str, ExArg)] = &[
     ("workspace.edit", ExArg::File),
     ("workspace.save", ExArg::File),
+    ("workspace.new_tab", ExArg::File),
     ("workspace.open_project", ExArg::File),
     ("workspace.help", ExArg::Command),
 ];
