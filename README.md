@@ -11,8 +11,9 @@ framework behind Zed.
   that follow the syntax tree (functions, types, arguments, comments)
 - LSP: diagnostics, completion, hover, signature help, go to definition,
   references, rename, code actions, formatting
-- No built-in keys. The vim layout, the file tree, the fuzzy finder, a
-  lazygit-style git screen and which-key are Lisp programs in
+- No built-in keys. The vim layout, an oil.nvim-style directory editor,
+  the fuzzy finder, a lazygit-style git screen and which-key are Lisp
+  programs in
   [`examples/`](examples) that you load, change or replace
 
 ## Install
@@ -79,12 +80,13 @@ from a checkout:
 | --- | --- |
 | `vim.lisp` | vim keys in every mode, plus nvim-surround-style `ys` / `ds` / `cs` |
 | `keys.lisp` | LSP keys (`gd`, `gr`, `K`), tabs, panes, flash-style jumps, `space` leader keys, `⌘` shortcuts |
-| `tree.lisp` | file tree (`space e`, `⌘B`) |
+| `oil.lisp` | directories as buffers to edit, as oil.nvim (`space e`, `space -`) |
 | `picker.lisp` | fuzzy file finder and project search (`space f`, `space /`) |
 | `git.lisp` | lazygit-style git screen (`space g`) |
 | `which-key.lisp` | the keys that can come next, after a pause |
 | `todo.lisp` | signs on TODO/FIXME/NOTE lines, `]T` / `[T` |
-| `dired.lisp` | Emacs-style dired and wdired (`space -`) |
+| `tree.lisp` | a file tree in a sidebar (`space e`, `⌘B`); not loaded by `init.lisp` |
+| `dired.lisp` | Emacs-style dired and wdired (`space -`); not loaded by `init.lisp` |
 | `statusline.lisp`, `titlebar.lisp` | the status and title bars as editable layouts |
 | `rss.lisp` | a feed reader (`:newsticker`); not loaded by `init.lisp` |
 
@@ -112,8 +114,8 @@ react to hooks. The reference is in `docs/`:
 
 - [Keys and commands](docs/keys.md): the default keys, key tables, `bind`,
   `defcommand`, options
-- [The example programs](docs/examples.md): the tree, picker, git screen,
-  which-key and dired in detail
+- [The example programs](docs/examples.md): oil, the tree, picker, git
+  screen, which-key and dired in detail
 - [Scripting](docs/lisp.md): panels, layouts, the bars, host functions,
   hooks, the buffer API and the Lisp itself
 

@@ -79,6 +79,7 @@ const GIT: &str = include_str!("../../../examples/git.lisp");
 const WHICH_KEY: &str = include_str!("../../../examples/which-key.lisp");
 const TODO: &str = include_str!("../../../examples/todo.lisp");
 const DIRED: &str = include_str!("../../../examples/dired.lisp");
+const OIL: &str = include_str!("../../../examples/oil.lisp");
 const STATUSLINE: &str = include_str!("../../../examples/statusline.lisp");
 const TITLEBAR: &str = include_str!("../../../examples/titlebar.lisp");
 const RSS: &str = include_str!("../../../examples/rss.lisp");
@@ -1605,12 +1606,11 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     assert_eq!(
         panels(cx),
         [
-            "tree",
+            "oil-confirm",
             "picker",
             "git",
             "git-prompt",
             "which-key",
-            "dired-prompt",
             "statusline",
             "titlebar",
             "titlebar-branches"
@@ -1629,9 +1629,18 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     });
     assert_eq!(silent, Vec::<String>::new(), "commands with no description");
 
-    // The leader keys work from the tree as they do from an editor.
+    // space e lists the file's directory, as oil.nvim, and the leader
+    // keys work from the listing as they do from a file.
     cx.simulate_keystrokes("space e");
     cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "a.txt\nb.txt\n");
+    // g ? lists all of the listing's keys.
+    cx.simulate_keystrokes("g ?");
+    cx.run_until_parked();
+    assert!(shown("which-key", cx));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("which-key", cx));
     cx.simulate_keystrokes("space f");
     cx.run_until_parked();
     assert!(shown("picker", cx));
@@ -1640,10 +1649,12 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("b.txt")));
-    // Put away without choosing, the picker gives the keyboard back to
-    // the tree it was called from.
+    // Put away without choosing, the picker leaves the keyboard in the
+    // listing it was called from, and a file opened from there takes the
+    // listing's place.
     cx.simulate_keystrokes("space e");
     cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 1));
     cx.simulate_keystrokes("space f");
     cx.run_until_parked();
     cx.simulate_keystrokes("escape");
@@ -1652,6 +1663,11 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("g g enter");
     cx.run_until_parked();
     assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
+    let titles = tab_titles(&ws, cx);
+    assert!(
+        !titles.iter().any(|title| title.starts_with("oil://")),
+        "{titles:?}"
+    );
 
     // Run again, the init file leaves one of each panel, and they still
     // have a project to show.
@@ -1666,18 +1682,22 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
     assert_eq!(
         panels(cx),
         [
-            "tree",
+            "oil-confirm",
             "picker",
             "git",
             "git-prompt",
             "which-key",
-            "dired-prompt",
             "statusline",
             "titlebar",
             "titlebar-branches"
         ]
     );
-    assert_eq!(lisp("(length tree-entries)", cx), "2");
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "a.txt\nb.txt\n");
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("a.txt")));
     cx.simulate_keystrokes("space g");
     cx.run_until_parked();
     assert!(shown("git", cx));
@@ -4632,4 +4652,172 @@ fn the_make_of_the_docs_runs(cx: &mut TestAppContext) {
         }
         assert_eq!(message(&ws, cx), "The build failed: 2");
     }
+}
+
+/// `examples/oil.lisp`: a directory as a buffer to edit, as oil.nvim.
+#[gpui::test]
+fn edits_directories_as_oil_does(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        (".hidden", "h\n"),
+        ("dir/inner.txt", "inner\n"),
+    ]);
+    let forever = "(set! oil-delete-forever true)";
+    let (ws, cx) = open_with(&[OIL, forever], &project, &["a.txt"], cx);
+    let root = project.0.display().to_string();
+    let listing = format!("oil://{root}/");
+    let inner = format!("oil://{root}/dir/");
+    let write = |cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes(": w enter");
+        cx.run_until_parked();
+    };
+    let asked = |cx: &mut VisualTestContext| {
+        lisp(
+            "(map (fn (a) (str (oil-verb a) \" \" (get a :label))) (get oil-asking :actions))",
+            cx,
+        )
+    };
+
+    // space - lists the file's directory, the cursor on its line; what
+    // starts with a dot waits for g .
+    cx.simulate_keystrokes("space -");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\na.txt\nb.txt\n");
+    assert_eq!(cursor(&ws, cx), (2, 1));
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", listing.as_str()]);
+    assert_eq!(active_file(&ws, cx), None);
+    cx.simulate_keystrokes("g .");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\n.hidden\na.txt\nb.txt\n");
+    assert_eq!(cursor(&ws, cx), (3, 1));
+    cx.simulate_keystrokes("g .");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (2, 1));
+
+    // A name changed in place moves its file, a line taken out deletes
+    // it, and a line put in makes a file, or a directory: once the popup
+    // has said what, and y.
+    cx.simulate_keystrokes("c c");
+    cx.simulate_input("c.txt");
+    cx.simulate_keystrokes("escape j d d o");
+    cx.simulate_input("notes.md");
+    cx.simulate_keystrokes("escape o");
+    cx.simulate_input("sub/");
+    cx.simulate_keystrokes("escape");
+    assert!(dirty(&ws, cx));
+    write(cx);
+    assert!(shown("oil-confirm", cx));
+    assert_eq!(
+        asked(cx),
+        r#"("DELETE b.txt" "CREATE notes.md" "CREATE sub/" "MOVE a.txt → c.txt")"#
+    );
+    cx.simulate_keystrokes("y");
+    cx.run_until_parked();
+    assert!(!shown("oil-confirm", cx));
+    assert_eq!(message(&ws, cx), "2 made, 1 moved, 1 deleted");
+    assert_eq!(project.read("c.txt"), "a\n");
+    assert_eq!(project.read("notes.md"), "");
+    assert!(project.path("sub").is_dir());
+    assert!(!project.path("a.txt").exists() && !project.path("b.txt").exists());
+    assert_eq!(text(&ws, cx), "dir/\nsub/\nc.txt\nnotes.md\n");
+    assert!(!dirty(&ws, cx));
+    // The tab of a.txt went with it.
+    assert_eq!(tab_titles(&ws, cx), ["c.txt", listing.as_str()]);
+
+    // What cannot all be done is not done at all; n does nothing.
+    cx.simulate_keystrokes("g g j c c");
+    cx.simulate_input("dir/");
+    cx.simulate_keystrokes("escape");
+    write(cx);
+    assert_eq!(message(&ws, cx), "two lines say dir");
+    assert!(!shown("oil-confirm", cx));
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "dir/\nsub/\nc.txt\nnotes.md\n");
+    cx.simulate_keystrokes("shift-g d d");
+    write(cx);
+    assert_eq!(asked(cx), r#"("DELETE notes.md")"#);
+    cx.simulate_keystrokes("n");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "Nothing done");
+    assert!(project.path("notes.md").exists());
+    cx.simulate_keystrokes("u");
+    assert_eq!(text(&ws, cx), "dir/\nsub/\nc.txt\nnotes.md\n");
+
+    // A line cut here and put in another listing moves its file there, and
+    // one copied copies it. The listing cut from keeps its tab, having
+    // changes, and the :w in the other writes both.
+    cx.simulate_keystrokes("g g j j \" a d d y y g g enter");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "inner.txt\n");
+    assert_eq!(
+        tab_titles(&ws, cx),
+        ["c.txt", listing.as_str(), inner.as_str()]
+    );
+    cx.simulate_keystrokes("\" a p p");
+    assert_eq!(text(&ws, cx), "inner.txt\nc.txt\nnotes.md\n");
+    write(cx);
+    assert_eq!(
+        asked(cx),
+        r#"("COPY notes.md → dir/notes.md" "MOVE c.txt → dir/c.txt")"#
+    );
+    cx.simulate_keystrokes("y");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 moved, 1 copied");
+    assert_eq!(project.read("dir/c.txt"), "a\n");
+    assert_eq!(project.read("dir/notes.md"), "");
+    assert!(project.path("notes.md").exists() && !project.path("c.txt").exists());
+    assert_eq!(text(&ws, cx), "c.txt\ninner.txt\nnotes.md\n");
+    assert!(!dirty(&ws, cx));
+
+    // - goes up, the cursor on the directory come from; the listing there
+    // had all its changes written, so it is read again.
+    cx.simulate_keystrokes("-");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\nsub/\nnotes.md\n");
+    assert_eq!(cursor(&ws, cx), (1, 1));
+    cx.run_until_parked();
+    assert!(!dirty(&ws, cx));
+
+    // A listing with changes, not shown while another's :w writes them
+    // along with its own, knows only the files of its lines: one made
+    // there by the other is not taken for a line taken out.
+    cx.simulate_keystrokes("shift-g o");
+    cx.simulate_input("keep.txt");
+    cx.simulate_keystrokes("escape g g enter");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "c.txt\ninner.txt\nnotes.md\n");
+    cx.simulate_keystrokes("c c");
+    cx.simulate_input("../moved.txt");
+    cx.simulate_keystrokes("escape");
+    write(cx);
+    assert_eq!(
+        asked(cx),
+        r#"("CREATE keep.txt" "MOVE dir/c.txt → moved.txt")"#
+    );
+    cx.simulate_keystrokes("y");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "1 made, 1 moved");
+    assert_eq!(project.read("moved.txt"), "a\n");
+    cx.simulate_keystrokes("-");
+    cx.run_until_parked();
+    assert_eq!(text(&ws, cx), "dir/\nsub/\nkeep.txt\nmoved.txt\nnotes.md\n");
+    assert!(!dirty(&ws, cx));
+
+    // enter on a file opens it in the listing's place; space e lists its
+    // directory again, and closes the listing.
+    cx.simulate_keystrokes("shift-g enter");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("notes.md")));
+    let titles = tab_titles(&ws, cx);
+    assert!(
+        !titles.iter().any(|title| title.starts_with("oil://")),
+        "{titles:?}"
+    );
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert_eq!(cursor(&ws, cx), (5, 1));
+    cx.simulate_keystrokes("space e");
+    cx.run_until_parked();
+    assert_eq!(active_file(&ws, cx), Some(project.path("notes.md")));
 }

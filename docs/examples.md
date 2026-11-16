@@ -5,7 +5,7 @@ English | [繁體中文](examples.zh-TW.md)
 ## The example panels
 
 An editor with no init file is the editor alone, without even its keys.
-The file tree, the picker, the git screen and the list of keys that can
+The directory editor, the file tree, the picker, the git screen and the list of keys that can
 come next are programs in [`examples/`](../examples), and an init file
 loads the ones it wants:
 
@@ -14,7 +14,7 @@ loads the ones it wants:
 (load "/path/to/med/examples/init.lisp")   ; all of them, keys too, or one by one:
 (load "/path/to/med/examples/vim.lisp")
 (load "/path/to/med/examples/keys.lisp")
-(load "/path/to/med/examples/tree.lisp")
+(load "/path/to/med/examples/oil.lisp")
 ```
 
 A path that does not start at the top is looked for beside the file that
@@ -25,15 +25,19 @@ there. Each brings its commands and its keys:
 | --- | --- | --- |
 | `vim.lisp` | | vim's keys, in every mode: see [Keys](keys.md#keys) |
 | `keys.lisp` | | the language server's, the tabs', flash's, the `space` leader keys and the `⌘` shortcuts |
-| `tree.lisp` | `space e` / `⌘⇧E` | open and focus the file tree, or from it put it away (`j k h l`, `enter`, `R` refresh, `q` put away) |
-| | `⌘B` | show/hide file tree (hidden at start) |
+| `oil.lisp` | `space -` | the file's directory as a buffer to edit, as oil.nvim |
+| | `space e` / `⌘⇧E` | the same, or from a listing back to the file |
+| | `enter` / `-` / `_` | in a listing: open the line's file or directory / go up / the project's root |
+| | `:w` | in a listing: do what the edits ask, after a popup says what (`y` / `n`) |
 | `picker.lisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
 | `git.lisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.lisp` | | the keys that can come next, after a pause |
-| | `?` | in the tree or a listing: all of its keys at once (as `init.lisp` sets it up) |
+| | `g ?` | in an oil listing: all of its keys at once (as `init.lisp` sets it up) |
 | `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
-| `dired.lisp` | `space -` | the file's directory, as Emacs's dired |
+| `tree.lisp` | `space e` / `⌘⇧E` | not loaded by `init.lisp`: open and focus the file tree, or from it put it away (`j k h l`, `enter`, `R` refresh, `q` put away) |
+| | `⌘B` | show/hide file tree (hidden at start) |
+| `dired.lisp` | `space -` | not loaded by `init.lisp`: the file's directory, as Emacs's dired |
 | | `enter` / `-` | in a listing: open the line's file or directory / go up |
 | | `i` | in a listing: edit the names, as wdired |
 | `statusline.lisp` | | the status bar, as a layout to change: the one the window draws without it |
@@ -49,11 +53,37 @@ bindings is listed by how many they are, or by a name: `(which-key-name
 moves right by itself after a second, but waits for the next key.
 `(which-key-help-key 'tree "?")` makes `?` in a table of keys list
 all of them straight away, and the key typed then does what it does
-there; `init.lisp` does so for the tree and for dired's listings, after
-their keys are bound, as a key bound later is not on the list.
+there; `init.lisp` does so with `g ?` for oil's listings, after their
+keys are bound, as a key bound later is not on the list.
 
 With `picker.lisp`, `gr` lists the references to choose from; without it,
 `gr` goes to the first.
+
+With `oil.lisp` (as oil.nvim), a directory is a tab called
+`oil:///the/directory/` with a name to a line, a directory's with `/`
+after it, the names that start with a dot left out until `g .`. It is
+text to edit with vim's keys like any other, and `:w` does to the disk
+what the edits ask for, once a popup has listed it all and `y` has said
+yes: a name changed moves its file (with a `/` in it, into a directory
+below or above, made if need be), a line taken out puts its file in the
+trash (or with `(set! oil-delete-forever true)` does away with it), and
+a line put in makes an empty file, or a directory if it ends in `/`.
+Each line is known to be the file it was put up as while it is edited,
+as oil.nvim knows it by a number hidden on the line: a line cut with
+`dd` and put with `p` in another listing moves its file there, `yy` and
+`p` copy it, and a `:w` writes every listing with changes at once.
+Nothing is done unless all of it can be: no two lines may say the same
+name, nor one a name that is there already, unless that file is taken
+out in the same write. `C-l` reads the disk again (asking first if
+there are changes), `g x` opens the file with the system's program for
+it, and `C-c` closes the listing, back to the file it was opened from.
+Going to a file or a directory closes the listing it is gone from,
+unless it has changes not written. Oil.nvim's own key for it is `-`,
+which `vim.lisp` gives to a motion: `(bind 'normal "-" "oil.open")` has
+it the oil way.
+
+`tree.lisp` and `dired.lisp` are not loaded by `init.lisp`; a `(load
+...)` of one after it has it.
 
 With `dired.lisp` (as Emacs's dired), a directory is a tab of names, one
 to a line, a directory's with `/` after it, what git ignores among them,

@@ -68,6 +68,7 @@ pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
     ("init.lisp", include_str!("../../../examples/init.lisp")),
     ("vim.lisp", include_str!("../../../examples/vim.lisp")),
     ("keys.lisp", include_str!("../../../examples/keys.lisp")),
+    ("oil.lisp", include_str!("../../../examples/oil.lisp")),
     ("tree.lisp", include_str!("../../../examples/tree.lisp")),
     ("picker.lisp", include_str!("../../../examples/picker.lisp")),
     ("git.lisp", include_str!("../../../examples/git.lisp")),

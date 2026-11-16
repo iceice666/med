@@ -7,7 +7,7 @@
 - 自有的編輯核心：具分組復原的 rope 緩衝區（`med-core`），以及不需 UI 就能執行的 vim 引擎（`med-vim`）
 - 約 35 種語言的 Tree-sitter 語法高亮，以及依循語法樹的文字物件與移動（函式、型別、引數、註解）
 - LSP：診斷、自動完成、懸停說明、簽章提示、跳至定義、參照、重新命名、程式碼動作、格式化
-- 沒有內建按鍵。vim 按鍵配置、檔案樹、模糊搜尋器、lazygit 風格的 git 畫面和 which-key 都是 [`examples/`](examples) 裡的 Lisp 程式，由你載入、修改或替換
+- 沒有內建按鍵。vim 按鍵配置、oil.nvim 風格的目錄編輯器、模糊搜尋器、lazygit 風格的 git 畫面和 which-key 都是 [`examples/`](examples) 裡的 Lisp 程式，由你載入、修改或替換
 
 ## 安裝
 
@@ -52,12 +52,13 @@ cargo test --workspace
 | --- | --- |
 | `vim.lisp` | 各模式的 vim 按鍵，以及 nvim-surround 風格的 `ys` / `ds` / `cs` |
 | `keys.lisp` | LSP 按鍵（`gd`、`gr`、`K`）、分頁、窗格、flash 風格跳躍、`space` leader 鍵、`⌘` 快捷鍵 |
-| `tree.lisp` | 檔案樹（`space e`、`⌘B`） |
+| `oil.lisp` | 把目錄當成緩衝區來編輯，如同 oil.nvim（`space e`、`space -`） |
 | `picker.lisp` | 模糊檔案搜尋與專案搜尋（`space f`、`space /`） |
 | `git.lisp` | lazygit 風格的 git 畫面（`space g`） |
 | `which-key.lisp` | 停頓片刻後，列出接下來可按的鍵 |
 | `todo.lisp` | 在 TODO/FIXME/NOTE 行旁加上標示，`]T` / `[T` |
-| `dired.lisp` | Emacs 風格的 dired 與 wdired（`space -`） |
+| `tree.lisp` | 側邊欄的檔案樹（`space e`、`⌘B`）；`init.lisp` 不會載入 |
+| `dired.lisp` | Emacs 風格的 dired 與 wdired（`space -`）；`init.lisp` 不會載入 |
 | `statusline.lisp`、`titlebar.lisp` | 以可編輯版面呈現的狀態列與標題列 |
 | `rss.lisp` | 訂閱閱讀器（`:newsticker`）；`init.lisp` 不會載入 |
 
@@ -82,7 +83,7 @@ cargo test --workspace
 程式也能加入面板、讀取與編輯緩衝區、裝飾行，以及回應 hook。參考文件在 `docs/`：
 
 - [按鍵與命令](docs/keys.zh-TW.md)：預設按鍵、按鍵表、`bind`、`defcommand`、選項
-- [範例程式](docs/examples.zh-TW.md)：檔案樹、搜尋器、git 畫面、which-key 與 dired 的詳細說明
+- [範例程式](docs/examples.zh-TW.md)：oil、檔案樹、搜尋器、git 畫面、which-key 與 dired 的詳細說明
 - [腳本](docs/lisp.zh-TW.md)：面板、版面、狀態列與標題列、宿主函式、hook、緩衝區 API 以及 Lisp 本身
 
 不開編輯器也能試用這個 Lisp：`cargo run -p med-lisp --example repl`。
