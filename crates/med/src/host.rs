@@ -18,6 +18,7 @@
 //! (delete-file path)              ; to the trash: nil, or what went wrong
 //! (delete-file path true)         ; gone for good
 //! (make-dir path)                 ; and the ones above it
+//! (make-file path)                ; an empty file, never in another's place
 //! (make-link target path)         ; a symbolic link at path, to target
 //! (make-link target path true)    ; a hard one
 //! (set-file-mode path "755")      ; or 493: the permissions, as chmod
@@ -296,6 +297,18 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         Ok(said(
             std::fs::create_dir_all(&path).map_err(wrong_at(&path)),
         ))
+    });
+
+    // (make-file path): an empty file, never in the place of anything
+    // that is there. Nil, or what went wrong.
+    interp.define_native("make-file", 1, |call, args| {
+        let path = on_disk("make-file", &args[0], script::app(call)?)?;
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(drop);
+        Ok(said(made.map_err(wrong_at(&path))))
     });
 
     // (make-link target path [hard]): a symbolic link at `path` that

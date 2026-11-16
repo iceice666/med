@@ -1244,6 +1244,25 @@ fn define_functions(interp: &mut Interp) {
         )))
     });
 
+    // (scratch-tabs): every tab of text `open-scratch` made, in every
+    // pane from the top left, shown or not: (:name :modified :text).
+    interp.define_native("scratch-tabs", 0, |call, _| {
+        let cx = app(call)?;
+        let tabs = origin(cx).and_then(|origin| {
+            let read = |workspace: &Workspace, cx: &App| workspace.scratch_tabs(cx);
+            origin.workspace.read_with(cx, read).ok()
+        });
+        Ok(Value::list(tabs.unwrap_or_default().into_iter().map(
+            |(name, modified, text)| {
+                crate::host::record([
+                    ("name", Value::from(name.as_ref())),
+                    ("modified", Value::Bool(modified)),
+                    ("text", Value::from(text)),
+                ])
+            },
+        )))
+    });
+
     // (with-pane n function): call the function with the nth pane of
     // `panes`, from 0, as the one being edited, then go back to the one
     // that was, which keeps the keyboard. What the function does to the

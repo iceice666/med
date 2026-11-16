@@ -190,6 +190,7 @@ is the project's:
 | `(copy-file from to [function])` | copies a file, or a directory with all in it, links as links, never into the place of another; given a function, in the background, and it gets what `copy-file` would give |
 | `(delete-file path [forever])` | puts a file or a directory in the trash, or does away with it |
 | `(make-dir path)` | a directory, and the ones it is in |
+| `(make-file path)` | an empty file, never in the place of anything that is there |
 | `(make-link target path [hard])` | a symbolic link at `path` to `target`, as written, or a hard one |
 | `(set-file-mode path mode)` | permissions, as chmod: `493` or `"755"` |
 
@@ -291,6 +292,7 @@ own:
 (open-scratch "notes" nil (fn (text) (message (length (lines text)) " lines")))
 (scratch-name)                               ; "notes" while it is up, else nil
 (panes)                                      ; ((:focused true :scratch "notes" :path nil :terminal nil)...)
+(scratch-tabs)                               ; every such tab, shown or not: ((:name "notes" :modified false :text "one\ntwo\n")...)
 (with-pane 1 (fn () (scratch-name)))         ; in the second pane, the keys staying
 ```
 

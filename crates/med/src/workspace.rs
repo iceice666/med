@@ -1366,6 +1366,25 @@ impl Workspace {
             .collect()
     }
 
+    /// Every tab of text `open-scratch` made, in every pane from the top
+    /// left: its name, whether it has changes not written, and its text.
+    pub(crate) fn scratch_tabs(&self, cx: &App) -> Vec<(SharedString, bool, String)> {
+        let order = self.layout.panes();
+        order
+            .iter()
+            .filter_map(|id| self.pane_index(*id))
+            .flat_map(|index| self.panes[index].tabs.iter())
+            .filter_map(|item| match item {
+                Item::Editor(editor) => Some(editor.read(cx)),
+                Item::Terminal { .. } => None,
+            })
+            .filter_map(|editor| {
+                let scratch = editor.scratch.as_ref()?;
+                Some((scratch.name.clone(), editor.is_dirty(), editor.buf.text()))
+            })
+            .collect()
+    }
+
     /// Make the `nth` pane from the top left the focused one, for a
     /// program to work in, without giving it the keys: `(with-pane)`.
     /// What to give to [`Workspace::leave_pane`] after, or `None` if

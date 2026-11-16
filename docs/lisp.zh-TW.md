@@ -129,6 +129,7 @@
 | `(copy-file from to [function])` | 複製檔案，或連同所有內容複製目錄，連結以連結形式複製，絕不覆蓋其他檔案；給了函式時在背景執行，函式會收到 `copy-file` 本來會回傳的值 |
 | `(delete-file path [forever])` | 把檔案或目錄移到垃圾桶，或永久刪除 |
 | `(make-dir path)` | 建立目錄，以及它所在的各層目錄 |
+| `(make-file path)` | 建立空檔案，絕不覆蓋已存在的東西 |
 | `(make-link target path [hard])` | 在 `path` 建立指向 `target`（照原樣寫入）的符號連結，或硬連結 |
 | `(set-file-mode path mode)` | 權限，如同 chmod：`493` 或 `"755"` |
 
@@ -206,6 +207,7 @@ hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔
 (open-scratch "notes" nil (fn (text) (message (length (lines text)) " lines")))
 (scratch-name)                               ; 它顯示時為 "notes"，否則為 nil
 (panes)                                      ; ((:focused true :scratch "notes" :path nil :terminal nil)...)
+(scratch-tabs)                               ; 每個這樣的分頁，不論是否顯示：((:name "notes" :modified false :text "one\ntwo\n")...)
 (with-pane 1 (fn () (scratch-name)))         ; 在第二個窗格中，按鍵焦點不動
 ```
 
