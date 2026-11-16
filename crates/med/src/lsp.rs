@@ -3,9 +3,9 @@
 //! diagnostics.
 //!
 //! A file can have several servers (tsserver and tailwind). Every one of
-//! them is told of its text and gives diagnostics, code actions and
-//! completions; anything else asked about the file goes to the first that
-//! says it can answer.
+//! them is told of its text and gives diagnostics, code actions,
+//! completions and hover; anything else asked about the file goes to the
+//! first that says it can answer.
 
 use crate::env::{EnvCell, ProjectEnv};
 use crate::lsp_config::{self, ServerConfig};
@@ -478,6 +478,24 @@ impl LspStore {
             })
     }
 
+    /// Every ready server of `path` that says it can do what `can` asks,
+    /// the one asked first first. Failing that, once all are ready, the
+    /// first, as with [`Self::ready_server`].
+    fn offering_servers(
+        &self,
+        path: &Path,
+        can: impl Fn(&lsp::ServerCapabilities) -> bool,
+    ) -> Vec<&Server> {
+        let mut servers: Vec<&Server> = self
+            .ready_servers(path)
+            .filter(|server| can(&server.caps))
+            .collect();
+        if servers.is_empty() && self.all_ready(path) {
+            servers.extend(self.ready_servers(path).next());
+        }
+        servers
+    }
+
     /// Send to one server now, or once it is initialized.
     fn send_to(&mut self, name: &str, message: Queued) {
         let Some(server) = self.servers.get_mut(name) else {
@@ -727,24 +745,42 @@ impl LspStore {
         })
     }
 
+    /// What is said of the symbol at `position`, by every server of
+    /// `path` that says anything, the one asked first first.
     pub fn hover(
         &self,
         path: &Path,
         position: lsp::Position,
-    ) -> Option<impl Future<Output = anyhow::Result<Option<lsp::Hover>>> + use<>> {
-        let server = self.ready_server(path, |c| {
+    ) -> Option<impl Future<Output = Vec<lsp::Hover>> + use<>> {
+        let servers = self.offering_servers(path, |c| {
             c.hover_provider
                 .as_ref()
                 .is_some_and(|h| !matches!(h, lsp::HoverProviderCapability::Simple(false)))
-        })?;
-        Some(
-            server
-                .client
-                .request::<lsp::request::HoverRequest>(lsp::HoverParams {
-                    text_document_position_params: Self::position_params(path, position)?,
-                    work_done_progress_params: Default::default(),
-                }),
-        )
+        });
+        if servers.is_empty() {
+            return None;
+        }
+        let params = lsp::HoverParams {
+            text_document_position_params: Self::position_params(path, position)?,
+            work_done_progress_params: Default::default(),
+        };
+        let requests: Vec<_> = servers
+            .into_iter()
+            .map(|server| {
+                let request = server
+                    .client
+                    .request::<lsp::request::HoverRequest>(params.clone());
+                // One that fails hides nothing the others have.
+                async move { request.await.ok().flatten() }
+            })
+            .collect();
+        Some(async move {
+            futures::future::join_all(requests)
+                .await
+                .into_iter()
+                .flatten()
+                .collect()
+        })
     }
 
     pub fn definition(
@@ -953,17 +989,11 @@ impl LspStore {
         range: lsp::Range,
     ) -> Option<impl Future<Output = Vec<(ServerName, lsp::CodeActionOrCommand)>> + use<>> {
         let uri = path_to_uri(path)?;
-        let mut servers: Vec<&Server> =
-            self.ready_servers(path)
-                .filter(|s| {
-                    s.caps.code_action_provider.as_ref().is_some_and(|c| {
-                        !matches!(c, lsp::CodeActionProviderCapability::Simple(false))
-                    })
-                })
-                .collect();
-        if servers.is_empty() && self.all_ready(path) {
-            servers.extend(self.ready_servers(path).next());
-        }
+        let servers = self.offering_servers(path, |c| {
+            c.code_action_provider
+                .as_ref()
+                .is_some_and(|c| !matches!(c, lsp::CodeActionProviderCapability::Simple(false)))
+        });
         if servers.is_empty() {
             return None;
         }

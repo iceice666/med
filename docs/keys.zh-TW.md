@@ -195,6 +195,6 @@ med 不認得的語言用 `deflanguage` 命名，讓這些檔案在 `buffer-lang
 
 選項有 `:extensions`、`:filenames`（`"Justfile"`）、`:lsp-id`（告訴伺服器的 `languageId`，預設為名稱）、`:comment`、`:tab-width` 與 `:expand-tab`。若以 med 已有的語言命名，則是為該語言增加檔案，並保留其語法高亮。
 
-檔案語言的每個伺服器都會負責它，順序依設定的先後；但 med 內建、彼此可替代的伺服器（例如 Python 的三個）只取第一個找到的。所有伺服器都會收到檔案的內容，所有伺服器的診斷、code action 與補全都會顯示；code action 由提供它的伺服器執行。補全會問每個提供補全的伺服器，但打出觸發字元時只問登記了該字元的伺服器；比對分數相同時，排在前面的伺服器的項目先列出。其他功能（hover、定義、參照、重新命名、signature help、inlay hint、格式化）交給第一個表示能做的伺服器。
+檔案語言的每個伺服器都會負責它，順序依設定的先後；但 med 內建、彼此可替代的伺服器（例如 Python 的三個）只取第一個找到的。所有伺服器都會收到檔案的內容，所有伺服器的診斷、code action、補全與 hover 都會顯示，hover 依伺服器順序上下分開列出；code action 由提供它的伺服器執行。補全會問每個提供補全的伺服器，但打出觸發字元時只問登記了該字元的伺服器；比對分數相同時，排在前面的伺服器的項目先列出。其他功能（定義、參照、重新命名、signature help、inlay hint、格式化）交給第一個表示能做的伺服器。
 
 伺服器會沿用啟動時的設定：修改 init 檔並重新執行（`:workspace.reload_init`）之後，`:workspace.reload_env` 會以新的設定重新啟動伺服器。

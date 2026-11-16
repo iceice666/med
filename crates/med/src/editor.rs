@@ -766,6 +766,17 @@ fn hover_markdown(hover: lsp::Hover) -> String {
     }
 }
 
+/// What every server said of a symbol, each apart, in the order they
+/// were asked; none when none said anything.
+fn hovers_markdown(hovers: Vec<lsp::Hover>) -> Option<String> {
+    let parts: Vec<String> = hovers
+        .into_iter()
+        .map(hover_markdown)
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n---\n\n"))
+}
+
 impl Editor {
     pub fn new(
         path: Option<PathBuf>,
@@ -2057,10 +2068,9 @@ impl Editor {
             return;
         };
         self.request_task = Some(cx.spawn(async move |this, cx| {
-            let Ok(Some(hover)) = request.await else {
+            let Some(mut text) = hovers_markdown(request.await) else {
                 return;
             };
-            let mut text = hover_markdown(hover);
             if let Some(local) = local {
                 text = format!("{local}\n\n---\n\n{text}");
             }
@@ -4208,8 +4218,41 @@ pub(crate) fn register(commands: &mut Commands) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fold, expand_tabs, insert_labels, insert_texts};
+    use super::{Fold, expand_tabs, hovers_markdown, insert_labels, insert_texts};
     use gpui::{point, px};
+    use lsp_types as lsp;
+
+    /// What each server says is shown apart, in the order they were
+    /// asked; one that said nothing leaves no gap.
+    #[test]
+    fn hovers_of_every_server_are_shown() {
+        let markup = |value: &str| lsp::Hover {
+            contents: lsp::HoverContents::Markup(lsp::MarkupContent {
+                kind: lsp::MarkupKind::Markdown,
+                value: value.into(),
+            }),
+            range: None,
+        };
+        let hovers = vec![
+            markup("```ts\nconst a: number\n```"),
+            markup("  "),
+            lsp::Hover {
+                contents: lsp::HoverContents::Scalar(lsp::MarkedString::LanguageString(
+                    lsp::LanguageString {
+                        language: "css".into(),
+                        value: ".flex { display: flex; }".into(),
+                    },
+                )),
+                range: None,
+            },
+        ];
+        assert_eq!(
+            hovers_markdown(hovers).as_deref(),
+            Some("```ts\nconst a: number\n```\n\n---\n\n```css\n.flex { display: flex; }\n```")
+        );
+        assert_eq!(hovers_markdown(vec![markup("")]), None);
+        assert_eq!(hovers_markdown(Vec::new()), None);
+    }
 
     #[test]
     fn a_span_is_cut_where_the_rows_are() {
