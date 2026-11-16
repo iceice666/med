@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/iceice666/med/compare/v0.2.3...v0.2.4) - 2026-11-16
+
+### Added
+
+- *(med/editor)* go through the places of a snippet
+- *(med/lsp)* run the lenses of a file
+- *(med/lsp)* draw tokens as the language server sees them
+
+### Fixed
+
+- *(med/workspace)* remember projects for the picker
+
 ## [0.2.3](https://github.com/iceice666/med/compare/v0.2.2...v0.2.3) - 2026-11-16
 
 ### Added
