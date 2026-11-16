@@ -1,0 +1,39 @@
+# cargo-about: the licences of the crates med is built from, written to
+# THIRD-PARTY-LICENSES.txt by scripts/third-party-licenses.sh and put in
+# the packages. A crate under a licence not listed here stops the build of
+# the packages, so a new one is looked at before it is let in.
+
+# In order of choice: where a crate offers several, the first one here wins.
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "MPL-2.0",
+]
+
+# What the release packages are built for.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# med's own crates (publish = false); LICENSE covers them.
+private = { ignore = true }
+
+# Its Cargo.toml names no licence, but it ships an MIT LICENSE.
+[tree-sitter-graphql.clarify]
+license = "MIT"
+
+[[tree-sitter-graphql.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "5ea7d9ec06cb21ca0a800b69cd954e346bafba94620eb115c4b1fead3f3b30f8"

@@ -168,6 +168,13 @@ cargo packager -p med --release --formats deb,appimage --out-dir "$PWD/dist"   #
 A relative `--out-dir` is taken from `crates/med`. To rebuild a release's
 packages, run the workflow by hand with its tag.
 
+Each package carries `THIRD-PARTY-LICENSES.txt`, the licences of the crates
+med is built from. cargo packager writes it first with
+`scripts/third-party-licenses.sh`, so packaging needs
+[cargo-about](https://github.com/EmbarkStudios/cargo-about) too (the flake has
+it; else `cargo install cargo-about --locked`). A crate under a licence not
+in `about.toml` stops the packaging until it is added there.
+
 ## Acknowledgements
 
 - [GPUI](https://www.gpui.rs/) and [Zed](https://zed.dev/), which med is

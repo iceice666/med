@@ -27,6 +27,8 @@
             clippy
             rustfmt
             rust-analyzer
+            # The third-party licence file put in the packages.
+            cargo-about
           ];
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };

@@ -113,8 +113,9 @@ jobs:
             pkg-config libfontconfig-dev libfreetype-dev libwayland-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libx11-xcb-dev \
             libxcb1-dev libvulkan1
-      - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+      # cargo-about writes the third-party licence file the packages carry.
+      - name: Install cargo-packager and cargo-about
+        run: cargo install cargo-packager cargo-about --locked
       - name: Build
         run: cargo build -p med --release
       # A relative --out-dir is taken from crates/med, so give a full path.

@@ -59,6 +59,13 @@ category = "DeveloperTool"
 binaries = [{ path = "med", main = true }]
 # A placeholder; the AppImage cannot be made without a square icon.
 icons = ["icons/med.png"]
+# The licences of the crates med is built from, made fresh each time (needs
+# cargo-about). It lands in med.app/Contents/Resources, and in
+# /usr/lib/med in the .deb and the AppImage. Paths are from crates/med.
+before-packaging-command = "sh ../../scripts/third-party-licenses.sh"
+resources = [
+  { src = "../../target/THIRD-PARTY-LICENSES.txt", target = "THIRD-PARTY-LICENSES.txt" },
+]
 
 [package.metadata.packager.macos]
 minimum-system-version = "13.0"

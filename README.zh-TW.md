@@ -118,6 +118,8 @@ cargo packager -p med --release --formats deb,appimage --out-dir "$PWD/dist"   #
 
 相對路徑的 `--out-dir` 以 `crates/med` 為基準。要重建某個 release 的安裝包，請以它的標籤手動執行該 workflow。
 
+每個安裝包都附有 `THIRD-PARTY-LICENSES.txt`，列出 med 所用 crate 的授權。cargo packager 會先用 `scripts/third-party-licenses.sh` 產生它，因此打包也需要 [cargo-about](https://github.com/EmbarkStudios/cargo-about)（flake 已提供；否則執行 `cargo install cargo-about --locked`）。若有 crate 的授權不在 `about.toml` 的清單中，打包會停下，直到把它加進去為止。
+
 ## 致謝
 
 - [GPUI](https://www.gpui.rs/) 與 [Zed](https://zed.dev/)：med 建構於其上
