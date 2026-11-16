@@ -15,6 +15,9 @@ git_tag_name = "v{{ version }}"
 git_tag_enable = false
 git_release_enable = false
 changelog_update = false
+# The crates are not a public API anyone builds against, and the semver check
+# would build med's docs on a runner without its GUI system libraries.
+semver_check = false
 
 [[package]]
 name = "med"
