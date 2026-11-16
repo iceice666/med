@@ -220,9 +220,9 @@ is the project's:
 Each window is one project. `:project dir` (`workspace.open_project`)
 opens another in a window of its own, or brings up the window already on
 it. A click on the title bar's directory (`workspace.switch_project`)
-offers the other projects to switch to. `:q` on the last tab and closing a window
-close only that one, and
-`:qa` quits every window, keeping each one's session. Which panels are
+offers the other projects to switch to. `:q` on the last tab, `:qa`
+(`workspace.quit_window`) and closing a window close only that one, and
+`cmd-q` (`workspace.quit_all`) quits every window, keeping each one's session. Which panels are
 up is each window's own; one the init file puts up is up in every window.
 The projects
 opened are listed in `projects` under `MED_STATE_DIR`. All windows share

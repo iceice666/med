@@ -6166,13 +6166,40 @@ fn quitting_closes_one_window_or_all(cx: &mut TestAppContext) {
     let (_, mut vcx_a) = windows.pop().unwrap();
     let count = |cx: &mut VisualTestContext| cx.update(|_, cx| crate::workspace::all(cx).len());
 
-    // Unsaved work in any window keeps :qa from quitting.
+    // Unsaved work in any window keeps quitting med (cmd-q) from quitting.
     vcx_b.simulate_keystrokes("i x escape");
-    vcx_a.simulate_keystrokes(": q a enter");
+    vcx_a.simulate_keystrokes(":");
+    vcx_a.simulate_input("workspace.quit_all");
+    vcx_a.simulate_keystrokes("enter");
     vcx_a.run_until_parked();
     assert_eq!(count(&mut vcx_a), 2);
     let message = ws_b.read_with(&vcx_b, |ws, _| ws.message.clone().unwrap_or_default());
     assert!(message.contains("Unsaved"), "{message}");
+    vcx_b.update(|_, cx| ws_b.update(cx, |ws, _| ws.message = None));
+
+    // :qa closes that window, and only that one: the other's unsaved work
+    // is none of its business.
+    vcx_a.simulate_keystrokes(": q a enter");
+    vcx_a.run_until_parked();
+    assert_eq!(count(&mut vcx_b), 1);
+    assert_eq!(cx.windows().len(), 1);
+
+    // Its own unsaved work keeps it open, unless :qa!.
+    vcx_b.simulate_keystrokes(": q a enter");
+    vcx_b.run_until_parked();
+    assert_eq!(cx.windows().len(), 1);
+    let message = ws_b.read_with(&vcx_b, |ws, _| ws.message.clone().unwrap_or_default());
+    assert!(message.contains("Unsaved"), "{message}");
+}
+
+#[gpui::test]
+fn quit_on_the_last_tab_closes_one_window(cx: &mut TestAppContext) {
+    let a = Project::new(&[("a.txt", "a\n")]);
+    let b = Project::new(&[("b.txt", "b\n")]);
+    let mut windows = open_projects(&[&a, &b], a.path(".state/projects"), cx);
+    let (_, mut vcx_b) = windows.pop().unwrap();
+    let (_, mut vcx_a) = windows.pop().unwrap();
+    let count = |cx: &mut VisualTestContext| cx.update(|_, cx| crate::workspace::all(cx).len());
 
     // :q on the last tab closes that window, and only that one.
     vcx_a.simulate_keystrokes(": q enter");

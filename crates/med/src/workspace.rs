@@ -2828,8 +2828,20 @@ pub(crate) fn register(commands: &mut Commands) {
         }),
     );
     commands.register(
+        "workspace.quit_window",
+        "Close this window, every tab of it, and med with the last window; with ! even if there are unsaved changes",
+        W(|ws, args, window, cx| {
+            if !args.bang && !ws.can_quit(cx) {
+                return;
+            }
+            let session = ws.session_on_quit(cx);
+            ws.keep_session(session);
+            close_window(window, cx);
+        }),
+    );
+    commands.register(
         "workspace.quit_all",
-        "Quit, every window; with ! even if there are unsaved changes",
+        "Quit med, every window; with ! even if there are unsaved changes",
         W(|_, args, _, cx| {
             // The other windows' workspaces are looked at too, which this
             // one's is not to be in the middle of.

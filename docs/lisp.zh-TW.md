@@ -140,7 +140,7 @@
 | `(make-link target path [hard])` | 在 `path` 建立指向 `target`（照原樣寫入）的符號連結，或硬連結 |
 | `(set-file-mode path mode)` | 權限，如同 chmod：`493` 或 `"755"` |
 
-每個視窗就是一個專案。`:project dir`（`workspace.open_project`）會在新視窗中開啟另一個專案；如果已經有視窗開在那個目錄上，就把它叫到前面；點擊標題列上的目錄（`workspace.switch_project`）也可以切換專案。在最後一個分頁上 `:q`，或關閉視窗，都只會關掉那一個視窗；`:qa` 則會結束所有視窗，並保存每個視窗的 session。哪些 panel 開著由各個視窗各自決定；init 檔開啟的 panel 會出現在每個視窗。開過的專案列在 `MED_STATE_DIR` 底下的 `projects`。所有視窗共用同一個直譯器，所以程式中的名稱在每個視窗裡都相同：要保存某個專案的資料，應以 `(project-root)` 區分，就像 `tree.mlisp` 和 `picker.mlisp` 那樣。命令、hook 與點擊都在它們來自的視窗中執行；layout 則從 `:root` 得知所屬視窗的專案。
+每個視窗就是一個專案。`:project dir`（`workspace.open_project`）會在新視窗中開啟另一個專案；如果已經有視窗開在那個目錄上，就把它叫到前面；點擊標題列上的目錄（`workspace.switch_project`）也可以切換專案。在最後一個分頁上 `:q`、`:qa`（`workspace.quit_window`），或關閉視窗，都只會關掉那一個視窗；`cmd-q`（`workspace.quit_all`）則會結束所有視窗，並保存每個視窗的 session。哪些 panel 開著由各個視窗各自決定；init 檔開啟的 panel 會出現在每個視窗。開過的專案列在 `MED_STATE_DIR` 底下的 `projects`。所有視窗共用同一個直譯器，所以程式中的名稱在每個視窗裡都相同：要保存某個專案的資料，應以 `(project-root)` 區分，就像 `tree.mlisp` 和 `picker.mlisp` 那樣。命令、hook 與點擊都在它們來自的視窗中執行；layout 則從 `:root` 得知所屬視窗的專案。
 
 hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照）、`keys-pending`（見下文）、`terminal-exited`（見 Terminal 一節），以及與正在編輯的檔案相關的 hook（見後文）。
 
