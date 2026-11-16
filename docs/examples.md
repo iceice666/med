@@ -10,41 +10,41 @@ come next are programs in [`examples/`](../examples), and an init file
 loads the ones it wants:
 
 ```lisp
-; ~/.config/med/init.lisp
-(load "/path/to/med/examples/init.lisp")   ; all of them, keys too, or one by one:
-(load "/path/to/med/examples/vim.lisp")
-(load "/path/to/med/examples/keys.lisp")
-(load "/path/to/med/examples/oil.lisp")
+; ~/.config/med/init.mlisp
+(load "/path/to/med/examples/init.mlisp")   ; all of them, keys too, or one by one:
+(load "/path/to/med/examples/vim.mlisp")
+(load "/path/to/med/examples/keys.mlisp")
+(load "/path/to/med/examples/oil.mlisp")
 ```
 
 A path that does not start at the top is looked for beside the file that
-loads it, so the files can also be copied next to `init.lisp` and changed
+loads it, so the files can also be copied next to `init.mlisp` and changed
 there. Each brings its commands and its keys:
 
 | File | Key | Action |
 | --- | --- | --- |
-| `vim.lisp` | | vim's keys, in every mode: see [Keys](keys.md#keys) |
-| `keys.lisp` | | the language server's, the tabs', flash's, the `space` leader keys and the `⌘` shortcuts |
-| `oil.lisp` | `space -` | the file's directory as a buffer to edit, as oil.nvim |
+| `vim.mlisp` | | vim's keys, in every mode: see [Keys](keys.md#keys) |
+| `keys.mlisp` | | the language server's, the tabs', flash's, the `space` leader keys and the `⌘` shortcuts |
+| `oil.mlisp` | `space -` | the file's directory as a buffer to edit, as oil.nvim |
 | | `space e` / `⌘⇧E` | the same, or from a listing back to the file |
 | | `enter` / `-` / `_` | in a listing: open the line's file or directory / go up / the project's root |
 | | `:w` | in a listing: do what the edits ask, after a popup says what (`y` / `n`) |
-| `picker.lisp` | `space f` / `⌘P` | find file |
+| `picker.mlisp` | `space f` / `⌘P` | find file |
 | | `space /` / `⌘⇧F` | search in project |
-| `git.lisp` | `space g` / `⌘⇧G` | git screen |
-| `which-key.lisp` | | the keys that can come next, after a pause |
-| | `g ?` | in an oil listing: all of its keys at once (as `init.lisp` sets it up) |
-| `todo.lisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
-| `tree.lisp` | `space e` / `⌘⇧E` | not loaded by `init.lisp`: open and focus the file tree, or from it put it away (`j k h l`, `enter`, `R` refresh, `q` put away) |
+| `git.mlisp` | `space g` / `⌘⇧G` | git screen |
+| `which-key.mlisp` | | the keys that can come next, after a pause |
+| | `g ?` | in an oil listing: all of its keys at once (as `init.mlisp` sets it up) |
+| `todo.mlisp` | `]T` / `[T` | a sign beside lines that say TODO, FIXME or NOTE, and from one to the next |
+| `tree.mlisp` | `space e` / `⌘⇧E` | not loaded by `init.mlisp`: open and focus the file tree, or from it put it away (`j k h l`, `enter`, `R` refresh, `q` put away) |
 | | `⌘B` | show/hide file tree (hidden at start) |
-| `dired.lisp` | `space -` | not loaded by `init.lisp`: the file's directory, as Emacs's dired |
+| `dired.mlisp` | `space -` | not loaded by `init.mlisp`: the file's directory, as Emacs's dired |
 | | `enter` / `-` | in a listing: open the line's file or directory / go up |
 | | `i` | in a listing: edit the names, as wdired |
-| `statusline.lisp` | | the status bar, as a layout to change: the one the window draws without it |
-| `titlebar.lisp` | | the title bar: what is being edited, the project and its branch |
+| `statusline.mlisp` | | the status bar, as a layout to change: the one the window draws without it |
+| `titlebar.mlisp` | | the title bar: what is being edited, the project and its branch |
 | | click the branch | switch branch (also `:titlebar.branches`) |
 
-With `which-key.lisp`, a command that is half typed (`g`, `space`, `d g`)
+With `which-key.mlisp`, a command that is half typed (`g`, `space`, `d g`)
 lists what can follow at the bottom of the window once nothing has been
 typed for 300 ms (`which-key-delay`), in an editor and in a panel alike,
 and escape gives up on the command. A key that only starts longer
@@ -53,13 +53,13 @@ bindings is listed by how many they are, or by a name: `(which-key-name
 moves right by itself after a second, but waits for the next key.
 `(which-key-help-key 'tree "?")` makes `?` in a table of keys list
 all of them straight away, and the key typed then does what it does
-there; `init.lisp` does so with `g ?` for oil's listings, after their
+there; `init.mlisp` does so with `g ?` for oil's listings, after their
 keys are bound, as a key bound later is not on the list.
 
-With `picker.lisp`, `gr` lists the references to choose from; without it,
+With `picker.mlisp`, `gr` lists the references to choose from; without it,
 `gr` goes to the first.
 
-With `oil.lisp` (as oil.nvim), a directory is a tab called
+With `oil.mlisp` (as oil.nvim), a directory is a tab called
 `oil:///the/directory/` with a name to a line, a directory's with `/`
 after it, the names that start with a dot left out until `g .`. It is
 text to edit with vim's keys like any other, and `:w` does to the disk
@@ -79,13 +79,13 @@ there are changes), `g x` opens the file with the system's program for
 it, and `C-c` closes the listing, back to the file it was opened from.
 Going to a file or a directory closes the listing it is gone from,
 unless it has changes not written. Oil.nvim's own key for it is `-`,
-which `vim.lisp` gives to a motion: `(bind 'normal "-" "oil.open")` has
+which `vim.mlisp` gives to a motion: `(bind 'normal "-" "oil.open")` has
 it the oil way.
 
-`tree.lisp` and `dired.lisp` are not loaded by `init.lisp`; a `(load
+`tree.mlisp` and `dired.mlisp` are not loaded by `init.mlisp`; a `(load
 ...)` of one after it has it.
 
-With `dired.lisp` (as Emacs's dired), a directory is a tab of names, one
+With `dired.mlisp` (as Emacs's dired), a directory is a tab of names, one
 to a line, a directory's with `/` after it, what git ignores among them,
 and after each name what `ls -l` says of it. The keys are dired's, in the
 table `dired`, and vim's motions stay; what is not edited stays as it is

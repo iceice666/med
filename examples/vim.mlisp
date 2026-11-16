@@ -1,9 +1,9 @@
 ; The vim layout: the keys of vim's modes, each bound to one of the vim
 ; engine's commands. med binds no key by itself, so an init file with
 ; none of this is an editor where no key does anything: load this file,
-; or copy it beside your `init.lisp` and change what you like.
+; or copy it beside your `init.mlisp` and change what you like.
 ;
-;   (load "/path/to/med/examples/vim.lisp")
+;   (load "/path/to/med/examples/vim.mlisp")
 ;
 ; What stays in the engine is vim's grammar: counts, registers, an
 ; operator and then a motion or text object, the doubled operator (`dd`).

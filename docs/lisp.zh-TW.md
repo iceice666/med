@@ -57,7 +57,7 @@
 | `:lsp` | 檔案的語言伺服器正在做什麼 |
 | `:branch` | 專案目前所在的分支 |
 
-沒有開啟任何檔案時，會有一個空的 `[No Name]` 緩衝區，下一個開啟的檔案會取代它：它有 `:mode`，但沒有任何來自檔案的資訊。省略 `:cmdline` 的狀態列會讓 `:` 的輸入看不見。[`examples/statusline.lisp`](../examples/statusline.lisp) 就是視窗原本的狀態列，各列的顏色是 `'status-bar`、`'title-bar`、`'title-bar-border` 和 `'tab-bar`。
+沒有開啟任何檔案時，會有一個空的 `[No Name]` 緩衝區，下一個開啟的檔案會取代它：它有 `:mode`，但沒有任何來自檔案的資訊。省略 `:cmdline` 的狀態列會讓 `:` 的輸入看不見。[`examples/statusline.mlisp`](../examples/statusline.mlisp) 就是視窗原本的狀態列，各列的顏色是 `'status-bar`、`'title-bar`、`'title-bar-border` 和 `'tab-bar`。
 
 ### 版面
 
@@ -197,7 +197,7 @@ hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔
 | `mode-changed` | 編輯器進入另一個模式：該模式 |
 | `diagnostics-changed` | 語言伺服器有某個檔案的新消息：該檔案的路徑 |
 
-[`examples/todo.lisp`](../examples/todo.lisp) 就是由這些組成的簡短程式：文字改變後讀取它，在含有 TODO 的行上加上標示，並提供兩個移動游標的命令。
+[`examples/todo.mlisp`](../examples/todo.mlisp) 就是由這些組成的簡短程式：文字改變後讀取它，在含有 TODO 的行上加上標示，並提供兩個移動游標的命令。
 
 程式也可以擁有一個不是檔案的文字分頁，使用它自己取的名稱：
 
@@ -211,7 +211,7 @@ hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔
 (with-pane 1 (fn () (scratch-name)))         ; 在第二個窗格中，按鍵焦點不動
 ```
 
-給了函式時，`:w` 會以該分頁的文字呼叫它，如同一個命令（`:w!` 時可用 `command-bang`），而文字會維持未儲存，直到程式再次給分頁設定文字。沒給函式時，分頁中沒有會遺失的東西，也沒有可寫入的地方。在那裡 `(current-file)` 為 `nil`，而 `:w name` 會把分頁變成檔案，同時不再使用該分頁自己的按鍵。[`examples/dired.lisp`](../examples/dired.lisp) 在這樣的分頁中列出目錄，對檔案做 Emacs 的 dired 會做的事，並依照寫入的內容重新命名檔案。
+給了函式時，`:w` 會以該分頁的文字呼叫它，如同一個命令（`:w!` 時可用 `command-bang`），而文字會維持未儲存，直到程式再次給分頁設定文字。沒給函式時，分頁中沒有會遺失的東西，也沒有可寫入的地方。在那裡 `(current-file)` 為 `nil`，而 `:w name` 會把分頁變成檔案，同時不再使用該分頁自己的按鍵。[`examples/dired.mlisp`](../examples/dired.mlisp) 在這樣的分頁中列出目錄，對檔案做 Emacs 的 dired 會做的事，並依照寫入的內容重新命名檔案。
 
 一個分頁只存在於一個窗格中，所以一個檔案只有一個緩衝區：開啟另一個窗格已有的分頁（`open-scratch`、`open-file`、`:e`）會把它移過來，原本的窗格則顯示它之前的那個分頁。`(panes)` 從左上角開始說明每個窗格顯示什麼，`(with-pane n f)` 則把第 `n` 個窗格（從 0 開始）當作正在編輯的窗格來呼叫 `f`，而按鍵焦點維持原處：dired 用它重新讀取每個顯示中的清單。
 
@@ -248,7 +248,7 @@ hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔
 
 ## 腳本語言
 
-`med-lisp` 是一個小型 Lisp，是初始化檔與 `:eval` 使用的語言。程式可以修改按鍵與選項、定義命令與面板（皆見上文）、以 `(load "file")` 載入另一個程式，並用 `(message ...)` 顯示訊息。整個工作階段共用一個直譯器，所以 `init.lisp` 定義的東西可以在 `:eval` 中使用。永不結束的程式會在執行一千萬步後被停止，而不會讓視窗卡住。
+`med-lisp` 是一個小型 Lisp，是初始化檔與 `:eval` 使用的語言。程式可以修改按鍵與選項、定義命令與面板（皆見上文）、以 `(load "file")` 載入另一個程式，並用 `(message ...)` 顯示訊息。整個工作階段共用一個直譯器，所以 `init.mlisp` 定義的東西可以在 `:eval` 中使用。永不結束的程式會在執行一千萬步後被停止，而不會讓視窗卡住。
 
 不開編輯器也能試用這個語言本身：
 

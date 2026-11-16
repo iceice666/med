@@ -2,7 +2,7 @@
 //!
 //! A [`Keymap`] starts out empty, and a host fills it with [`Keymap::bind`]
 //! and friends; med does it from the user's init file, whose example is
-//! `examples/vim.lisp`. [`Keymap::vim`] is that stock vim layout as a
+//! `examples/vim.mlisp`. [`Keymap::vim`] is that stock vim layout as a
 //! table of key sequence → command name, kept for tests: the engine's own,
 //! and med's check that the example still says the same. What stays in
 //! the engine is vim's grammar — counts, registers, operator + motion, the
@@ -558,7 +558,7 @@ const N: &[MapMode] = &[Normal];
 const V: &[MapMode] = &[Visual];
 const I: &[MapMode] = &[Insert];
 
-/// The stock vim layout: modes, key sequence, command. `examples/vim.lisp`
+/// The stock vim layout: modes, key sequence, command. `examples/vim.mlisp`
 /// is the same table as an init file binds it.
 pub const VIM_LAYOUT: &[(&[MapMode], &str, &str)] = &[
     (NVO, "h", "motion.left"),

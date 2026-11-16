@@ -1,7 +1,7 @@
 //! The editor's end of its scripting language, `med-lisp`.
 //!
 //! There is one interpreter for the application. It runs the user's
-//! `init.lisp` at startup and whatever is given to `:eval`, and programs
+//! `init.mlisp` at startup and whatever is given to `:eval`, and programs
 //! change the editor through the functions defined here:
 //!
 //! ```lisp
@@ -31,7 +31,7 @@
 //! (panes) (with-pane 1 thunk)         ; the panes, and working in another
 //! (modified?)                          ; has the tab up unsaved changes
 //! (focus-editor)
-//! (load "tree.lisp")                   ; another file, from beside this one
+//! (load "tree.mlisp")                  ; another file, from beside this one
 //! (add-hook 'files-changed refresh)    ; be told of something: HOOKS
 //! (bindings 'normal "<Space>")         ; the keys that can follow others
 //! (def timer (after 300 show))         ; call a function in 300 ms
@@ -564,11 +564,23 @@ pub fn run_init(path: &Path, cx: &mut App) -> bool {
     true
 }
 
-/// Run `init.lisp` from the configuration directory, and say which file
+/// Run `init.mlisp` from the configuration directory, and say which file
 /// that was, if there was one.
 pub fn load_init(cx: &mut App) -> Option<PathBuf> {
-    let path = crate::config_dir()?.join("init.lisp");
+    let path = init_file_in(&crate::config_dir()?);
     run_init(&path, cx).then_some(path)
+}
+
+/// The init file of the configuration directory `dir`: `init.mlisp`, or
+/// `init.lisp` where only that is there, as it was named before.
+pub fn init_file_in(dir: &Path) -> PathBuf {
+    let path = dir.join("init.mlisp");
+    let old = dir.join("init.lisp");
+    if !path.is_file() && old.is_file() {
+        old
+    } else {
+        path
+    }
 }
 
 /// Run the init file again: the one that was run before, or the one that

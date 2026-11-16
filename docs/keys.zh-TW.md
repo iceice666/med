@@ -4,14 +4,14 @@
 
 ## 按鍵
 
-med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒有任何按鍵有作用；只要 normal 模式中完全沒有綁定，`:` 就會開啟命令列，狀態列也會提示這一點。在命令列中，`:install_default_config` 會把 [`examples/`](../examples) 的每個檔案寫入設定目錄，並執行其中的 `init.lisp`；已經存在的檔案會保留不動，並列出是哪些，`:install_default_config!` 則會覆寫它們。
+med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒有任何按鍵有作用；只要 normal 模式中完全沒有綁定，`:` 就會開啟命令列，狀態列也會提示這一點。在命令列中，`:install_default_config` 會把 [`examples/`](../examples) 的每個檔案寫入設定目錄，並執行其中的 `init.mlisp`；已經存在的檔案會保留不動，並列出是哪些，`:install_default_config!` 則會覆寫它們。
 
-以下按鍵出自 [`examples/vim.lisp`](../examples/vim.lisp)（vim 的部分）與 [`examples/keys.lisp`](../examples/keys.lisp)（其餘部分），由初始化檔依序載入：
+以下按鍵出自 [`examples/vim.mlisp`](../examples/vim.mlisp)（vim 的部分）與 [`examples/keys.mlisp`](../examples/keys.mlisp)（其餘部分），由初始化檔依序載入：
 
 ```lisp
-; ~/.config/med/init.lisp
-(load "/path/to/med/examples/vim.lisp")
-(load "/path/to/med/examples/keys.lisp")
+; ~/.config/med/init.mlisp
+(load "/path/to/med/examples/vim.mlisp")
+(load "/path/to/med/examples/keys.mlisp")
 ```
 
 編輯方式就是 vim：模式（`v`、`V` 與 `ctrl-v` 的區塊模式，區塊中每一行都可用 `I`、`A` 和 `c`）、次數、運算子（`d c y > < gu gU g~ gc`）、移動、文字物件（`iw i" i( i{ ip` …）、暫存器、標記（`ma`、`'a`、`` `a ``、`''`）、巨集（`qa` … `q`、`@a`、`@@`）、`.`、`/ ? n N * #`、`:s`、`:w :q :wq :e :bn :bp :bd :wa :qa :vs :sp :close :only`。無名暫存器就是系統剪貼簿。
@@ -66,16 +66,16 @@ flash.nvim 的其他功能也使用同樣的標記：
 
 沒有任何按鍵直接連到某個行為。編輯器能做的每件事都是一個具名命令，按鍵則在按鍵表中綁定到這些名稱：
 
-- vim 引擎的命令（`motion.word_forward`、`operator.delete`、`insert.newline`…，見 `med_vim::command_names()`）。次數、暫存器以及運算子加移動屬於語法，不論綁定的是哪些按鍵都能運作。它的標準按鍵配置是 `examples/vim.lisp`；`med-vim/src/keymap.rs` 中的 `Keymap::vim()` 是同一張表，為測試而保留。
+- vim 引擎的命令（`motion.word_forward`、`operator.delete`、`insert.newline`…，見 `med_vim::command_names()`）。次數、暫存器以及運算子加移動屬於語法，不論綁定的是哪些按鍵都能運作。它的標準按鍵配置是 `examples/vim.mlisp`；`med-vim/src/keymap.rs` 中的 `Keymap::vim()` 是同一張表，為測試而保留。
 - 應用程式的命令（`workspace.*`、`editor.*`），由各個 view 在 `Commands` 中註冊，以及程式定義的命令（`tree.*`、`git.*` 和 `picker.*` 屬於範例）。
-- `examples/keys.lisp`：作用超出緩衝區的編輯器按鍵（`gd`、`space` leader 鍵）、flash 的按鍵與 `⌘` 快捷鍵。
+- `examples/keys.mlisp`：作用超出緩衝區的編輯器按鍵（`gd`、`space` leader 鍵）、flash 的按鍵與 `⌘` 快捷鍵。
 - `med/src/defaults.rs`：ex 命令對應的名稱（`:w` 即 `workspace.save`），這是唯一內建的表，以及 `:install_default_config` 寫出的 `examples/` 副本。
 
 按鍵以 vim 記法書寫（`<C-w>`、`<Space>f`、`<CR>`）。任何命令也都能用全名執行，例如 `:workspace.find_file`。
 
 `:help`（`:h`）說明命令的作用：`:help w` 或 `:help workspace.save` 會列出命令的自我描述、命令列認得它的各個名稱，以及綁定到它的每個按鍵，涵蓋各模式的表、緩衝區的表、面板的表與 `app`。其中沒有任何內容是手寫的：頁面在被要求時才產生，所以反映的是當下初始化檔中的按鍵與命令。單獨輸入 `:help` 會列出所有命令，vim 引擎的命令則附上它們在 normal 模式中的按鍵。這些頁面會出現在一個名為 `help` 的專屬分頁中，每次 `:help` 都會重複使用它。
 
-按鍵表可在啟動時執行的初始化檔 `<config>/init.lisp` 中修改，或在命令列用 `:eval` 修改：
+按鍵表可在啟動時執行的初始化檔 `<config>/init.mlisp` 中修改，或在命令列用 `:eval` 修改：
 
 ```lisp
 (bind 'normal "<Space>n" "workspace.next_tab")

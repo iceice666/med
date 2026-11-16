@@ -1,7 +1,7 @@
 ; The git screen, after lazygit: numbered panels on the left, a preview
 ; of what is selected on the right, a key for each thing to do.
 ;
-;   (load "git.lisp")
+;   (load "git.mlisp")
 ;
 ; space g, or ⌘⇧G, opens and closes it. In it: 1-5 or tab go to a panel,
 ; j k move, J K scroll the preview, R reads the repository again, p pulls,

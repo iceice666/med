@@ -8,18 +8,18 @@ med binds no key by itself: with no init file, no key does anything
 but `:`, which opens the command line for as long as nothing at all is
 bound in normal mode, and the status bar says so. There,
 `:install_default_config` writes every file of [`examples/`](../examples)
-to the configuration directory and runs its `init.lisp`; it leaves files
+to the configuration directory and runs its `init.mlisp`; it leaves files
 that are there already alone and says which, and
 `:install_default_config!` overwrites them.
 
-The keys below are the ones of [`examples/vim.lisp`](../examples/vim.lisp)
-(vim's) and [`examples/keys.lisp`](../examples/keys.lisp) (the rest), which
+The keys below are the ones of [`examples/vim.mlisp`](../examples/vim.mlisp)
+(vim's) and [`examples/keys.mlisp`](../examples/keys.mlisp) (the rest), which
 an init file loads, in that order:
 
 ```lisp
-; ~/.config/med/init.lisp
-(load "/path/to/med/examples/vim.lisp")
-(load "/path/to/med/examples/keys.lisp")
+; ~/.config/med/init.mlisp
+(load "/path/to/med/examples/vim.mlisp")
+(load "/path/to/med/examples/keys.mlisp")
 ```
 
 Editing is vim: modes (`v`, `V` and the block of `ctrl-v`, with `I`, `A`
@@ -99,12 +99,12 @@ named command, and keys are bound to names in tables:
 - The vim engine's commands (`motion.word_forward`, `operator.delete`,
   `insert.newline`, … — `med_vim::command_names()`). Counts, registers
   and operator + motion are grammar, and work with whatever keys are
-  bound. Its stock layout is `examples/vim.lisp`; `Keymap::vim()` in
+  bound. Its stock layout is `examples/vim.mlisp`; `Keymap::vim()` in
   `med-vim/src/keymap.rs` is the same table, kept for the tests.
 - The application's commands (`workspace.*`, `editor.*`), registered by
   each view in `Commands`, and the ones programs define (`tree.*`, `git.*`
   and `picker.*` are the examples').
-- `examples/keys.lisp`: the editor keys that reach outside the buffer
+- `examples/keys.mlisp`: the editor keys that reach outside the buffer
   (`gd`, the `space` leader keys), the keys of flash and the `⌘`
   shortcuts.
 - `med/src/defaults.rs`: the names ex commands go by (`:w` is
@@ -123,7 +123,7 @@ the init file as they are then. `:help` alone lists every command, and
 the vim engine's with their keys in normal mode. The pages come up in a
 tab of their own, called `help`, which each `:help` reuses.
 
-The tables are changed from the init file, `<config>/init.lisp`, which is
+The tables are changed from the init file, `<config>/init.mlisp`, which is
 run at startup, or from the command line with `:eval`:
 
 ```lisp

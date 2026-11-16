@@ -71,18 +71,18 @@ impl Drop for Project {
     }
 }
 
-const VIM: &str = include_str!("../../../examples/vim.lisp");
-const KEYS: &str = include_str!("../../../examples/keys.lisp");
-const TREE: &str = include_str!("../../../examples/tree.lisp");
-const PICKER: &str = include_str!("../../../examples/picker.lisp");
-const GIT: &str = include_str!("../../../examples/git.lisp");
-const WHICH_KEY: &str = include_str!("../../../examples/which-key.lisp");
-const TODO: &str = include_str!("../../../examples/todo.lisp");
-const DIRED: &str = include_str!("../../../examples/dired.lisp");
-const OIL: &str = include_str!("../../../examples/oil.lisp");
-const STATUSLINE: &str = include_str!("../../../examples/statusline.lisp");
-const TITLEBAR: &str = include_str!("../../../examples/titlebar.lisp");
-const RSS: &str = include_str!("../../../examples/rss.lisp");
+const VIM: &str = include_str!("../../../examples/vim.mlisp");
+const KEYS: &str = include_str!("../../../examples/keys.mlisp");
+const TREE: &str = include_str!("../../../examples/tree.mlisp");
+const PICKER: &str = include_str!("../../../examples/picker.mlisp");
+const GIT: &str = include_str!("../../../examples/git.mlisp");
+const WHICH_KEY: &str = include_str!("../../../examples/which-key.mlisp");
+const TODO: &str = include_str!("../../../examples/todo.mlisp");
+const DIRED: &str = include_str!("../../../examples/dired.mlisp");
+const OIL: &str = include_str!("../../../examples/oil.mlisp");
+const STATUSLINE: &str = include_str!("../../../examples/statusline.mlisp");
+const TITLEBAR: &str = include_str!("../../../examples/titlebar.mlisp");
+const RSS: &str = include_str!("../../../examples/rss.mlisp");
 
 /// How tall the title bar is, which the window's other bars and panels are
 /// below.
@@ -565,7 +565,7 @@ fn the_file_tree_is_a_panel_like_any_other(cx: &mut TestAppContext) {
 
     // Running the init file again forgets the panels: an editor with no
     // init file has none. A click where the tree was lands in the editor.
-    let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
+    let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.mlisp"), cx));
     assert!(!ran);
     cx.run_until_parked();
     assert_eq!(
@@ -999,7 +999,7 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
 
     // Running the init file again forgets the panels it did not define
     // this time. One it does define is up if it was up before.
-    let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
+    let ran = cx.update(|_, cx| crate::script::run_init(&project.path("nope.mlisp"), cx));
     assert!(!ran);
     cx.run_until_parked();
     assert_eq!(
@@ -1012,13 +1012,29 @@ fn the_user_defines_panels(cx: &mut TestAppContext) {
     assert_eq!(eval("(panel-shown? 'fresh)", cx), "false");
 }
 
+/// The init file is `init.mlisp`; an `init.lisp`, as it was named before,
+/// is run only while there is no `init.mlisp`.
+#[test]
+fn finds_the_init_file_by_either_name() {
+    let dir = std::env::temp_dir().join(format!("med-init-name-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let find = || crate::script::init_file_in(&dir);
+    assert_eq!(find(), dir.join("init.mlisp"));
+    std::fs::write(dir.join("init.lisp"), "").unwrap();
+    assert_eq!(find(), dir.join("init.lisp"));
+    std::fs::write(dir.join("init.mlisp"), "").unwrap();
+    assert_eq!(find(), dir.join("init.mlisp"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[gpui::test]
 fn runs_an_init_file(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("a.txt", "a\n"),
         ("b.txt", "b\n"),
         (
-            "config/init.lisp",
+            "config/init.mlisp",
             "; My keys.\n\
              (defn leader (key command)\n\
              \x20 (bind 'normal (str \"<Space>\" key) command))\n\
@@ -1030,7 +1046,7 @@ fn runs_an_init_file(cx: &mut TestAppContext) {
     ]);
     let (ws, cx) = open(&project, &["a.txt", "b.txt"], cx);
 
-    let init = project.path("config/init.lisp");
+    let init = project.path("config/init.mlisp");
     let said = cx.update(|_, cx| {
         crate::script::load_file(&init, cx);
         crate::script::take_message(cx)
@@ -1050,7 +1066,7 @@ fn runs_an_init_file(cx: &mut TestAppContext) {
     cx.update(|_, cx| assert_eq!(cx.global::<crate::Settings>().font_size, 20.));
 
     // A file that is not there is said to be so.
-    let missing = project.path("config/nope.lisp");
+    let missing = project.path("config/nope.mlisp");
     let said = cx.update(|_, cx| {
         crate::script::load_file(&missing, cx);
         crate::script::take_message(cx)
@@ -1458,7 +1474,7 @@ fn programs_follow_the_keys_being_typed(cx: &mut TestAppContext) {
 
     // Running the init file again calls off what was to be called.
     lisp("(after 100 (fn () (set! fired 'late)))", cx);
-    cx.update(|_, cx| crate::script::run_init(&project.path("nope.lisp"), cx));
+    cx.update(|_, cx| crate::script::run_init(&project.path("nope.mlisp"), cx));
     wait(500, cx);
     assert_eq!(lisp("fired", cx), "(quick)");
 }
@@ -1468,21 +1484,21 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("a.txt", "a\n"),
         (
-            "config/init.lisp",
+            "config/init.mlisp",
             "(def seen nil)\n\
-             (load \"lib/hooks.lisp\")\n\
-             (load \"lib/broken.lisp\")\n",
+             (load \"lib/hooks.mlisp\")\n\
+             (load \"lib/broken.mlisp\")\n",
         ),
         (
-            "config/lib/hooks.lisp",
+            "config/lib/hooks.mlisp",
             "(add-hook 'opened (fn () (set! seen (cons 'opened seen))))\n\
              (add-hook 'files-changed (fn () (set! seen (cons 'changed seen))))\n\
-             (load \"more.lisp\")\n",
+             (load \"more.mlisp\")\n",
         ),
-        ("config/lib/more.lisp", "(def more 'loaded)\n"),
-        ("config/lib/broken.lisp", "\n(car 5)\n"),
+        ("config/lib/more.mlisp", "(def more 'loaded)\n"),
+        ("config/lib/broken.mlisp", "\n(car 5)\n"),
     ]);
-    let init = project.path("config/init.lisp");
+    let init = project.path("config/init.mlisp");
     let said = cx.update(|cx| {
         crate::init(cx);
         cx.global_mut::<crate::Settings>().lsp = false;
@@ -1497,7 +1513,7 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
         Some(format!(
             "{}:3:1: {}:2:1: expected a list, got 5",
             init.display(),
-            project.path("config/lib/broken.lisp").display()
+            project.path("config/lib/broken.mlisp").display()
         ))
     );
     let root = project.0.clone();
@@ -1524,11 +1540,11 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
          terminal-exited)"
     );
     assert!(
-        error("(load \"/nowhere/at/all.lisp\")", cx).starts_with("1:1: /nowhere/at/all.lisp: ")
+        error("(load \"/nowhere/at/all.mlisp\")", cx).starts_with("1:1: /nowhere/at/all.mlisp: ")
     );
 
     // Running the init file again forgets the hooks it set before.
-    cx.update(|_, cx| crate::script::run_init(&project.path("config/nope.lisp"), cx));
+    cx.update(|_, cx| crate::script::run_init(&project.path("config/nope.mlisp"), cx));
     cx.simulate_keystrokes("i z escape : w enter");
     cx.run_until_parked();
     assert_eq!(lisp("seen", cx), "(changed opened)");
@@ -1564,19 +1580,19 @@ fn installs_keys_into_an_editor_that_has_none(cx: &mut TestAppContext) {
         ws.read_with(cx, |ws, _| ws.message.clone()).as_deref(),
         Some(format!("Wrote the example configuration to {}", config.display()).as_str())
     );
-    assert!(config.join("init.lisp").is_file());
+    assert!(config.join("init.mlisp").is_file());
     cx.simulate_keystrokes("j d d");
     assert_eq!(text(&ws, cx), "one\n");
 
     // A second time, nothing is overwritten unless asked.
-    fs::write(config.join("keys.lisp"), "; mine\n").unwrap();
+    fs::write(config.join("keys.mlisp"), "; mine\n").unwrap();
     ws.update_in(cx, |ws, window, cx| {
         ws.install_default_config(&config, false, window, cx)
     });
     let said = ws.read_with(cx, |ws, _| ws.message.clone()).unwrap();
     assert!(said.contains(":install_default_config!"), "{said}");
     assert_eq!(
-        fs::read_to_string(config.join("keys.lisp")).unwrap(),
+        fs::read_to_string(config.join("keys.mlisp")).unwrap(),
         "; mine\n"
     );
 }
@@ -1584,7 +1600,7 @@ fn installs_keys_into_an_editor_that_has_none(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_examples_load_together(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
-    let init = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/init.lisp");
+    let init = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/init.mlisp");
     let said = cx.update(|cx| {
         crate::init(cx);
         cx.global_mut::<crate::Settings>().lsp = false;
@@ -2423,7 +2439,7 @@ fn programs_decorate_the_file(cx: &mut TestAppContext) {
     assert_eq!(decoration_lines(&ws, "other", cx), [2]);
 }
 
-/// The feed reader of `examples/rss.lisp`, on feeds that curl reads from
+/// The feed reader of `examples/rss.mlisp`, on feeds that curl reads from
 /// the disk rather than from YouTube.
 #[gpui::test]
 fn the_rss_example_reads_feeds(cx: &mut TestAppContext) {
@@ -4654,7 +4670,7 @@ fn the_make_of_the_docs_runs(cx: &mut TestAppContext) {
     }
 }
 
-/// `examples/oil.lisp`: a directory as a buffer to edit, as oil.nvim.
+/// `examples/oil.mlisp`: a directory as a buffer to edit, as oil.nvim.
 #[gpui::test]
 fn edits_directories_as_oil_does(cx: &mut TestAppContext) {
     let project = Project::new(&[

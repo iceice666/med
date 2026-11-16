@@ -272,8 +272,8 @@ fn main() {
         med::init_globals(cx);
         // med binds no key: the scenario types the example ones.
         for program in [
-            include_str!("../../../examples/vim.lisp"),
-            include_str!("../../../examples/keys.lisp"),
+            include_str!("../../../examples/vim.mlisp"),
+            include_str!("../../../examples/keys.mlisp"),
         ] {
             med::script::eval(program, cx).unwrap();
         }

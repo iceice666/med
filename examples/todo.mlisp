@@ -1,7 +1,7 @@
 ; Todo: a sign beside every line that says TODO, FIXME or NOTE, and keys
 ; to go from one to the next.
 ;
-;   (load "todo.lisp")
+;   (load "todo.mlisp")
 ;
 ; `]T` and `[T` go to the next and the previous one, around the ends of
 ; the file. It is a small program, and shows what one can do with the

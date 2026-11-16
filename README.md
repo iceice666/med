@@ -70,32 +70,32 @@ directory and load it (`!` overwrites existing files), or load the examples
 from a checkout:
 
 ```lisp
-; ~/.config/med/init.lisp
-(load "/path/to/med/examples/init.lisp")   ; everything, or pick files:
-(load "/path/to/med/examples/vim.lisp")
-(load "/path/to/med/examples/keys.lisp")
+; ~/.config/med/init.mlisp
+(load "/path/to/med/examples/init.mlisp")   ; everything, or pick files:
+(load "/path/to/med/examples/vim.mlisp")
+(load "/path/to/med/examples/keys.mlisp")
 ```
 
 | File | What it adds |
 | --- | --- |
-| `vim.lisp` | vim keys in every mode, plus nvim-surround-style `ys` / `ds` / `cs` |
-| `keys.lisp` | LSP keys (`gd`, `gr`, `K`), tabs, panes, flash-style jumps, `space` leader keys, `⌘` shortcuts |
-| `oil.lisp` | directories as buffers to edit, as oil.nvim (`space e`, `space -`) |
-| `picker.lisp` | fuzzy file finder and project search (`space f`, `space /`) |
-| `git.lisp` | lazygit-style git screen (`space g`) |
-| `which-key.lisp` | the keys that can come next, after a pause |
-| `todo.lisp` | signs on TODO/FIXME/NOTE lines, `]T` / `[T` |
-| `tree.lisp` | a file tree in a sidebar (`space e`, `⌘B`); not loaded by `init.lisp` |
-| `dired.lisp` | Emacs-style dired and wdired (`space -`); not loaded by `init.lisp` |
-| `statusline.lisp`, `titlebar.lisp` | the status and title bars as editable layouts |
-| `rss.lisp` | a feed reader (`:newsticker`); not loaded by `init.lisp` |
+| `vim.mlisp` | vim keys in every mode, plus nvim-surround-style `ys` / `ds` / `cs` |
+| `keys.mlisp` | LSP keys (`gd`, `gr`, `K`), tabs, panes, flash-style jumps, `space` leader keys, `⌘` shortcuts |
+| `oil.mlisp` | directories as buffers to edit, as oil.nvim (`space e`, `space -`) |
+| `picker.mlisp` | fuzzy file finder and project search (`space f`, `space /`) |
+| `git.mlisp` | lazygit-style git screen (`space g`) |
+| `which-key.mlisp` | the keys that can come next, after a pause |
+| `todo.mlisp` | signs on TODO/FIXME/NOTE lines, `]T` / `[T` |
+| `tree.mlisp` | a file tree in a sidebar (`space e`, `⌘B`); not loaded by `init.mlisp` |
+| `dired.mlisp` | Emacs-style dired and wdired (`space -`); not loaded by `init.mlisp` |
+| `statusline.mlisp`, `titlebar.mlisp` | the status and title bars as editable layouts |
+| `rss.mlisp` | a feed reader (`:newsticker`); not loaded by `init.mlisp` |
 
 `:help` (`:h`) describes any command and lists the keys bound to it.
 
 ## Configuration
 
 Everything the editor does is a named command, and keys are bound to names
-in the init file (`<config>/init.lisp`) or with `:eval`:
+in the init file (`<config>/init.mlisp`) or with `:eval`:
 
 ```lisp
 (bind 'normal "<Space>n" "workspace.next_tab")

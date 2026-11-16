@@ -2,25 +2,25 @@
 ; and the editor's, directories as buffers to edit (as oil.nvim), the
 ; picker, the git screen, the keys that can come next, the signs on the
 ; lines that say TODO, and the status and title bars. Put a line like this
-; in your own `init.lisp`, with the path of your checkout:
+; in your own `init.mlisp`, with the path of your checkout:
 ;
-;   (load "/path/to/med/examples/init.lisp")
+;   (load "/path/to/med/examples/init.mlisp")
 ;
-; or copy the files beside your `init.lisp`, take what you want of them,
+; or copy the files beside your `init.mlisp`, take what you want of them,
 ; and change it: they are programs like any other you would write there.
-; The file tree in a sidebar (tree.lisp), Emacs's dired (dired.lisp) and
-; the feed reader (rss.lisp) are here too, but not loaded: a (load ...)
+; The file tree in a sidebar (tree.mlisp), Emacs's dired (dired.mlisp) and
+; the feed reader (rss.mlisp) are here too, but not loaded: a (load ...)
 ; of one after this line has it.
 
-(load "vim.lisp")
-(load "keys.lisp")
-(load "oil.lisp")
-(load "picker.lisp")
-(load "git.lisp")
-(load "which-key.lisp")
-(load "todo.lisp")
-(load "statusline.lisp")
-(load "titlebar.lisp")
+(load "vim.mlisp")
+(load "keys.mlisp")
+(load "oil.mlisp")
+(load "picker.mlisp")
+(load "git.mlisp")
+(load "which-key.mlisp")
+(load "todo.mlisp")
+(load "statusline.mlisp")
+(load "titlebar.mlisp")
 
 ; g ? in a listing shows all of its keys at once. Last, so that every key
 ; bound to them above is there.

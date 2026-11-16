@@ -3,7 +3,7 @@
 ; It reads the feeds of Tsoding's channels on YouTube unless told
 ; otherwise.
 ;
-;   (load "rss.lisp")
+;   (load "rss.mlisp")
 ;
 ; :newsticker opens it. In it: j k move, h l (or tab) go to another feed,
 ; enter or o opens the video in the browser, J K scroll what it says of

@@ -1,7 +1,7 @@
 ; Dired: a directory as text, as in Emacs, with wdired to rename files
 ; by editing their names.
 ;
-;   (load "dired.lisp")
+;   (load "dired.mlisp")
 ;
 ; space - lists the directory of the file being edited, in a tab of its
 ; own: a name to a line, a directory's with / after it, and after each
@@ -13,7 +13,7 @@
 ;   - ^         the directory above        > <   the next, the last directory
 ;   g r         read the disk again        s     by name, or newest first
 ;   (           the details, or not        q     close the listing
-;   ?           all of these keys, with which-key.lisp (as init.lisp has it)
+;   ?           all of these keys, with which-key.mlisp (as init.mlisp has it)
 ;
 ; Marks, beside the line numbers: m marks a file (*), d flags it for
 ; deletion (D), u takes either off, backspace the one above's, U all of

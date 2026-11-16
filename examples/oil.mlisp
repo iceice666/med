@@ -1,12 +1,12 @@
 ; Oil: a directory as a buffer to edit, as in oil.nvim.
 ;
-;   (load "oil.lisp")
+;   (load "oil.mlisp")
 ;
 ; space - lists the directory of the file being edited, in a tab called
 ; oil:///that/directory/, the cursor on the file's line: a name to a
 ; line, a directory's with / after it. space e does the same, and in a
 ; listing closes it again; so does ⌘⇧E. Oil.nvim's own key for it is -,
-; which vim.lisp gives to a motion; to have it the oil way:
+; which vim.mlisp gives to a motion; to have it the oil way:
 ;
 ;   (bind 'normal "-" "oil.open")
 ;
@@ -41,7 +41,7 @@
 ;   C-l        read the disk again, giving up any changes (it asks first)
 ;   g x        open the file with the system's program for it
 ;   C-c        close the listing
-;   g ?        all of these keys, with which-key.lisp (as init.lisp has it)
+;   g ?        all of these keys, with which-key.mlisp (as init.mlisp has it)
 ;
 ; C-c, or space e, goes back to the file the listing was opened from.
 ; Going to another file or directory closes the listing it is gone from,

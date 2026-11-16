@@ -42,31 +42,31 @@ cargo test --workspace
 沒有初始化檔時，除了 `:` 以外沒有任何按鍵有綁定。執行 `:install_default_config` 會把 [`examples/`](examples) 複製到設定目錄並載入（加 `!` 會覆寫已存在的檔案），或者從原始碼目錄載入範例：
 
 ```lisp
-; ~/.config/med/init.lisp
-(load "/path/to/med/examples/init.lisp")   ; 全部載入，或挑選檔案：
-(load "/path/to/med/examples/vim.lisp")
-(load "/path/to/med/examples/keys.lisp")
+; ~/.config/med/init.mlisp
+(load "/path/to/med/examples/init.mlisp")   ; 全部載入，或挑選檔案：
+(load "/path/to/med/examples/vim.mlisp")
+(load "/path/to/med/examples/keys.mlisp")
 ```
 
 | 檔案 | 加入的功能 |
 | --- | --- |
-| `vim.lisp` | 各模式的 vim 按鍵，以及 nvim-surround 風格的 `ys` / `ds` / `cs` |
-| `keys.lisp` | LSP 按鍵（`gd`、`gr`、`K`）、分頁、窗格、flash 風格跳躍、`space` leader 鍵、`⌘` 快捷鍵 |
-| `oil.lisp` | 把目錄當成緩衝區來編輯，如同 oil.nvim（`space e`、`space -`） |
-| `picker.lisp` | 模糊檔案搜尋與專案搜尋（`space f`、`space /`） |
-| `git.lisp` | lazygit 風格的 git 畫面（`space g`） |
-| `which-key.lisp` | 停頓片刻後，列出接下來可按的鍵 |
-| `todo.lisp` | 在 TODO/FIXME/NOTE 行旁加上標示，`]T` / `[T` |
-| `tree.lisp` | 側邊欄的檔案樹（`space e`、`⌘B`）；`init.lisp` 不會載入 |
-| `dired.lisp` | Emacs 風格的 dired 與 wdired（`space -`）；`init.lisp` 不會載入 |
-| `statusline.lisp`、`titlebar.lisp` | 以可編輯版面呈現的狀態列與標題列 |
-| `rss.lisp` | 訂閱閱讀器（`:newsticker`）；`init.lisp` 不會載入 |
+| `vim.mlisp` | 各模式的 vim 按鍵，以及 nvim-surround 風格的 `ys` / `ds` / `cs` |
+| `keys.mlisp` | LSP 按鍵（`gd`、`gr`、`K`）、分頁、窗格、flash 風格跳躍、`space` leader 鍵、`⌘` 快捷鍵 |
+| `oil.mlisp` | 把目錄當成緩衝區來編輯，如同 oil.nvim（`space e`、`space -`） |
+| `picker.mlisp` | 模糊檔案搜尋與專案搜尋（`space f`、`space /`） |
+| `git.mlisp` | lazygit 風格的 git 畫面（`space g`） |
+| `which-key.mlisp` | 停頓片刻後，列出接下來可按的鍵 |
+| `todo.mlisp` | 在 TODO/FIXME/NOTE 行旁加上標示，`]T` / `[T` |
+| `tree.mlisp` | 側邊欄的檔案樹（`space e`、`⌘B`）；`init.mlisp` 不會載入 |
+| `dired.mlisp` | Emacs 風格的 dired 與 wdired（`space -`）；`init.mlisp` 不會載入 |
+| `statusline.mlisp`、`titlebar.mlisp` | 以可編輯版面呈現的狀態列與標題列 |
+| `rss.mlisp` | 訂閱閱讀器（`:newsticker`）；`init.mlisp` 不會載入 |
 
 `:help`（`:h`）會說明任一命令，並列出綁定到它的按鍵。
 
 ## 設定
 
-編輯器做的每件事都是一個具名命令，按鍵則在初始化檔（`<config>/init.lisp`）中或透過 `:eval` 綁定到這些名稱：
+編輯器做的每件事都是一個具名命令，按鍵則在初始化檔（`<config>/init.mlisp`）中或透過 `:eval` 綁定到這些名稱：
 
 ```lisp
 (bind 'normal "<Space>n" "workspace.next_tab")

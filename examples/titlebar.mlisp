@@ -1,7 +1,7 @@
 ; The title bar, as a layout of its own: what is being edited in the
 ; middle, and the project and its branch at the right.
 ;
-;   (load "titlebar.lisp")
+;   (load "titlebar.mlisp")
 ;
 ; A panel at 'title is drawn in the window's title bar, which can still
 ; be dragged to move the window and double-clicked to zoom it. On macOS

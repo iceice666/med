@@ -1,13 +1,13 @@
 ; The file tree: a sidebar that lists the project's files.
 ;
-;   (load "tree.lisp")
+;   (load "tree.mlisp")
 ;
 ; The tree is put away until it is asked for. space e, or ⌘⇧E, puts it
 ; up and goes to it, and from the tree puts it away again; ⌘B shows and
 ; hides it without moving the keyboard. In the tree: j k move, h l fold
 ; and unfold, enter opens, R reads the disk again, q or escape puts it
 ; away and goes back to the editor. A click does what enter does. With
-; which-key.lisp, init.lisp makes ? list all of the tree's keys.
+; which-key.mlisp, init.mlisp makes ? list all of the tree's keys.
 ;
 ; Everything here is an ordinary program: what the tree shows is kept in
 ; the names below, the commands change them, and the layout draws them.

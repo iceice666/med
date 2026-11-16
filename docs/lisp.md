@@ -79,7 +79,7 @@ show, `nil` where there is nothing to show:
 With no file open there is an empty `[No Name]` buffer, which the next
 file opened takes the place of: it has a `:mode`, but nothing that comes
 from a file. A status bar that leaves out `:cmdline` has `:` typed blind.
-[`examples/statusline.lisp`](../examples/statusline.lisp) is the window's own
+[`examples/statusline.mlisp`](../examples/statusline.mlisp) is the window's own
 status bar, and the colors of the bars are `'status-bar`, `'title-bar`,
 `'title-bar-border` and `'tab-bar`.
 
@@ -279,7 +279,7 @@ And it is told what happens, with `add-hook`:
 | `mode-changed` | the editor went into another mode: the mode |
 | `diagnostics-changed` | a language server has news of a file: its path |
 
-[`examples/todo.lisp`](../examples/todo.lisp) is a short program made of
+[`examples/todo.mlisp`](../examples/todo.mlisp) is a short program made of
 these: it reads the text once it has changed, puts a sign on the lines
 that say TODO, and has two commands that move the cursor.
 
@@ -300,7 +300,7 @@ Given a function, `:w` calls it with the text, as a command
 (`command-bang` is there for `:w!`), and the text stays unsaved until the program gives the tab
 its text again. Without one, there is nothing in the tab to lose and
 nowhere to write it. `(current-file)` is `nil` there, and `:w name`
-makes the tab a file, without the tab's own keys. [`examples/dired.lisp`](../examples/dired.lisp) lists a directory in
+makes the tab a file, without the tab's own keys. [`examples/dired.mlisp`](../examples/dired.mlisp) lists a directory in
 one, does what Emacs's dired does to the files, and renames them with
 what is written.
 
@@ -353,7 +353,7 @@ closed, the keys going back to the file, and a word when it is done.
 A program can change keys and options, define commands and panels (all
 above), `(load "file")` another program, and say something with
 `(message ...)`. One interpreter serves the whole session, so what
-`init.lisp` defines can be used from `:eval`. A program that never ends is stopped after ten million
+`init.mlisp` defines can be used from `:eval`. A program that never ends is stopped after ten million
 steps rather than left to hang the window.
 
 The language itself can be tried without the editor:

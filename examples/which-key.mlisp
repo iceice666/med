@@ -1,7 +1,7 @@
 ; Which key: once a command is half typed and nothing follows for a
 ; moment, the keys that can come next, at the bottom of the window.
 ;
-;   (load "which-key.lisp")
+;   (load "which-key.mlisp")
 ;
 ; It works wherever keys are looked up in tables: in an editor (after
 ; `g`, `z`, the space of a leader key) and in a panel that has the

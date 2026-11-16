@@ -1,7 +1,7 @@
 ; The status bar, as a layout of its own: the same bar the window draws
 ; when no program gives it one, to change as you like.
 ;
-;   (load "statusline.lisp")
+;   (load "statusline.mlisp")
 ;
 ; A panel at 'status is drawn in place of the window's status bar, and
 ; its `panel` says what that bar would show: `:mode`, `:path`, `:line`,

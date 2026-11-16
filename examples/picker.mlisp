@@ -1,7 +1,7 @@
 ; The picker: a popup to find a file by a few letters of its name, to
 ; search the project, or to choose among the references to a name.
 ;
-;   (load "picker.lisp")
+;   (load "picker.mlisp")
 ;
 ; space f, or ⌘P, finds a file; space /, or ⌘⇧F, searches the project
 ; (a regular expression, if what is typed is one). In the picker: typing

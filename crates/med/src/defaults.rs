@@ -1,8 +1,8 @@
 //! What is built in: the names ex commands go by, and no keys.
 //!
 //! Every key, vim's included, is bound by the init file: the vim layout
-//! is `examples/vim.lisp`, and the keys that reach beyond the buffer, the
-//! ones of flash and the app shortcuts are `examples/keys.lisp`. A panel's
+//! is `examples/vim.mlisp`, and the keys that reach beyond the buffer, the
+//! ones of flash and the app shortcuts are `examples/keys.mlisp`. A panel's
 //! keys, and the keys that bring it up, are bound by the program that
 //! defines the panel. Those files are in the binary as well, for
 //! `:install_default_config` to write where an init file is looked for.
@@ -63,30 +63,33 @@ pub const EX_ARGS: &[(&str, ExArg)] = &[
 ];
 
 /// The configuration `:install_default_config` writes: every file of
-/// `examples/`, by its name there, `init.lisp` loading the others.
+/// `examples/`, by its name there, `init.mlisp` loading the others.
 pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
-    ("init.lisp", include_str!("../../../examples/init.lisp")),
-    ("vim.lisp", include_str!("../../../examples/vim.lisp")),
-    ("keys.lisp", include_str!("../../../examples/keys.lisp")),
-    ("oil.lisp", include_str!("../../../examples/oil.lisp")),
-    ("tree.lisp", include_str!("../../../examples/tree.lisp")),
-    ("picker.lisp", include_str!("../../../examples/picker.lisp")),
-    ("git.lisp", include_str!("../../../examples/git.lisp")),
+    ("init.mlisp", include_str!("../../../examples/init.mlisp")),
+    ("vim.mlisp", include_str!("../../../examples/vim.mlisp")),
+    ("keys.mlisp", include_str!("../../../examples/keys.mlisp")),
+    ("oil.mlisp", include_str!("../../../examples/oil.mlisp")),
+    ("tree.mlisp", include_str!("../../../examples/tree.mlisp")),
     (
-        "which-key.lisp",
-        include_str!("../../../examples/which-key.lisp"),
+        "picker.mlisp",
+        include_str!("../../../examples/picker.mlisp"),
     ),
-    ("todo.lisp", include_str!("../../../examples/todo.lisp")),
-    ("dired.lisp", include_str!("../../../examples/dired.lisp")),
+    ("git.mlisp", include_str!("../../../examples/git.mlisp")),
     (
-        "statusline.lisp",
-        include_str!("../../../examples/statusline.lisp"),
+        "which-key.mlisp",
+        include_str!("../../../examples/which-key.mlisp"),
+    ),
+    ("todo.mlisp", include_str!("../../../examples/todo.mlisp")),
+    ("dired.mlisp", include_str!("../../../examples/dired.mlisp")),
+    (
+        "statusline.mlisp",
+        include_str!("../../../examples/statusline.mlisp"),
     ),
     (
-        "titlebar.lisp",
-        include_str!("../../../examples/titlebar.lisp"),
+        "titlebar.mlisp",
+        include_str!("../../../examples/titlebar.mlisp"),
     ),
-    ("rss.lisp", include_str!("../../../examples/rss.lisp")),
+    ("rss.mlisp", include_str!("../../../examples/rss.mlisp")),
 ];
 
 /// Why the default configuration was not written.
@@ -99,13 +102,17 @@ pub enum InstallError {
 
 /// Write [`DEFAULT_CONFIG`] into `dir`, made if it is not there. Unless
 /// `overwrite`, nothing is written while any of its files is there
-/// already. Other files in `dir` are left as they are.
+/// already, by its name or by the `.lisp` one it had before. Other files
+/// in `dir` are left as they are.
 pub fn install_default_config(dir: &Path, overwrite: bool) -> Result<(), InstallError> {
     if !overwrite {
         let there: Vec<&str> = DEFAULT_CONFIG
             .iter()
             .map(|(name, _)| *name)
-            .filter(|name| dir.join(name).exists())
+            .filter(|name| {
+                let path = dir.join(name);
+                path.exists() || path.with_extension("lisp").exists()
+            })
             .collect();
         if !there.is_empty() {
             return Err(InstallError::Exists(there));
@@ -195,7 +202,7 @@ mod tests {
         let mut names: Vec<String> = std::fs::read_dir(&examples)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".lisp"))
+            .filter(|name| name.ends_with(".mlisp"))
             .collect();
         names.sort();
         let mut installed: Vec<&str> = DEFAULT_CONFIG.iter().map(|(name, _)| *name).collect();
@@ -205,6 +212,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("med-install-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("med");
+        // An init file by the name it had before counts as being there.
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("init.lisp"), "; mine\n").unwrap();
+        match install_default_config(&config, false) {
+            Err(InstallError::Exists(there)) => assert_eq!(there, ["init.mlisp"]),
+            other => panic!("{other:?}"),
+        }
+        std::fs::remove_file(config.join("init.lisp")).unwrap();
         install_default_config(&config, false).unwrap();
         for (name, text) in DEFAULT_CONFIG {
             assert_eq!(std::fs::read_to_string(config.join(name)).unwrap(), *text);
@@ -212,38 +227,38 @@ mod tests {
 
         // What is there already is kept, unless it is to be overwritten;
         // what is not one of them is kept either way.
-        std::fs::write(config.join("keys.lisp"), "; mine\n").unwrap();
-        std::fs::write(config.join("notes.lisp"), "; mine\n").unwrap();
+        std::fs::write(config.join("keys.mlisp"), "; mine\n").unwrap();
+        std::fs::write(config.join("notes.mlisp"), "; mine\n").unwrap();
         match install_default_config(&config, false) {
             Err(InstallError::Exists(there)) => assert_eq!(there.len(), DEFAULT_CONFIG.len()),
             other => panic!("{other:?}"),
         }
         assert_eq!(
-            std::fs::read_to_string(config.join("keys.lisp")).unwrap(),
+            std::fs::read_to_string(config.join("keys.mlisp")).unwrap(),
             "; mine\n"
         );
         install_default_config(&config, true).unwrap();
         assert_ne!(
-            std::fs::read_to_string(config.join("keys.lisp")).unwrap(),
+            std::fs::read_to_string(config.join("keys.mlisp")).unwrap(),
             "; mine\n"
         );
-        assert!(config.join("notes.lisp").is_file());
+        assert!(config.join("notes.mlisp").is_file());
 
         cx.update(|cx| {
             crate::init(cx);
             assert!(no_keys_hint(cx).is_some());
-            assert!(crate::script::run_init(&config.join("init.lisp"), cx));
+            assert!(crate::script::run_init(&config.join("init.mlisp"), cx));
             assert_eq!(crate::script::take_message(cx), None);
             assert_eq!(no_keys_hint(cx), None);
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `examples/vim.lisp` is the engine's stock layout, binding for
+    /// `examples/vim.mlisp` is the engine's stock layout, binding for
     /// binding.
     #[gpui::test]
     fn the_example_vim_layout_is_the_engines(cx: &mut gpui::TestAppContext) {
-        let source = include_str!("../../../examples/vim.lisp");
+        let source = include_str!("../../../examples/vim.mlisp");
         cx.update(|cx| {
             crate::init_globals(cx);
             if let Err(error) = crate::script::eval(source, cx) {

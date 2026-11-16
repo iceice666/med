@@ -397,7 +397,7 @@ impl Workspace {
     ) {
         match defaults::install_default_config(dir, overwrite) {
             Ok(()) => {
-                script::run_init(&dir.join("init.lisp"), cx);
+                script::run_init(&dir.join("init.mlisp"), cx);
                 let message = script::take_message(cx).unwrap_or_else(|| {
                     format!("Wrote the example configuration to {}", dir.display())
                 });
@@ -2509,7 +2509,7 @@ pub(crate) fn register(commands: &mut Commands) {
                 .or_else(|| defaults::no_keys_hint(cx))
                 .unwrap_or_else(|| match ran {
                     Some(path) => format!("Ran {}", path.display()),
-                    None => "There is no init.lisp".to_string(),
+                    None => "There is no init.mlisp".to_string(),
                 });
             ws.set_message(message, cx);
             // The panels it defined anew have a project to show.

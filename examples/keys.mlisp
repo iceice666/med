@@ -3,11 +3,11 @@
 ; leader keys and the `cmd` shortcuts. Every right-hand side is a command name,
 ; and `:` and the name runs it as well, as in `:editor.hover`.
 ;
-; Load it after `vim.lisp`: some of these keys are vim's own there, and
+; Load it after `vim.mlisp`: some of these keys are vim's own there, and
 ; the later binding wins.
 ;
-;   (load "/path/to/med/examples/vim.lisp")
-;   (load "/path/to/med/examples/keys.lisp")
+;   (load "/path/to/med/examples/vim.mlisp")
+;   (load "/path/to/med/examples/keys.mlisp")
 
 ; The language server.
 (bind '(normal visual) "gd" "editor.goto_definition")
