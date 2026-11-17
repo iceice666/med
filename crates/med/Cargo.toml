@@ -85,4 +85,6 @@ depends = [
   "libx11-xcb1",
   "libxcb1",
   "libvulkan1",
+  # :install_default_config and `load "gh:…"` download with it.
+  "curl",
 ]
