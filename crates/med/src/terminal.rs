@@ -387,7 +387,10 @@ impl TermView {
         let line_height = px((points * settings.terminal_line_height).round());
         let base_font = settings.terminal_font(&theme.mono_font_family);
         let palette = palette(cx);
-        let selection = rgb_of(theme.selection);
+        let selection = rgb_of(crate::theme::med_color(
+            crate::theme::MedColor::TerminalSelection,
+            cx,
+        ));
         let text_system = window.text_system().clone();
         let run = |len: usize, font: Font, color: Hsla| TextRun {
             len,

@@ -2905,7 +2905,8 @@ impl Render for Workspace {
                         .child(view.clone())
                 })
         };
-        let (border, overlay) = (theme.border, theme.overlay);
+        let border = theme.border;
+        let overlay = crate::theme::med_color(crate::theme::MedColor::PopupOverlay, cx);
         let (background, foreground) = (theme.background, theme.foreground);
 
         // A panel that takes the editor's place: the last one put up.
@@ -2960,7 +2961,7 @@ impl Render for Workspace {
                     .justify_center()
                     .items_start()
                     .pt(px(72.))
-                    .bg(overlay.opacity(0.25))
+                    .bg(overlay)
                     .occlude()
                     .on_mouse_down(
                         MouseButton::Left,

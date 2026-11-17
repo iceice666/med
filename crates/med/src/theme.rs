@@ -322,6 +322,8 @@ macro_rules! med_colors {
 med_colors! {
     // A shade of the text over whatever is behind it: darker in a light
     // theme, lighter in a dark one.
+    // The cursor of a pane the keyboard is not in: an outline.
+    CursorInactive "cursor-inactive" |t| t.caret.opacity(0.7);
     ColorColumn "color-column" |t| t.foreground.opacity(0.07);
     IndentGuide "indent-guide" |t| t.foreground.opacity(0.12);
     IndentGuideActive "indent-guide-active" |t| t.foreground.opacity(0.35);
@@ -342,6 +344,8 @@ med_colors! {
     TerminalForeground "terminal-foreground" |t| t.foreground;
     TerminalBackground "terminal-background" |t| t.background;
     TerminalCursor "terminal-cursor" |t| t.foreground;
+    // Drawn over the cells as it is: what it lets through is not used.
+    TerminalSelection "terminal-selection" |t| t.selection;
     // xterm's, on a light background or a dark one.
     TerminalBlack "terminal-black" |t| ansi(t, 0);
     TerminalRed "terminal-red" |t| ansi(t, 1);
@@ -359,6 +363,8 @@ med_colors! {
     TerminalBrightMagenta "terminal-bright-magenta" |t| ansi(t, 13);
     TerminalBrightCyan "terminal-bright-cyan" |t| ansi(t, 14);
     TerminalBrightWhite "terminal-bright-white" |t| ansi(t, 15);
+    // Behind a program's popup panel, over the rest of the window.
+    PopupOverlay "popup-overlay" |t| t.overlay.opacity(0.25);
 }
 
 /// The terminal's color `index` of the sixteen, as xterm has it.

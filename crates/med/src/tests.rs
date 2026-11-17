@@ -1722,6 +1722,16 @@ fn the_editor_and_terminal_colors_go_by_the_theme(cx: &mut TestAppContext) {
         run("(theme-color 'git-added)", cx),
         run("(theme-color 'green)", cx)
     );
+    let as_before = cx.update(|_, cx| {
+        let theme = gpui::component::Theme::global(cx);
+        let hex = |color| format!("\"{}\"", crate::theme::hex(color));
+        (
+            hex(theme.caret.opacity(0.7)),
+            hex(theme.overlay.opacity(0.25)),
+        )
+    });
+    assert_eq!(run("(theme-color 'cursor-inactive)", cx), as_before.0);
+    assert_eq!(run("(theme-color 'popup-overlay)", cx), as_before.1);
     // And what it says goes over that.
     assert_eq!(run("(theme-color 'search)", cx), r##""#00ff0080""##);
     let palette = |cx: &mut VisualTestContext| cx.update(|_, cx| crate::terminal::palette(cx));

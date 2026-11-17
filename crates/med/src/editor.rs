@@ -3965,6 +3965,7 @@ impl Editor {
         let (bg, fg, muted) = (theme.background, theme.foreground, theme.muted_foreground);
         let selection_bg = theme.selection;
         let caret = theme.caret;
+        let caret_inactive = crate::theme::med_color(MedColor::CursorInactive, cx);
         let highlight = theme.highlight_theme.clone();
         let line_number_color = highlight.style.editor_line_number.unwrap_or(muted);
         let active_line_bg = highlight
@@ -4572,7 +4573,7 @@ impl Editor {
                 } else {
                     frame
                         .front
-                        .push(outline(cell, caret.opacity(0.7), BorderStyle::default()));
+                        .push(outline(cell, caret_inactive, BorderStyle::default()));
                 }
             }
 
