@@ -124,6 +124,8 @@
 | `(fuzzy query list limit)` | 幾個字母所能代表的文字，最佳者優先 |
 | `(grep query limit function)` | 符合的行：`((:path :file :line :col :text)...)` |
 | `(workspace-symbols query limit function)` | 執行中的語言伺服器找到的專案符號，格式同 `grep` 的位置，`:text` 是種類和名稱 |
+| `(structural-search pattern language limit [replacement] function)` | 結構符合 pattern 的程式碼，格式同 `grep` 的位置，另有 `:end-line :end-col :match :captures`，給了 replacement 時還有 `:replacement`：見[依結構找程式碼](#依結構找程式碼) |
+| `(structural-replace pattern replacement language [places] function)` | 把每個符合處換成 replacement，或只換 `places` 中的那些，在分頁裡和磁碟上：`(:changes :files :skipped)` |
 | `(git what arguments... function)` | 存放庫：見 `crates/med/src/host.rs` |
 | `(bindings table [keys])` | 在模式或面板的表中，可接在 `keys` 之後的按鍵 |
 | `(after milliseconds function)` | 在那麼多毫秒後呼叫，並回傳一個計時器，可用 `(cancel timer)` 取消 |
@@ -144,6 +146,31 @@
 每個視窗就是一個專案。`:project dir`（`workspace.open_project`）會在新視窗中開啟另一個專案；如果已經有視窗開在那個目錄上，就把它叫到前面；點擊標題列上的目錄（`workspace.switch_project`）也可以切換專案。在最後一個分頁上 `:q`、`:qa`（`workspace.quit_window`），或關閉視窗，都只會關掉那一個視窗；`cmd-q`（`workspace.quit_all`）則會結束所有視窗，並保存每個視窗的 session。哪些 panel 開著由各個視窗各自決定；init 檔開啟的 panel 會出現在每個視窗。開過的專案列在 `MED_STATE_DIR` 底下的 `projects`。所有視窗共用同一個直譯器，所以程式中的名稱在每個視窗裡都相同：要保存某個專案的資料，應以 `(project-root)` 區分，就像 `tree.mlisp` 和 `picker.mlisp` 那樣。命令、hook 與點擊都在它們來自的視窗中執行；layout 則從 `:root` 得知所屬視窗的專案。
 
 hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照、它的實作，或檔案中的符號）、`keys-pending`（見下文）、`terminal-exited`（見 Terminal 一節），以及與正在編輯的檔案相關的 hook（見後文）。
+
+### 依結構找程式碼
+
+`structural-search` 和 `structural-replace` 依程式碼的結構來找，而不是依文字，就像 IntelliJ IDEA 的 structural search。pattern 是該語言的程式碼，在可以是任何東西的地方寫 `$name$`：`$x$.unwrap()` 就是每一個 `unwrap` 呼叫，不管是對什麼呼叫。
+
+- `$name*$` 是並排的任意多個東西，零個也可以，例如呼叫的參數：`go($args*$)`。
+- `$_$` 是任何東西，不會保留下來。
+- 同一個名稱用兩次，兩處必須是相同的文字：`$x$ == $x$`。
+- 空白、換行、註解，以及東西之間的逗號都不算。
+- `$name$` 代表程式碼中完整的一部分，不會是一個字或字串的一小段。
+
+language 是 `(buffer-language)` 給的那種名稱，`nil` 表示目前分頁的語言。只會搜尋專案中該語言的檔案；開在分頁裡的檔案以分頁中的內容為準，包含還沒寫入的修改。每個符合處的格式同 `grep` 的位置，另外加上結束的位置、符合的文字（`:match`），以及每個名稱在那裡代表的文字（`:captures`，例如 `(:x "first()")`）。符合處可以在另一個符合處裡面。和 `grep` 一樣，搜尋會先等一下，而且 `grep`、`workspace-symbols` 和 `structural-search` 之中只有最後一次要求的會得到回答。
+
+replacement 是含有 pattern 中那些名稱的文字，每個名稱代表在那裡找到的東西。第一行之後的每一行，會加上符合處起始那一行的縮排。把 replacement 給 `structural-search` 時，每個位置會用 `:replacement` 告訴你它會被換成什麼。開在分頁裡的檔案在分頁中修改、不會寫入；其他檔案直接在磁碟上修改，無法復原。把 `structural-search` 給的位置交給 `structural-replace`，就只會換那些，程式可以藉此逐一詢問。在另一個符合處裡面的符合處，留給下一次取代。
+
+有些符合處會保持原樣，並算進 `:skipped`：在尋找期間有變動的檔案中的那些，以及裡面有註解、而那個註解不在任何 `$name$` 之內的那些，因為取代會把註解弄丟。`structural-search` 給這種符合處的 `:replacement` 是 `nil`。
+
+```lisp
+(structural-search "$x$.unwrap()" 'rust 100
+  (fn (places) (message (length places) " calls of unwrap")))
+(structural-replace "$x$.unwrap()" "$x$?" 'rust
+  (fn (done) (message (get done :changes) " changed")))
+```
+
+不是該語言程式碼的 pattern，以及含有 pattern 裡沒有的名稱的 replacement，都算是程式的錯誤，程式會立刻停下。
 
 ### 正在輸入的按鍵
 

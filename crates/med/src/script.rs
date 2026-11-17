@@ -391,6 +391,16 @@ pub(crate) fn in_workspace<T>(
     update: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
 ) -> Option<T> {
     let origin = origin(cx)?;
+    in_origin(&origin, cx, update)
+}
+
+/// Do something in the workspace `origin` is: one a program was started
+/// from, kept for when what it asked for is done.
+pub(crate) fn in_origin<T>(
+    origin: &Origin,
+    cx: &mut App,
+    update: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
+) -> Option<T> {
     origin
         .window
         .update(cx, |_, window, cx| {

@@ -2000,13 +2000,14 @@ impl Workspace {
     }
 
     /// Make the edits a language server asked for: in the tabs that have
-    /// the files open, and on disk for the rest.
+    /// the files open, and on disk for the rest. Gives how many changed
+    /// anything, and in how many files.
     pub(crate) fn apply_workspace_edit(
         &mut self,
         edit: lsp::WorkspaceEdit,
         window: &Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> (usize, usize) {
         let (mut changes, mut files, mut written) = (0, 0, false);
         let mut failed = None;
         for (path, edits) in crate::lsp::edits_by_file(edit) {
@@ -2044,6 +2045,17 @@ impl Workspace {
         if written {
             self.files_changed(window, cx);
         }
+        (changes, files)
+    }
+
+    /// The text of each file open in a tab, as it is there.
+    pub(crate) fn open_texts(&self, cx: &App) -> HashMap<PathBuf, String> {
+        self.all_editors()
+            .filter_map(|editor| {
+                let editor = editor.read(cx);
+                Some((editor.path.clone()?, editor.buf.text()))
+            })
+            .collect()
     }
 
     // ---- panels --------------------------------------------------------

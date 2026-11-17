@@ -199,6 +199,8 @@ at once.
 | `(fuzzy query list limit)` | the texts a few letters mean, best first |
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
 | `(workspace-symbols query limit function)` | the symbols of the project the language servers running find, as `grep`'s places with the kind and name as `:text` |
+| `(structural-search pattern language limit [replacement] function)` | code that has the pattern's shape, as `grep`'s places with `:end-line :end-col :match :captures`, and `:replacement` given one: see [Code by its shape](#code-by-its-shape) |
+| `(structural-replace pattern replacement language [places] function)` | every match made the replacement, or the ones of `places`, in the tabs and on disk: `(:changes :files :skipped)` |
 | `(git what arguments... function)` | the repository: see `crates/med/src/host.rs` |
 | `(bindings table [keys])` | the keys that can come after `keys` in a mode's table or a panel's |
 | `(after milliseconds function)` | a call that long from now, and a timer for `(cancel timer)` to call it off |
@@ -240,6 +242,57 @@ from, such as the references to a name, its implementations or the
 symbols of the file), `keys-pending` (below),
 `terminal-exited` (see Terminals), and the ones about the file being
 edited (further below).
+
+### Code by its shape
+
+`structural-search` and `structural-replace` find code by how it is
+built and not by its text, as the structural search of IntelliJ IDEA
+does. A pattern is code of the language with `$name$` where anything may
+be: `$x$.unwrap()` is every call of `unwrap`, whatever it is called on.
+
+- `$name*$` is any number of things side by side, none too, such as the
+  arguments of a call: `go($args*$)`.
+- `$_$` is anything, and is not kept.
+- A name used twice is the same text both times: `$x$ == $x$`.
+- Spaces, line breaks, comments and the commas between things do not
+  count.
+- A `$name$` is a whole part of the code, never a piece of a word or of
+  a string.
+
+The language is a name as `(buffer-language)` gives it, or `nil` for the
+language of the tab up. Only the project's files of that language are
+searched, and a file open in a tab is searched as it is there, changes
+not yet written too. Each match is a place as `grep` gives it, with
+where it ends, the text it is (`:match`), and what each name stands for
+there (`:captures`, as `(:x "first()")`). A match can be in another one.
+As with `grep`, a search waits a moment first, and only the last
+`grep`, `workspace-symbols` or `structural-search` asked for is
+answered.
+
+A replacement is text with the pattern's names in it, each standing for
+what was found there. Its lines after the first get the indent of the
+line the match starts on. Given to `structural-search`, each place has
+what it would be made as `:replacement`. A file open in a tab is changed
+there and not written; the others are changed on disk, with no undo.
+Given places that `structural-search` gave, `structural-replace` changes
+only those, which is how a program asks about each one first. A match
+that is in another one is left for the next replace.
+
+Some matches are left as they are, and counted in `:skipped`: those in a
+file that changes while the matches are being found, and those with a
+comment in them that is in no `$name$`, which the replacement would
+lose. `structural-search` gives such a match a `:replacement` of `nil`.
+
+```lisp
+(structural-search "$x$.unwrap()" 'rust 100
+  (fn (places) (message (length places) " calls of unwrap")))
+(structural-replace "$x$.unwrap()" "$x$?" 'rust
+  (fn (done) (message (get done :changes) " changed")))
+```
+
+A pattern that is not code of the language, and a replacement with a name
+the pattern does not have, are mistakes of the program, and stop it at
+once.
 
 ### The keys being typed
 

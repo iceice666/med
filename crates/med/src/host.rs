@@ -32,6 +32,15 @@
 //! (fuzzy "mnrs" files 100)        ; the ones a few letters mean, best first
 //! (grep "needle" 500 (fn (places) ...))   ; ((:path :file :line :col :text)...)
 //! (workspace-symbols "name" 500 (fn (places) ...))  ; the same, :text the symbol
+//! (structural-search "$x$.unwrap()" 'rust 500 (fn (places) ...))
+//!                                 ; code of that shape: grep's places and
+//!                                 ; :end-line :end-col :match :captures
+//! (structural-search "$x$.unwrap()" 'rust 500 "$x$?" (fn (places) ...))
+//!                                 ; and each one's :replacement
+//! (structural-replace "$x$.unwrap()" "$x$?" nil (fn (done) ...))
+//!                                 ; (:changes :files :skipped)
+//! (structural-replace "$x$.unwrap()" "$x$?" nil places (fn (done) ...))
+//!                                 ; only those structural-search gave
 //!
 //! (git 'status (fn (files problem) ...))
 //! (git 'commit "message" (fn (output problem) ...))
@@ -82,14 +91,17 @@
 //!   `'pull`, `'push`, `'stash`, `'stash-apply index`, `'stash-pop index`,
 //!   `'stash-drop index`: what git printed.
 
+use crate::buffer_api::field;
 use crate::env::{EnvCell, ProjectEnv};
 use crate::panel::{is_function, word, wrong};
 use crate::script::{self, Script};
 use crate::search::{self, Hit};
+use crate::{structural, syntax};
 use anyhow::Context as _;
 use gpui::App;
 use med_git::{Branch, Commit, FileStatus, Head, Repo, Stash};
 use med_lisp::{Arity, Error, ErrorKind, Interp, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -518,6 +530,99 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         Ok(Value::Nil)
     });
 
+    // (structural-search pattern language limit [replacement] function):
+    // the code of the project that has the pattern's shape, as `grep`'s
+    // places with their ends, the text matched and what each variable
+    // stands for; given a replacement, what each would be made, nil for
+    // one a replace leaves. See `structural.rs`. As with `grep`, the last
+    // one asked for is the one answered.
+    interp.define_native("structural-search", Arity::between(4, 5), |call, args| {
+        let cx = script::app(call)?;
+        let pattern = pattern("structural-search", &args[0], &args[1], cx)?;
+        let limit = count("structural-search", &args[2])?;
+        let replacement = match args.len() {
+            5 => Some(replacement("structural-search", &args[3], &pattern)?),
+            _ => None,
+        };
+        let callback = callback("structural-search", args.last().unwrap())?;
+        let root = project("structural-search", cx)?;
+        let open = open_texts(cx);
+        let origin = script::origin(cx);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let script = cx.global_mut::<Script>();
+        std::mem::replace(&mut script.search, cancel.clone()).store(true, Ordering::Relaxed);
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            executor.timer(SEARCH_DELAY).await;
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let flag = cancel.clone();
+            let files = executor
+                .spawn(async move { structural::search(&root, &pattern, &open, limit, &flag) })
+                .await;
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let places = Value::list(files.iter().flat_map(|file| {
+                file.found
+                    .iter()
+                    .map(|found| structural_place(file, found, replacement.as_ref()))
+            }));
+            cx.update(|cx| script::call_back(origin, callback, vec![places], cx));
+        })
+        .detach();
+        Ok(Value::Nil)
+    });
+
+    // (structural-replace pattern replacement language [places] function):
+    // every match of the pattern in the project made the replacement, or
+    // only those of `places`, as `structural-search` gave them; in the
+    // tabs that have the files and on disk for the rest. A match in
+    // another is left for the next replace. The function is called with
+    // `(:changes :files :skipped)`, `:skipped` the matches left as they
+    // are: in a file that changed while they were being found, or with a
+    // comment in no variable, which the replacement would lose.
+    interp.define_native("structural-replace", Arity::between(4, 5), |call, args| {
+        let cx = script::app(call)?;
+        let pattern = pattern("structural-replace", &args[0], &args[2], cx)?;
+        let replacement = replacement("structural-replace", &args[1], &pattern)?;
+        let chosen = match args.len() {
+            5 => Some(chosen_places(&args[3])?),
+            _ => None,
+        };
+        let callback = callback("structural-replace", args.last().unwrap())?;
+        let root = project("structural-replace", cx)?;
+        let open = open_texts(cx);
+        let origin = script::origin(cx);
+        let work = cx.background_executor().spawn(async move {
+            let never = AtomicBool::new(false);
+            let files = structural::search(&root, &pattern, &open, usize::MAX, &never);
+            structural::edits(files, &replacement, chosen.as_deref())
+        });
+        cx.spawn(async move |cx| {
+            let edits = work.await;
+            cx.update(|cx| {
+                let replaced = origin.as_ref().and_then(|origin| {
+                    script::in_origin(origin, cx, |workspace, window, cx| {
+                        structural::apply(workspace, edits, window, cx)
+                    })
+                });
+                let done = replaced.map_or(Value::Nil, |replaced| {
+                    record([
+                        ("changes", Value::Int(replaced.changes as i64)),
+                        ("files", Value::Int(replaced.files as i64)),
+                        ("skipped", Value::Int(replaced.skipped as i64)),
+                    ])
+                });
+                script::call_back(origin, callback, vec![done], cx);
+            });
+        })
+        .detach();
+        Ok(Value::Nil)
+    });
+
     // (git what argument... function): see the top of this file.
     interp.define_native("git", Arity::at_least(2), |call, args| {
         let [what, params @ .., last] = args else {
@@ -541,6 +646,124 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         );
         Ok(Value::Nil)
     });
+}
+
+/// A pattern for `structural-search` or `structural-replace`, of the
+/// language a program named, or of the tab up's for nil.
+fn pattern(
+    name: &str,
+    source: &Value,
+    language: &Value,
+    cx: &mut App,
+) -> Result<structural::Pattern, Error> {
+    let lang = match language {
+        Value::Nil => script::in_workspace(cx, |workspace, _, cx| {
+            workspace.active_editor()?.read(cx).lang
+        })
+        .flatten(),
+        other => {
+            let language = word(other).ok_or_else(|| wrong(name, "a language", other))?;
+            syntax::lang_named(&language)
+        }
+    };
+    let Some(lang) = lang else {
+        return Err(failed(match language {
+            Value::Nil => format!("{name}: the tab up is of no language"),
+            other => format!("{name}: there is no such language: {other}"),
+        }));
+    };
+    structural::Pattern::new(source.as_str()?, lang)
+        .map_err(|problem| failed(format!("{name}: {problem}")))
+}
+
+/// The text of each file open in a tab of the program's window.
+fn open_texts(cx: &mut App) -> HashMap<PathBuf, String> {
+    script::in_workspace(cx, |workspace, _, cx| workspace.open_texts(cx)).unwrap_or_default()
+}
+
+/// A match of `structural-search`: where it starts, as `grep` gives it,
+/// where it ends, what it is, and what each variable stands for there.
+/// A replacement for a pattern a program gave.
+fn replacement(
+    name: &str,
+    source: &Value,
+    pattern: &structural::Pattern,
+) -> Result<structural::Replacement, Error> {
+    structural::Replacement::new(source.as_str()?, pattern)
+        .map_err(|problem| failed(format!("{name}: {problem}")))
+}
+
+/// The matches a program chose, as `structural-search` gave them.
+fn chosen_places(places: &Value) -> Result<Vec<structural::Chosen>, Error> {
+    let at = |fields: &[Value], key: &str| -> Result<usize, Error> {
+        match field(fields, key) {
+            Some(Value::Int(n)) if *n >= 1 => Ok(*n as usize - 1),
+            other => Err(wrong(
+                "structural-replace",
+                &format!("a place with {key}"),
+                other.unwrap_or(&Value::Nil),
+            )),
+        }
+    };
+    places
+        .to_vec()?
+        .iter()
+        .map(|place| {
+            let fields = place.to_vec()?;
+            let path = match field(&fields, "path") {
+                Some(path) => PathBuf::from(path.as_str()?),
+                None => return Err(wrong("structural-replace", "a place with :path", place)),
+            };
+            Ok(structural::Chosen {
+                path,
+                start: (at(&fields, "line")?, at(&fields, "col")?),
+                end: (at(&fields, "end-line")?, at(&fields, "end-col")?),
+            })
+        })
+        .collect()
+}
+
+fn structural_place(
+    file: &structural::FileFound,
+    found: &structural::Found,
+    replacement: Option<&structural::Replacement>,
+) -> Value {
+    let text = &file.text;
+    let (line, column, _) = structural::place(text, found.range.start);
+    let (end_line, end_column, _) = structural::place(text, found.range.end);
+    let line_text = text.lines().nth(line).unwrap_or_default();
+    let captures = Value::list(
+        found
+            .captures
+            .iter()
+            .flat_map(|(name, range)| [Value::keyword(name), Value::from(&text[range.clone()])]),
+    );
+    let place = record([
+        ("path", path_value(&file.path)),
+        ("file", Value::from(file.file.as_str())),
+        ("line", Value::Int(line as i64 + 1)),
+        ("col", Value::Int(column as i64 + 1)),
+        ("end-line", Value::Int(end_line as i64 + 1)),
+        ("end-col", Value::Int(end_column as i64 + 1)),
+        (
+            "text",
+            Value::from(line_text.trim().chars().take(200).collect::<String>()),
+        ),
+        ("match", Value::from(&text[found.range.clone()])),
+        ("captures", captures),
+    ]);
+    match replacement {
+        None => place,
+        Some(replacement) => {
+            let made = match found.loses_comments {
+                true => Value::Nil,
+                false => Value::from(replacement.fill(found, text)),
+            };
+            let mut fields = place.to_vec().unwrap_or_default();
+            fields.extend([Value::keyword("replacement"), made]);
+            Value::list(fields)
+        }
+    }
 }
 
 /// A regular expression a program gave; one that is none is its mistake.

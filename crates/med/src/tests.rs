@@ -280,6 +280,85 @@ fn refuses_to_drop_unsaved_changes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn programs_search_and_replace_code_by_its_shape(cx: &mut TestAppContext) {
+    let b = "fn b() {
+    say(\"字😀\"); let x = two(1,
+        2).unwrap();
+    five() /* c */ .unwrap();
+    four(1).unwrap();
+}
+";
+    let project = Project::new(&[
+        ("src/a.rs", "fn a() {\n    one().unwrap();\n}\n"),
+        ("src/b.rs", b),
+        ("notes.md", "one().unwrap()\n"),
+    ]);
+    let (ws, cx) = open(&project, &["src/a.rs"], cx);
+    // What is in the tab, not yet written, is what is searched.
+    cx.simulate_keystrokes("j I");
+    cx.simulate_input("say(\"字😀\"); ");
+    cx.simulate_keystrokes("escape A");
+    cx.simulate_input(" // 字 three().unwrap()");
+    cx.simulate_keystrokes("escape");
+    let a = "fn a() {\n    say(\"字😀\"); one().unwrap(); // 字 three().unwrap()\n}\n";
+    assert_eq!(text(&ws, cx), a);
+
+    // Given a replacement, each place says what it would be made; nil
+    // for the one with a comment the replacement would lose.
+    lisp("(def found 'waiting)", cx);
+    eval_in(
+        &ws,
+        r#"(structural-search "$x$.unwrap()" nil 100 "$x$?" (fn (places) (set! found places)))"#,
+        cx,
+    );
+    // It waits a moment for more to be typed, as `grep` does.
+    cx.executor().advance_clock(Duration::from_millis(500));
+    assert!(wait_for(cx, |cx| lisp("found", cx) != "waiting"));
+    assert_eq!(
+        lisp(
+            "(map (fn (p) (list (get p :file) (get p :line) (get p :col) (get p :end-line) (get p :end-col) (get p :replacement))) found)",
+            cx
+        ),
+        r#"(("src/a.rs" 2 16 2 30 "one()?") ("src/b.rs" 2 24 3 20 "two(1,\n        2)?") ("src/b.rs" 4 5 4 29 nil) ("src/b.rs" 5 5 5 21 "four(1)?"))"#
+    );
+    assert_eq!(lisp("(get (first found) :captures)", cx), r#"(:x "one()")"#);
+    assert_eq!(
+        lisp("(get (first found) :text)", cx),
+        r#""say(\"字😀\"); one().unwrap(); // 字 three().unwrap()""#
+    );
+
+    // A pattern that is no Rust, a language there is none of, and a
+    // replacement with a name the pattern has not.
+    for wrong in [
+        r#"(structural-search "fn (((" "rust" 10 (fn (p) p))"#,
+        r#"(structural-search "$x$" "cobol" 10 (fn (p) p))"#,
+        r#"(structural-replace "$x$.unwrap()" "$y$?" 'rust (fn (d) d))"#,
+    ] {
+        let result = cx.update(|_, cx| crate::script::eval(wrong, cx));
+        assert!(result.is_err(), "{wrong}");
+    }
+
+    // Only the places chosen: not the one on line 5, and the one that
+    // would lose its comment is left.
+    lisp("(def done 'waiting)", cx);
+    eval_in(
+        &ws,
+        r#"(structural-replace "$x$.unwrap()" "$x$?" "rust" (filter (fn (p) (not (= (get p :line) 5))) found) (fn (d) (set! done d)))"#,
+        cx,
+    );
+    assert!(wait_for(cx, |cx| lisp("done", cx) != "waiting"));
+    assert_eq!(lisp("done", cx), "(:changes 2 :files 2 :skipped 1)");
+    // The open file is changed in its tab, the other on disk.
+    assert_eq!(text(&ws, cx), a.replace("one().unwrap()", "one()?"));
+    assert_eq!(
+        project.read("src/a.rs"),
+        "fn a() {\n    one().unwrap();\n}\n"
+    );
+    assert_eq!(project.read("src/b.rs"), b.replace("2).unwrap()", "2)?"));
+    assert_eq!(project.read("notes.md"), "one().unwrap()\n");
+}
+
+#[gpui::test]
 fn finds_files_and_searches_the_project(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("src/main.rs", "fn main() {\n    helper();\n}\n"),

@@ -84,7 +84,7 @@ fn place_value(editor: &Editor, offset: usize) -> Value {
 }
 
 /// The value named `key` in a list of names and values.
-fn field<'a>(fields: &'a [Value], key: &str) -> Option<&'a Value> {
+pub(crate) fn field<'a>(fields: &'a [Value], key: &str) -> Option<&'a Value> {
     let key = Value::keyword(key);
     let found = fields.chunks(2).find(|pair| pair[0] == key);
     found

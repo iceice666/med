@@ -18,6 +18,7 @@ pub mod script;
 pub mod search;
 mod session;
 pub mod snippet;
+pub mod structural;
 pub mod syntax;
 pub mod terminal;
 #[cfg(test)]

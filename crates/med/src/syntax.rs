@@ -168,6 +168,11 @@ fn grammar(name: &'static str) -> Option<Arc<Grammar>> {
         .clone()
 }
 
+/// The grammar of one of med's languages, to parse with.
+pub(crate) fn language(lang: &'static LangInfo) -> Option<tree_sitter::Language> {
+    grammar(lang.name).map(|grammar| grammar.language.clone())
+}
+
 struct RopeProvider<'a>(&'a Rope);
 
 struct ChunkBytes<'a>(ropey::iter::Chunks<'a>);
