@@ -2976,6 +2976,60 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn programs_load_files_kept_from_github(cx: &mut TestAppContext) {
+    // Files downloaded before: loading them again needs no network.
+    let project = Project::new(&[
+        (
+            "github/me/conf/v1/lib/tree.mlisp",
+            "(def tree 'kept)\n(load \"../more.mlisp\")\n",
+        ),
+        ("github/me/conf/v1/more.mlisp", "(def more tree)\n"),
+        ("github/me/conf/HEAD/broken.mlisp", "\n(car 5)\n"),
+        (
+            "config/init.mlisp",
+            "(load \"gh:me/conf/lib/tree.mlisp@v1\")\n",
+        ),
+    ]);
+    let init = project.path("config/init.mlisp");
+    let eval = |source: &str, cx: &mut TestAppContext| {
+        cx.update(|cx| crate::script::eval(source, cx).map(|value| value.to_string()))
+            .map_err(|error| error.to_string())
+    };
+    cx.update(|cx| {
+        crate::init(cx);
+        cx.global_mut::<crate::Settings>().lsp = false;
+        cx.global_mut::<crate::Settings>().github_dir = Some(project.path("github"));
+        assert!(crate::script::run_init(&init, cx));
+        assert_eq!(crate::script::take_message(cx), None);
+    });
+    // A file beside one from GitHub is from the same repository and ref.
+    assert_eq!(eval("more", cx).unwrap(), "kept");
+
+    // What goes wrong is said with the file's GitHub name.
+    assert_eq!(
+        eval("(load \"gh:me/conf/broken.mlisp\")", cx).unwrap_err(),
+        "1:1: gh:me/conf/broken.mlisp:2:1: expected a list, got 5"
+    );
+    assert!(
+        eval("(load \"gh:me/conf/../x.mlisp\")", cx)
+            .unwrap_err()
+            .contains("outside the repository")
+    );
+    assert!(
+        eval("(load \"gh:me/conf/x.mlisp\" :now)", cx)
+            .unwrap_err()
+            .contains("is not :fetch")
+    );
+
+    // With nowhere to keep them, files are not taken from GitHub.
+    cx.update(|cx| cx.global_mut::<crate::Settings>().github_dir = None);
+    assert_eq!(
+        eval("(load \"gh:me/conf/lib/tree.mlisp@v1\")", cx).unwrap_err(),
+        "1:1: gh:me/conf/lib/tree.mlisp@v1: there is nowhere to keep it"
+    );
+}
+
+#[gpui::test]
 fn a_popup_says_how_to_get_keys(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "one\n")]);
     let (ws, cx) = open_window(false, &[], &project, &["a.txt"], cx);

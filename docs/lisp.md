@@ -452,6 +452,23 @@ above), `(load "file")` another program, and say something with
 `init.mlisp` defines can be used from `:eval`. A program that never ends is stopped after ten million
 steps rather than left to hang the window.
 
+`load` looks for a relative path beside the file that loads it. It can
+also take a file from GitHub:
+
+```lisp
+(load "gh:owner/repo/lib/tree.mlisp@v1")  ; at a tag, branch or commit
+(load "gh:owner/repo/init.mlisp")         ; the default branch
+```
+
+The file is downloaded with `curl` the first time and kept
+under `github/` in med's state directory (`$MED_STATE_DIR`, else
+`$XDG_STATE_HOME/med`, else `~/.local/state/med`). After that it
+is read from there, with no network. A relative `load` inside it takes
+the file from the same repository at the same ref. To download a file
+again, and every file it loads from GitHub, add `:fetch`, for example
+`:eval (load "gh:owner/repo/init.mlisp" :fetch)`. Only public
+repositories work.
+
 The language itself can be tried without the editor:
 
 ```sh

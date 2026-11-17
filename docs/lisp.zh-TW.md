@@ -288,6 +288,15 @@ replacement 是含有 pattern 中那些名稱的文字，每個名稱代表在�
 
 `med-lisp` 是一個小型 Lisp，是初始化檔與 `:eval` 使用的語言。程式可以修改按鍵與選項、定義命令與面板（皆見上文）、以 `(load "file")` 載入另一個程式，並用 `(message ...)` 顯示訊息。整個工作階段共用一個直譯器，所以 `init.mlisp` 定義的東西可以在 `:eval` 中使用。永不結束的程式會在執行一千萬步後被停止，而不會讓視窗卡住。
 
+`load` 會在呼叫它的檔案旁邊找相對路徑，也可以載入 GitHub 上的檔案：
+
+```lisp
+(load "gh:owner/repo/lib/tree.mlisp@v1")  ; 指定 tag、分支或 commit
+(load "gh:owner/repo/init.mlisp")         ; 預設分支
+```
+
+第一次會用 `curl` 下載並存在 med 狀態目錄（`$MED_STATE_DIR`，否則為 `$XDG_STATE_HOME/med`，再否則為 `~/.local/state/med`）下的 `github/`，之後直接讀這份快取，不需要網路。這個檔案裡的相對路徑 `load` 會從同一個 repo、同一個 ref 載入。要重新下載，加上 `:fetch`，例如 `:eval (load "gh:owner/repo/init.mlisp" :fetch)`；它載入的其他 GitHub 檔案也會一併重新下載。只支援公開的 repo。
+
 不開編輯器也能試用這個語言本身：
 
 ```sh

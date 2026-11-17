@@ -52,6 +52,7 @@
 //! (modified?)                          ; has the tab up unsaved changes
 //! (focus-editor)
 //! (load "tree.mlisp")                  ; another file, from beside this one
+//! (load "gh:me/conf/tree.mlisp@v1")    ; or from GitHub: github.rs
 //! (add-hook 'files-changed refresh)    ; be told of something: HOOKS
 //! (bindings 'normal "<Space>")         ; the keys that can follow others
 //! (def timer (after 300 show))         ; call a function in 300 ms
@@ -75,6 +76,7 @@
 //! with the result, and returns at once.
 
 use crate::commands::{Args, Commands, Handler, RunCommand};
+use crate::github::GitHubFile;
 use crate::host::record;
 use crate::keymap::PanelKeymaps;
 use crate::user_panel::UserPanels;
@@ -164,7 +166,7 @@ pub struct Script {
     /// The number the last timer got.
     last_timer: i64,
     /// The files being loaded, the innermost last: `load` looks beside it.
-    loading: Vec<PathBuf>,
+    loading: Vec<Loading>,
     /// The init file that was run, to run again.
     init_file: Option<PathBuf>,
     /// The shortcuts programs have bound in the `app` table, and the
@@ -181,6 +183,29 @@ impl Global for Script {}
 pub(crate) struct Origin {
     window: AnyWindowHandle,
     workspace: WeakEntity<Workspace>,
+}
+
+/// A file being loaded.
+struct Loading {
+    from: Place,
+    /// What it loads from GitHub is downloaded again: it was loaded with
+    /// `:fetch`, or by a file that was.
+    fetch: bool,
+}
+
+/// Where a file is.
+enum Place {
+    File(PathBuf),
+    GitHub(GitHubFile),
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Place::File(path) => write!(f, "{}", path.display()),
+            Place::GitHub(file) => write!(f, "{file}"),
+        }
+    }
 }
 
 /// How the command being run was invoked, as a program sees it: the rest
@@ -566,10 +591,13 @@ fn invoke(
 pub fn load_file(path: &Path, cx: &mut App) {
     let result = match std::fs::read_to_string(path) {
         Ok(source) => {
-            cx.global_mut::<Script>().loading.push(path.to_path_buf());
+            let from = Place::File(path.to_path_buf());
+            cx.global_mut::<Script>()
+                .loading
+                .push(Loading { from, fetch: false });
             let result = eval(&source, cx);
             cx.global_mut::<Script>().loading.pop();
-            result.map_err(|error| in_file(path, &error))
+            result.map_err(|error| in_file(&path.display(), &error))
         }
         Err(error) => Err(format!("{}: {error}", path.display())),
     };
@@ -579,11 +607,11 @@ pub fn load_file(path: &Path, cx: &mut App) {
 }
 
 /// What went wrong in the file at `path`, with where.
-fn in_file(path: &Path, error: &Error) -> String {
+fn in_file(path: &impl std::fmt::Display, error: &Error) -> String {
     match error.span {
         // path:line:column: the form editors and terminals jump to.
-        Some(_) => format!("{}:{error}", path.display()),
-        None => format!("{}: {error}", path.display()),
+        Some(_) => format!("{path}:{error}"),
+        None => format!("{path}: {error}"),
     }
 }
 
@@ -1789,27 +1817,68 @@ fn define_functions(interp: &mut Interp) {
         Ok(Value::Bool(closed.unwrap_or(false)))
     });
 
-    // (load path): run another file. A path that does not start at the
-    // top is looked for beside the file that asks, or else in the
-    // configuration directory.
-    interp.define_native("load", 1, |call, args| {
-        let given = PathBuf::from(args[0].as_str()?);
-        let cx = app(call)?;
-        let beside = cx.global::<Script>().loading.last();
-        let beside = beside.and_then(|file| file.parent().map(PathBuf::from));
-        let path = match beside.or_else(crate::config_dir) {
-            _ if given.is_absolute() => given,
-            Some(dir) => dir.join(given),
-            None => return Err(failed(format!("{}: beside what?", given.display()))),
+    // (load path) or (load path :fetch): run another file. A path that
+    // does not start at the top is looked for beside the file that asks,
+    // or else in the configuration directory. `gh:owner/repo/path@ref` is
+    // a file on GitHub, downloaded the first time and kept (github.rs);
+    // beside it are the other files of that repository, at that ref.
+    // With :fetch, what this loads from GitHub is downloaded again.
+    interp.define_native("load", Arity::between(1, 2), |call, args| {
+        let given = args[0].as_str()?;
+        let fetch = match args.get(1) {
+            None => false,
+            Some(value) if name(value)? == "fetch" => true,
+            Some(value) => return Err(failed(format!("load: {value} is not :fetch"))),
         };
-        let source = std::fs::read_to_string(&path)
-            .map_err(|error| failed(format!("{}: {error}", path.display())))?;
-        cx.global_mut::<Script>().loading.push(path.clone());
+        let cx = app(call)?;
+        let script = cx.global::<Script>();
+        let fetch = fetch || script.loading.iter().any(|loading| loading.fetch);
+        let from = match (given.strip_prefix("gh:"), script.loading.last()) {
+            (Some(spec), _) => Place::GitHub(GitHubFile::parse(spec).map_err(failed)?),
+            _ if Path::new(given).is_absolute() => Place::File(PathBuf::from(given)),
+            (
+                None,
+                Some(Loading {
+                    from: Place::GitHub(file),
+                    ..
+                }),
+            ) => Place::GitHub(file.beside(given).map_err(failed)?),
+            (
+                None,
+                Some(Loading {
+                    from: Place::File(file),
+                    ..
+                }),
+            ) => Place::File(file.parent().unwrap_or(Path::new("")).join(given)),
+            (None, None) => match crate::config_dir() {
+                Some(dir) => Place::File(dir.join(given)),
+                None => return Err(failed(format!("{given}: beside what?"))),
+            },
+        };
+        let path = match &from {
+            Place::File(path) => path.clone(),
+            Place::GitHub(file) => {
+                let Some(dir) = cx.global::<Settings>().github_dir.clone() else {
+                    return Err(failed(format!("{file}: there is nowhere to keep it")));
+                };
+                let path = file.cache_path(&dir);
+                if fetch || !path.is_file() {
+                    file.fetch(&path).map_err(failed)?;
+                }
+                path
+            }
+        };
+        let source =
+            std::fs::read_to_string(&path).map_err(|error| failed(format!("{from}: {error}")))?;
+        let name = from.to_string();
+        cx.global_mut::<Script>()
+            .loading
+            .push(Loading { from, fetch });
         let result = call.interp.eval_str(&source, call.host);
         call.host::<App>()?.global_mut::<Script>().loading.pop();
         match result {
-            Ok(_) => Ok(Value::from(path.display().to_string())),
-            Err(error) => Err(failed(in_file(&path, &error))),
+            Ok(_) => Ok(Value::from(name)),
+            Err(error) => Err(failed(in_file(&name, &error))),
         }
     });
 

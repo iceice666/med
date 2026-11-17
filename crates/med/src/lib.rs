@@ -6,6 +6,7 @@ pub mod commands;
 pub mod defaults;
 pub mod editor;
 pub mod env;
+mod github;
 pub mod help;
 pub mod host;
 pub mod keymap;
@@ -115,6 +116,9 @@ pub struct Settings {
     /// Where the projects opened are listed, the last first, for
     /// `(recent-projects)`. `None` to list none.
     pub projects_file: Option<PathBuf>,
+    /// Where the files `load` takes from GitHub are kept: `github.rs`.
+    /// `None` to take none.
+    pub github_dir: Option<PathBuf>,
 }
 
 impl Settings {
@@ -328,6 +332,7 @@ pub fn init(cx: &mut App) {
         session_dir: None,
         projects_file: None,
         undo_dir: None,
+        github_dir: None,
     });
     init_globals(cx);
     // With no window to ask about unsaved work, quitting just quits.
@@ -355,6 +360,7 @@ pub fn run() {
                 .map(|dir| dir.join("sessions"));
             settings.undo_dir = state_dir().map(|dir| dir.join("undo"));
             settings.projects_file = state_dir().map(|dir| dir.join("projects"));
+            settings.github_dir = state_dir().map(|dir| dir.join("github"));
             // The theme files, for the init file to name, and then watched:
             // a theme changed there is changed here. A directory that is not
             // there is not made.
