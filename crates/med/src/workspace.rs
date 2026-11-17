@@ -339,6 +339,18 @@ impl Workspace {
             cx.observe_window_appearance(window, |_, window, cx| {
                 crate::theme::apply(Some(window), cx);
             }),
+            // Other colors: the programs are told once, by the window
+            // that hears of it first.
+            cx.observe_global_in::<crate::theme::Changes>(window, |_, window, cx| {
+                let changes = cx.global::<crate::theme::Changes>();
+                if changes.told == changes.made {
+                    return;
+                }
+                let made = changes.made;
+                cx.global_mut::<crate::theme::Changes>().told = made;
+                let name = gpui::component::Theme::global(cx).theme_name().to_string();
+                script::run_hook(script::THEME_CHANGED, vec![name.into()], window, cx);
+            }),
             // Pick up files changed behind our back when coming to the front.
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {

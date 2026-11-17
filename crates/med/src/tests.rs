@@ -1691,6 +1691,77 @@ fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
     assert_eq!(colors(cx).1, background);
 }
 
+#[gpui::test]
+fn programs_read_and_change_the_theme_colors(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/themes");
+    cx.update(|_, cx| crate::theme::load_dir(&examples, cx));
+    let run = |source: &str, cx: &mut VisualTestContext| {
+        let said = lisp(source, cx);
+        cx.run_until_parked();
+        said
+    };
+    run(r#"(set-option 'theme "Catppuccin Mocha")"#, cx);
+
+    // By name, as a layout's colors are written, and back into one.
+    assert_eq!(run("(theme-color 'red)", cx), r##""#f38ba8""##);
+    assert_eq!(run("(theme-color :cyan-light)", cx), r##""#89dceb""##);
+    assert_eq!(run("(theme-color 'selection)", cx), r##""#9399b24d""##);
+    let hex = |color: Option<crate::panel::Color>, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| crate::theme::hex(color.unwrap().of(gpui::component::Theme::global(cx))))
+    };
+    let selection = run("(theme-color 'selection)", cx);
+    let parsed =
+        crate::panel::color("bg", &med_lisp::Value::from(selection.trim_matches('"'))).ok();
+    assert_eq!(hex(parsed, cx), "#9399b24d");
+    let red = crate::panel::color("bg", &med_lisp::Value::symbol("red")).ok();
+    assert_eq!(hex(red, cx), "#f38ba8");
+    assert!(
+        eval_in(&ws, "(theme-color 'crimson)", cx)
+            .starts_with("1:1: theme-color: crimson is not a color of the theme (accent ")
+    );
+
+    // Told once of each theme that brings other colors, and not of one
+    // that brings the same, nor of a program's own colors.
+    run("(def told nil)", cx);
+    run(
+        "(add-hook 'theme-changed (fn (name) (set! told (cons name told)) (set-theme-color 'accent 'red)))",
+        cx,
+    );
+    run(r#"(set-option 'theme "Catppuccin Latte")"#, cx);
+    assert_eq!(run("told", cx), r#"("Catppuccin Latte")"#);
+    assert_eq!(run("(theme-color 'accent)", cx), r##""#d20f39""##);
+    run(r#"(set-option 'theme "Catppuccin Latte")"#, cx);
+    run("(set-option 'ui-font-size 18)", cx);
+    assert_eq!(run("(length told)", cx), "1");
+
+    // A program's color stays over the next theme, the size of the rest
+    // put on again, and a color of the theme is the new theme's.
+    run(r##"(set-theme-color 'sidebar "#123456")"##, cx);
+    run(r#"(set-option 'theme "Catppuccin Mocha")"#, cx);
+    assert_eq!(
+        run("told", cx),
+        r#"("Catppuccin Mocha" "Catppuccin Latte")"#
+    );
+    assert_eq!(run("(theme-color 'sidebar)", cx), r##""#123456""##);
+    assert_eq!(run("(theme-color 'accent)", cx), r##""#f38ba8""##);
+    run("(set-option 'ui-font-size nil)", cx);
+    assert_eq!(run("(theme-color 'sidebar)", cx), r##""#123456""##);
+
+    // nil gives the theme's own back, and so does running the init file
+    // again.
+    run("(set-theme-color 'sidebar nil)", cx);
+    assert_ne!(run("(theme-color 'sidebar)", cx), r##""#123456""##);
+    assert_eq!(run("(theme-color 'accent)", cx), r##""#f38ba8""##);
+    cx.update(|_, cx| crate::script::run_init(&project.path("nope.mlisp"), cx));
+    assert_eq!(run("(theme-color 'accent)", cx), r##""#313244""##);
+    assert!(
+        eval_in(&ws, r#"(set-theme-color 'accent "crimson")"#, cx)
+            .starts_with("1:1: set-theme-color: crimson is not a color of the theme")
+    );
+}
+
 /// A completion written as a snippet goes in as its text, with the
 /// cursor at the first place to fill in.
 #[gpui::test]
@@ -2984,7 +3055,7 @@ fn programs_load_files_and_hear_of_changes(cx: &mut TestAppContext) {
         error("(add-hook 'closed (fn () 1))", cx),
         "1:1: closed is not a hook (opened files-changed locations keys-pending \
          buffer-entered buffer-changed cursor-moved mode-changed diagnostics-changed \
-         terminal-exited)"
+         terminal-exited theme-changed)"
     );
     assert!(
         error("(load \"/nowhere/at/all.mlisp\")", cx).starts_with("1:1: /nowhere/at/all.mlisp: ")

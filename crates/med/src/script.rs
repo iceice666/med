@@ -38,6 +38,8 @@
 //!                                      ; indent-guides, sticky-scroll,
 //!                                      ; git-gutter, theme, project-env
 //! (message "ready")                    ; shown in the status bar
+//! (theme-color 'red)                   ; "#f38ba8", of the theme in use
+//! (set-theme-color 'accent "#cba6f7")  ; over every theme; nil for its own
 //!
 //! (defcommand "user.save-and-close" "Write the file, then close its tab"
 //!   (fn ()
@@ -123,6 +125,8 @@ const DRAW_STEP_LIMIT: u64 = 200_000;
 ///   called with it, as `(mode)` gives it.
 /// - `diagnostics-changed`: a language server has something new to say
 ///   about a file; the function is called with the file's path.
+/// - `theme-changed`: a theme was put on that brought other colors; the
+///   function is called with its name.
 const HOOKS: &[&str] = &[
     "opened",
     "files-changed",
@@ -134,7 +138,10 @@ const HOOKS: &[&str] = &[
     "mode-changed",
     "diagnostics-changed",
     "terminal-exited",
+    THEME_CHANGED,
 ];
+
+pub(crate) const THEME_CHANGED: &str = "theme-changed";
 
 const KEYS_PENDING: &str = "keys-pending";
 
@@ -254,6 +261,7 @@ pub fn init(cx: &mut App) {
 /// waiting to do, as before the init file is run again.
 fn reset_panels(cx: &mut App) {
     crate::user_panel::reset(cx);
+    crate::theme::clear_colors(cx);
     crate::lsp_config::reset(cx);
     let script = cx.global_mut::<Script>();
     script.hooks.clear();
@@ -1909,6 +1917,28 @@ fn define_functions(interp: &mut Interp) {
         }
         let hooks = &mut app(call)?.global_mut::<Script>().hooks;
         hooks.entry(hook).or_default().push(args[1].clone());
+        Ok(Value::Nil)
+    });
+
+    // (theme-color name): a color of the theme in use, as "#rrggbb", or
+    // "#rrggbbaa" where it can be seen through. A layout can ask too.
+    interp.define_native("theme-color", 1, |call, args| {
+        let (_, get, _) = crate::panel::theme_color("theme-color", &args[0])?;
+        let theme = gpui::component::Theme::global(call.host::<App>()?);
+        Ok(Value::from(crate::theme::hex(get(theme))))
+    });
+
+    // (set-theme-color name color): put a color, "#rrggbb" or another of
+    // the theme's, in place of the theme's, over whichever theme is put
+    // on; nil for the theme's own again.
+    interp.define_native("set-theme-color", 2, |call, args| {
+        let key = "set-theme-color";
+        let (name, _, set) = crate::panel::theme_color(key, &args[0])?;
+        let color = match &args[1] {
+            Value::Nil => None,
+            color => Some(crate::panel::color(key, color)?),
+        };
+        crate::theme::set_color(name, set, color, app(call)?);
         Ok(Value::Nil)
     });
 

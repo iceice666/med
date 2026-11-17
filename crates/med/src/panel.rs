@@ -181,36 +181,85 @@ impl Color {
 }
 
 /// Looks a color up in whichever theme is in use.
-type ThemeColor = fn(&Theme) -> Hsla;
+pub(crate) type ThemeColor = fn(&Theme) -> Hsla;
 
-/// The theme's colors a layout can name.
-const THEME_COLORS: &[(&str, ThemeColor)] = &[
-    ("accent", |theme| theme.accent),
-    ("accent-foreground", |theme| theme.accent_foreground),
-    ("background", |theme| theme.background),
-    ("border", |theme| theme.border),
-    ("danger", |theme| theme.danger),
-    ("foreground", |theme| theme.foreground),
-    ("info", |theme| theme.info),
-    ("link", |theme| theme.link),
-    ("list-active", |theme| theme.list_active),
-    ("list-hover", |theme| theme.list_hover),
-    ("muted", |theme| theme.muted),
-    ("muted-foreground", |theme| theme.muted_foreground),
-    ("popover", |theme| theme.popover),
-    ("popover-foreground", |theme| theme.popover_foreground),
-    ("primary", |theme| theme.primary),
-    ("selection", |theme| theme.selection),
-    ("sidebar", |theme| theme.sidebar),
-    ("sidebar-border", |theme| theme.sidebar_border),
-    ("sidebar-foreground", |theme| theme.sidebar_foreground),
-    ("status-bar", |theme| theme.status_bar),
-    ("success", |theme| theme.success),
-    ("tab-bar", |theme| theme.tab_bar),
-    ("title-bar", |theme| theme.title_bar),
-    ("title-bar-border", |theme| theme.title_bar_border),
-    ("warning", |theme| theme.warning),
+/// Puts a color in its place in the theme in use.
+pub(crate) type SetThemeColor = fn(&mut Theme, Hsla);
+
+/// Each name with the field of the theme it is.
+macro_rules! theme_colors {
+    ($($name:literal $field:ident)*) => {
+        &[$((
+            $name,
+            |theme: &Theme| theme.$field,
+            |theme: &mut Theme, color: Hsla| theme.$field = color,
+        ),)*]
+    };
+}
+
+/// The theme's colors a program can name, in order.
+pub(crate) const THEME_COLORS: &[(&str, ThemeColor, SetThemeColor)] = theme_colors![
+    "accent" accent
+    "accent-foreground" accent_foreground
+    "background" background
+    "blue" blue
+    "blue-light" blue_light
+    "border" border
+    "cyan" cyan
+    "cyan-light" cyan_light
+    "danger" danger
+    "foreground" foreground
+    "green" green
+    "green-light" green_light
+    "info" info
+    "link" link
+    "list-active" list_active
+    "list-hover" list_hover
+    "magenta" magenta
+    "magenta-light" magenta_light
+    "muted" muted
+    "muted-foreground" muted_foreground
+    "popover" popover
+    "popover-foreground" popover_foreground
+    "primary" primary
+    "red" red
+    "red-light" red_light
+    "selection" selection
+    "sidebar" sidebar
+    "sidebar-border" sidebar_border
+    "sidebar-foreground" sidebar_foreground
+    "status-bar" status_bar
+    "success" success
+    "tab-bar" tab_bar
+    "title-bar" title_bar
+    "title-bar-border" title_bar_border
+    "warning" warning
+    "yellow" yellow
+    "yellow-light" yellow_light
 ];
+
+/// The theme's color a program names, as `key` was given it.
+pub(crate) fn theme_color(
+    key: &str,
+    value: &Value,
+) -> Result<(&'static str, ThemeColor, SetThemeColor), Error> {
+    let Some(name) = word(value) else {
+        return Err(wrong(key, "a color of the theme", value));
+    };
+    match THEME_COLORS.iter().find(|(known, ..)| *known == name) {
+        Some(&found) => Ok(found),
+        None => {
+            let known: Vec<&str> = THEME_COLORS.iter().map(|(name, ..)| *name).collect();
+            Err(Error::new(
+                ErrorKind::Raised,
+                format!(
+                    "{key}: {name} is not a color of the theme ({})",
+                    known.join(" ")
+                ),
+            ))
+        }
+    }
+}
 
 // ---- from a program's values -------------------------------------------
 
@@ -257,19 +306,7 @@ pub(crate) fn color(key: &str, value: &Value) -> Result<Color, Error> {
             Err(_) => Err(wrong(key, "a color like \"#1e1e2e\"", value)),
         };
     }
-    match THEME_COLORS.iter().find(|(known, _)| *known == name) {
-        Some((_, get)) => Ok(Color::Theme(*get)),
-        None => {
-            let known: Vec<&str> = THEME_COLORS.iter().map(|(name, _)| *name).collect();
-            Err(Error::new(
-                ErrorKind::Raised,
-                format!(
-                    "{key}: {name} is not a color of the theme ({})",
-                    known.join(" ")
-                ),
-            ))
-        }
-    }
+    theme_color(key, value).map(|(_, get, _)| Color::Theme(get))
 }
 
 /// One of `choices`, by name.

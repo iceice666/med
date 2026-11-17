@@ -77,6 +77,18 @@
 
 樣式是 `:name value` 成對的值：`width` 和 `height`（像素或 `'full`）、`grow`（`true`，或與其他同樣會伸展的元素分配剩餘空間時的比例）、`shrink`、`padding-x` `padding-y` `padding-left` `padding-right`、`gap`、`align` 和 `justify`（`'start` `'center` `'end`，以及 `'between`）、`bg`、`color`、`border` `border-top` `border-right` `border-bottom` `border-left`、`border-color`、`rounded`、`size`（文字大小）、`bold`、`underline`、`mono`、`nowrap`、`clip`；`hover`，滑鼠懸停時套用的樣式清單，例如 `(list :bg 'list-hover)`；以及 `on-click`，一個命令名稱或函式。顏色可以是主題中的顏色（`'sidebar`、`'muted-foreground`、`'list-active`、`'warning`…）或 `"#rrggbb"`。
 
+主題的顏色有 `accent` `accent-foreground` `background` `border` `danger` `foreground` `info` `link` `list-active` `list-hover` `muted` `muted-foreground` `popover` `popover-foreground` `primary` `selection` `sidebar` `sidebar-border` `sidebar-foreground` `status-bar` `success` `tab-bar` `title-bar` `title-bar-border` `warning`，以及主題檔的 `base.*` 顏色：`red` `green` `blue` `yellow` `magenta` `cyan`，每個都另有一個 `-light`（例如 `'red-light`）。版面用名字指定的顏色會隨主題改變。程式也可以讀取這些顏色，或用自己的顏色取代：
+
+```lisp
+(theme-color 'red)                    ; "#f38ba8"，目前主題的顏色
+(theme-color 'selection)              ; "#9399b24d"：半透明
+(set-theme-color 'accent "#cba6f7")   ; 從現在起蓋過每個主題
+(set-theme-color 'accent 'magenta)    ; 或主題的另一個顏色
+(set-theme-color 'accent nil)         ; 改回主題自己的
+```
+
+程式設定的顏色會一直蓋過之後套用的主題，直到程式把它拿掉，或 init 檔重新執行為止。程式若存下了 `theme-color` 的結果，可以用 `theme-changed` hook 得知主題帶來了不同的顏色；這個 hook 會收到主題的名稱，也適合用來只為某個主題設定顏色。init 檔選的主題在任何視窗開啟前就已套用，那次不會觸發這個 hook，所以請在設定主題之後先讀一次顏色。
+
 值為 `nil` 的樣式會被忽略，`nil` 子元素也等於沒有子元素，所以依值而定的內容可以用 `if`、`when` 和 `cond` 撰寫。子元素也可以是字串，或像 `map` 產生的子元素清單。
 
 版面的 `panel` 包含 `:name`、`:file`（正在編輯的檔案，或 `nil`）、`:root` 和 `:focused`。面板顯示的其他任何內容都屬於程式自己：用 `def` 保存、用 `set!` 修改的值。每當任何程式執行完畢，面板都會重繪，所以點擊後改變的值會立即顯示。
@@ -146,7 +158,7 @@
 
 每個視窗就是一個專案。`:project dir`（`workspace.open_project`）會在新視窗中開啟另一個專案；如果已經有視窗開在那個目錄上，就把它叫到前面；點擊標題列上的目錄（`workspace.switch_project`）也可以切換專案。在最後一個分頁上 `:q`、`:qa`（`workspace.quit_window`），或關閉視窗，都只會關掉那一個視窗；`cmd-q`（`workspace.quit_all`）則會結束所有視窗，並保存每個視窗的 session。哪些 panel 開著由各個視窗各自決定；init 檔開啟的 panel 會出現在每個視窗。開過的專案列在 `MED_STATE_DIR` 底下的 `projects`。所有視窗共用同一個直譯器，所以程式中的名稱在每個視窗裡都相同：要保存某個專案的資料，應以 `(project-root)` 區分，就像 `tree.mlisp` 和 `picker.mlisp` 那樣。命令、hook 與點擊都在它們來自的視窗中執行；layout 則從 `:root` 得知所屬視窗的專案。
 
-hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照、它的實作，或檔案中的符號）、`keys-pending`（見下文）、`terminal-exited`（見 Terminal 一節），以及與正在編輯的檔案相關的 hook（見後文）。
+hook 有 `opened`（視窗已開啟，且有專案）、`files-changed`（有檔案被儲存、視窗回到前景，或執行了 `workspace.sync`）、`locations`（一份可供選擇的位置清單，例如某個名稱的參照、它的實作，或檔案中的符號）、`keys-pending`（見下文）、`terminal-exited`（見 Terminal 一節）、`theme-changed`（見「版面」一節），以及與正在編輯的檔案相關的 hook（見後文）。
 
 ### 依結構找程式碼
 

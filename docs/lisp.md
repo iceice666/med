@@ -127,6 +127,32 @@ Styles are `:name value` pairs: `width` and `height` (pixels or `'full`),
 color is one of the theme's (`'sidebar`, `'muted-foreground`,
 `'list-active`, `'warning`…) or `"#rrggbb"`.
 
+The theme's colors are `accent` `accent-foreground` `background` `border`
+`danger` `foreground` `info` `link` `list-active` `list-hover` `muted`
+`muted-foreground` `popover` `popover-foreground` `primary` `selection`
+`sidebar` `sidebar-border` `sidebar-foreground` `status-bar` `success`
+`tab-bar` `title-bar` `title-bar-border` `warning`, and the theme file's
+`base.*` colors: `red` `green` `blue` `yellow` `magenta` `cyan`, each
+with a `-light` one (`'red-light`). A layout that names one follows the
+theme as it changes. A program can read them, and put its own in their
+place:
+
+```lisp
+(theme-color 'red)                    ; "#f38ba8", of the theme in use
+(theme-color 'selection)              ; "#9399b24d": seen through
+(set-theme-color 'accent "#cba6f7")   ; over every theme from now on
+(set-theme-color 'accent 'magenta)    ; or another of the theme's
+(set-theme-color 'accent nil)         ; the theme's own again
+```
+
+The colors a program put in place stay over whichever theme is put on
+next, until it takes them away or the init file is run again. A
+program that keeps a color of `theme-color`'s is told when a theme
+brings other colors, with the `theme-changed` hook, which gets the
+theme's name; that is also where to put colors of its own for one
+theme and not another. The theme the init file picks is put on before
+there is a window to tell, so read the colors once the theme is set.
+
 A style given `nil` is left alone and a `nil` child is no child, so what
 depends on a value is written with `if`, `when` and `cond`. A child can
 also be a string, or a list of children, as `map` makes.
@@ -241,8 +267,8 @@ The hooks are `opened` (a window is up, and there is a project),
 `workspace.sync` was run), `locations` (a list of places to choose
 from, such as the references to a name, its implementations or the
 symbols of the file), `keys-pending` (below),
-`terminal-exited` (see Terminals), and the ones about the file being
-edited (further below).
+`terminal-exited` (see Terminals), `theme-changed` (see Layouts), and
+the ones about the file being edited (further below).
 
 ### Code by its shape
 
