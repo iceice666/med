@@ -283,6 +283,7 @@ The font of the editor and of the terminal:
 ```lisp
 (set-option 'font-family "JetBrains Mono")   ; nil for the theme's
 (set-option 'font-size 14)
+(set-option 'ui-font-size 15)                ; nil for the theme's
 (set-option 'line-height 1.5)                ; times the font size, 1 to 4
 (set-option 'font-weight 'medium)            ; or 100 to 900
 (set-option 'font-features '("ss01" ("cv01" 2)))   ; OpenType features
@@ -295,8 +296,14 @@ The font of the editor and of the terminal:
 
 The terminal takes the editor's weight, features, ligatures and
 fallbacks. Bold text is drawn at 700 whatever the weight. Popups, the
-status bar and the fixed-width text of panels take the editor's font too,
-at sizes of their own.
+status bar and the fixed-width text of panels take the editor's font too.
+
+`font-size` is the size of a file's text: in the editor, in its Markdown
+preview, and in the popups over it, which are a little smaller and grow
+with it. `ui-font-size` is the size of the rest: tabs, the title and
+status bars, panels and the spacing they are laid out by. It is the
+theme's `rem`, 16 unless the theme file says otherwise, and the window's
+own text is 13 at 16.
 
 The modes are `normal`, `visual`, `operator` and `insert`. A panel's table
 goes by the panel's name, or by its name and a part of it (`git.files`).

@@ -1301,6 +1301,8 @@ impl Editor {
     ) -> AnyElement {
         let entity = cx.entity();
         let focus_handle = self.focus_handle.clone();
+        // The file's text, rendered, at the size it is edited at.
+        let size = px(cx.global::<Settings>().font_size);
         div()
             .id("editor")
             .relative()
@@ -1331,8 +1333,8 @@ impl Editor {
                 .size_full(),
             )
             .child(
-                div().size_full().px_6().py_2().child(
-                    TextView::new(&preview.view)
+                div().size_full().px_6().py_2().text_size(size).child(
+                    in_editor_font(TextView::new(&preview.view), size, cx)
                         .scrollable(true)
                         .selectable(false)
                         .size_full(),
@@ -4861,7 +4863,7 @@ impl Editor {
                     .items_center()
                     .gap_3()
                     .px_2()
-                    .h(px(22.))
+                    .h(popup_size(22., cx))
                     .when(row == menu.selected, |el| el.bg(theme.list_active))
                     .child(div().flex_shrink_0().child(item.label.clone()))
                     .child(
@@ -4880,7 +4882,7 @@ impl Editor {
                 anchored().position(origin).snap_to_window().child(
                     div()
                         .occlude()
-                        .w(px(420.))
+                        .w(popup_size(420., cx))
                         .py_1()
                         .bg(theme.popover)
                         .text_color(theme.popover_foreground)
@@ -4888,7 +4890,7 @@ impl Editor {
                         .border_color(theme.border)
                         .rounded_md()
                         .shadow_md()
-                        .text_size(px(12.))
+                        .text_size(popup_size(12., cx))
                         .font(crate::mono_font(cx))
                         .overflow_hidden()
                         .children(rows),
@@ -4914,7 +4916,7 @@ impl Editor {
                 .items_center()
                 .gap_3()
                 .px_2()
-                .h(px(22.))
+                .h(popup_size(22., cx))
                 .when(row == menu.selected, |el| el.bg(theme.list_active))
                 .child(
                     div()
@@ -4929,7 +4931,7 @@ impl Editor {
                 anchored().position(origin).snap_to_window().child(
                     div()
                         .occlude()
-                        .max_w(px(560.))
+                        .max_w(popup_size(560., cx))
                         .py_1()
                         .bg(theme.popover)
                         .text_color(theme.popover_foreground)
@@ -4937,7 +4939,7 @@ impl Editor {
                         .border_color(theme.border)
                         .rounded_md()
                         .shadow_md()
-                        .text_size(px(12.))
+                        .text_size(popup_size(12., cx))
                         .overflow_hidden()
                         .children(rows),
                 ),
@@ -4970,7 +4972,7 @@ impl Editor {
                         div()
                             .occlude()
                             .flex()
-                            .max_w(px(640.))
+                            .max_w(popup_size(640., cx))
                             .px_2()
                             .py_1()
                             .bg(theme.popover)
@@ -4979,7 +4981,7 @@ impl Editor {
                             .border_color(theme.border)
                             .rounded_md()
                             .shadow_md()
-                            .text_size(px(12.))
+                            .text_size(popup_size(12., cx))
                             .font(crate::mono_font(cx))
                             .whitespace_nowrap()
                             .overflow_hidden()
@@ -5007,8 +5009,8 @@ impl Editor {
                     div()
                         .id("hover")
                         .occlude()
-                        .max_w(px(640.))
-                        .max_h(px(320.))
+                        .max_w(popup_size(640., cx))
+                        .max_h(popup_size(320., cx))
                         .overflow_y_scroll()
                         .p_2()
                         .bg(theme.popover)
@@ -5017,8 +5019,12 @@ impl Editor {
                         .border_color(theme.border)
                         .rounded_md()
                         .shadow_md()
-                        .text_size(px(12.))
-                        .child(markdown_in_editor_font("hover-text", text, cx)),
+                        .text_size(popup_size(12., cx))
+                        .child(in_editor_font(
+                            TextView::markdown("hover-text", text),
+                            popup_size(12., cx),
+                            cx,
+                        )),
                 ),
             )
             .with_priority(1),
@@ -5027,20 +5033,26 @@ impl Editor {
 }
 
 /// Markdown whose code, in blocks and inline, is in the editor's font:
-/// its family, weight, features and fallbacks, at the view's own sizes.
-fn markdown_in_editor_font(id: &'static str, text: SharedString, cx: &App) -> TextView {
+/// its family, weight, features and fallbacks. Its text is at the size
+/// it is put in, and so are its code blocks, which would be at the
+/// theme's size for code otherwise.
+fn in_editor_font(view: TextView, size: Pixels, cx: &App) -> TextView {
     let font = crate::mono_font(cx);
     let mut code = StyleRefinement::default()
         .font_family(font.family)
         .font_features(font.features)
         .font_weight(font.weight);
     code.text.font_fallbacks = font.fallbacks;
-    TextView::markdown(id, text)
-        .inline_code_style(code.clone())
-        .style(TextViewStyle {
-            code_block: code,
-            ..Default::default()
-        })
+    view.inline_code_style(code.clone()).style(TextViewStyle {
+        code_block: code.text_size(size),
+        ..Default::default()
+    })
+}
+
+/// A size of a popup over the text, as it is at the default font size:
+/// the popups grow and shrink with the text they are over.
+fn popup_size(at_default: f32, cx: &App) -> Pixels {
+    px(at_default * cx.global::<Settings>().font_size / Settings::FONT_SIZE)
 }
 
 /// Everything one paint needs, computed during prepaint.

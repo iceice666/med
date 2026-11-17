@@ -23,7 +23,8 @@
 //! (reset-buffer-option 'tab-width)     ; back to set-option's
 //! (buffer-language)                    ; "rust", "markdown", "text"
 //! (unbind 'normal "gt")
-//! (set-option 'font-size 16)           ; also font-family, line-height,
+//! (set-option 'font-size 16)           ; also ui-font-size, font-family,
+//!                                      ; line-height,
 //!                                      ; font-weight, font-features,
 //!                                      ; ligatures, font-fallbacks,
 //!                                      ; terminal-font-family,
@@ -1241,6 +1242,14 @@ fn define_functions(interp: &mut Interp) {
         let settings = cx.global_mut::<Settings>();
         match option.as_str() {
             "font-size" => settings.font_size = font_size(value)?,
+            // The rest's, the theme's `rem`: nil for the theme's.
+            "ui-font-size" => {
+                settings.ui_font_size = match value {
+                    Value::Nil => None,
+                    size => Some(font_size(size)?),
+                };
+                crate::theme::apply(None, cx);
+            }
             // nil goes back to the theme's font.
             "font-family" => settings.font_family = font_family(value)?,
             // A multiple of the font size; nil for the default.
@@ -1320,7 +1329,7 @@ fn define_functions(interp: &mut Interp) {
             other => {
                 return Err(failed(format!(
                     "{other} is not an option \
-                     (font-size font-family line-height font-weight font-features ligatures font-fallbacks terminal-font-family terminal-font-size terminal-line-height lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
+                     (font-size ui-font-size font-family line-height font-weight font-features ligatures font-fallbacks terminal-font-family terminal-font-size terminal-line-height lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
                 )));
             }
         }

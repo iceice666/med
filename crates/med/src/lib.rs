@@ -40,7 +40,13 @@ use workspace::Workspace;
 pub struct Settings {
     /// Editor font; the theme's monospace font when unset.
     pub font_family: Option<SharedString>,
+    /// The size of the text in a file: the editor's, the terminal's where
+    /// it has none of its own, and of what shows a file's text, its
+    /// Markdown preview and the popups over it.
     pub font_size: f32,
+    /// The size of the rest: tabs, bars, panels, the window's chrome, and
+    /// what is laid out by it; the theme's when unset.
+    pub ui_font_size: Option<f32>,
     /// The height of a row of text, as a multiple of the font size.
     pub line_height: f32,
     /// How heavy the text is drawn; bold text is drawn at 700 whatever this is.
@@ -122,6 +128,7 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub const FONT_SIZE: f32 = 14.;
     pub const KEY_TIMEOUT: Duration = Duration::from_millis(1000);
     pub const SCROLL_OFF: usize = 3;
     pub const LINE_HEIGHT: f32 = 1.5;
@@ -300,7 +307,8 @@ pub fn init(cx: &mut App) {
         font_size: std::env::var("MED_FONT_SIZE")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(14.),
+            .unwrap_or(Settings::FONT_SIZE),
+        ui_font_size: None,
         line_height: Settings::LINE_HEIGHT,
         font_weight: FontWeight::NORMAL,
         font_features: Vec::new(),

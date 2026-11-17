@@ -855,6 +855,23 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
         assert_eq!(settings.font_family.as_deref(), Some("Menlo"));
     });
 
+    // The rest's size is the theme's `rem`, which a theme put on again
+    // keeps; nil gives the theme's own back.
+    let ui_font_size = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| gpui::component::Theme::global(cx).font_size)
+    };
+    eval("(set-option 'ui-font-size 20)", cx);
+    assert_eq!(ui_font_size(cx), px(20.));
+    eval("(set-option 'theme nil)", cx);
+    assert_eq!(ui_font_size(cx), px(20.));
+    eval("(set-option 'ui-font-size nil)", cx);
+    assert_eq!(ui_font_size(cx), px(16.));
+    cx.update(|_, cx| assert_eq!(cx.global::<crate::Settings>().ui_font_size, None));
+    assert_eq!(
+        eval("(set-option 'ui-font-size -1)", cx),
+        "1:1: -1 is no size for a font"
+    );
+
     // The font's other settings, and the terminal's own.
     eval("(set-option 'line-height 1.25)", cx);
     eval("(set-option 'font-weight 'medium)", cx);
@@ -950,7 +967,7 @@ fn scripts_change_keys_and_options(cx: &mut TestAppContext) {
     );
     assert_eq!(
         eval("(set-option 'font-sise 12)", cx),
-        "1:1: font-sise is not an option (font-size font-family line-height font-weight font-features ligatures font-fallbacks terminal-font-family terminal-font-size terminal-line-height lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
+        "1:1: font-sise is not an option (font-size ui-font-size font-family line-height font-weight font-features ligatures font-fallbacks terminal-font-family terminal-font-size terminal-line-height lsp key-timeout auto-pairs format-on-save tab-width relative-number scroll-off cursor-line color-column wrap inlay-hints semantic-tokens indent-guides sticky-scroll git-gutter undo-file theme project-env)"
     );
     assert_eq!(
         eval("(set-option 'font-size 0)", cx),

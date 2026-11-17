@@ -138,6 +138,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 ```lisp
 (set-option 'font-family "JetBrains Mono")   ; nil 表示使用主題的字型
 (set-option 'font-size 14)
+(set-option 'ui-font-size 15)                ; nil 表示使用主題的
 (set-option 'line-height 1.5)                ; 字級的倍數，1 到 4
 (set-option 'font-weight 'medium)            ; 或 100 到 900
 (set-option 'font-features '("ss01" ("cv01" 2)))   ; OpenType features
@@ -148,7 +149,9 @@ flash.nvim 的其他功能也使用同樣的標記：
 (set-option 'terminal-line-height 1.4)
 ```
 
-終端機沿用編輯器的字重、features、連字與 fallback 字型。粗體文字不受字重影響，一律以 700 繪製。Popup、狀態列與面板中的等寬文字也使用編輯器的字型，但字級各自固定。
+終端機沿用編輯器的字重、features、連字與 fallback 字型。粗體文字不受字重影響，一律以 700 繪製。Popup、狀態列與面板中的等寬文字也使用編輯器的字型。
+
+`font-size` 是檔案文字的字級：編輯器、Markdown 預覽，以及編輯器上的 popup（略小一些，隨它縮放）。`ui-font-size` 是其餘部分的字級：分頁、標題列與狀態列、面板，以及它們的間距。它就是主題的 `rem`，除非主題檔另有設定，否則為 16；視窗本身的文字在 16 時為 13。
 
 模式有 `normal`、`visual`、`operator` 和 `insert`。面板的表以面板名稱命名，或以名稱加上面板的某個部分命名（`git.files`）。`app` 是不論鍵盤焦點在哪裡都有效的快捷鍵表，以視窗系統的寫法書寫（`cmd-shift-p`）。`bind` 會拒絕不存在的命令。
 

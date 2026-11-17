@@ -2451,7 +2451,7 @@ impl Workspace {
                         .flex()
                         .justify_center()
                         .text_color(muted)
-                        .text_size(px(12.))
+                        .text_size(rems(0.75))
                         // Centred on the window rather than on what the
                         // traffic lights leave of it.
                         .when(cfg!(target_os = "macos") && !window.is_fullscreen(), |el| {
@@ -2512,7 +2512,7 @@ impl Workspace {
             }))
             .child(
                 div()
-                    .text_size(px(16.))
+                    .text_size(rems(1.))
                     .font_weight(FontWeight::BOLD)
                     .child("No keys are bound"),
             )
@@ -2533,7 +2533,7 @@ impl Workspace {
                             .border_1()
                             .border_color(accent.opacity(0.5))
                             .bg(accent.opacity(0.08))
-                            .text_size(px(15.))
+                            .text_size(rems(0.9375))
                             .font(crate::mono_font(cx))
                             .child(":install_default_config"),
                     )
@@ -2607,11 +2607,13 @@ impl Workspace {
         // The names line up with the word they go in, where the bar has a
         // caret to tell where that is; else the menu is at the bar's left.
         // A row's text starts its padding and the border in.
+        let theme = cx.theme();
+        // `px_2` and a pixel of border, `rem` being the theme's font size.
+        let text_inset = theme.font_size * 0.5 + px(1.);
         let x = match (editor.cmdline_word_x(), self.status_bar_left.get()) {
-            (Some(word), Some(bar)) => (word - bar - px(9.)).round(),
+            (Some(word), Some(bar)) => (word - bar - text_inset).round(),
             _ => px(4.),
         };
-        let theme = cx.theme();
         let first = selected.map_or(0, |at| (at + 1).saturating_sub(CMDLINE_MENU_ROWS));
         let rows = matches
             .iter()
@@ -2623,7 +2625,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .px_2()
-                    .h(px(22.))
+                    .h(rems(1.375))
                     .whitespace_nowrap()
                     .when(Some(row) == selected, |el| el.bg(theme.list_active))
                     .child(name.clone())
@@ -2642,8 +2644,8 @@ impl Workspace {
                     .child(
                         div()
                             .occlude()
-                            .min_w(px(160.))
-                            .max_w(px(640.))
+                            .min_w(rems(10.))
+                            .max_w(rems(40.))
                             .py_1()
                             .bg(theme.popover)
                             .text_color(theme.popover_foreground)
@@ -2651,7 +2653,7 @@ impl Workspace {
                             .border_color(theme.border)
                             .rounded_md()
                             .shadow_md()
-                            .text_size(px(12.))
+                            .text_size(rems(0.75))
                             .font(crate::mono_font(cx))
                             .overflow_hidden()
                             .children(rows)
@@ -2676,12 +2678,12 @@ impl Workspace {
             .flex_shrink_0()
             .items_center()
             .gap_3()
-            .h(px(26.))
+            .h(rems(1.625))
             .px_2()
             .bg(theme.status_bar)
             .border_t_1()
             .border_color(border)
-            .text_size(px(12.))
+            .text_size(rems(0.75))
             .font(crate::mono_font(cx));
         if let Some(terminal) = self.active_item().and_then(Item::live_terminal) {
             let title = terminal.read(cx).title();
@@ -2981,7 +2983,8 @@ impl Render for Workspace {
             .flex_col()
             .bg(background)
             .text_color(foreground)
-            .text_size(px(13.))
+            // The rest's size, by `ui-font-size`: 13 at the theme's 16.
+            .text_size(rems(0.8125))
             .track_focus(&self.focus_handle)
             .key_context("Workspace")
             .on_action(cx.listener(|this, action: &RunCommand, window, cx| {

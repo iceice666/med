@@ -5,10 +5,14 @@
 //! With no theme picked the window goes by the system's appearance, light
 //! or dark, as it always did. One theme is that theme, whatever the
 //! system's appearance; a light one and a dark one go by it again.
+//!
+//! The theme sets the size of what is not a file's text too, the `rem`
+//! everything gpui-component lays out goes by: the `ui-font-size` option
+//! over the theme file's own, and 16 where neither says.
 
 use crate::Settings;
 use gpui::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
-use gpui::{App, SharedString, Window};
+use gpui::{App, SharedString, Window, px};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -79,9 +83,9 @@ pub fn apply(window: Option<&mut Window>, cx: &mut App) {
         .map(|window| window.appearance())
         .unwrap_or_else(|| cx.window_appearance())
         .into();
-    let choice = cx
+    let (choice, ui_font_size) = cx
         .try_global::<Settings>()
-        .map(|s| s.theme.clone())
+        .map(|s| (s.theme.clone(), s.ui_font_size))
         .unwrap_or_default();
     let registry = ThemeRegistry::global(cx);
     let mut light = registry.default_light_theme().clone();
@@ -111,4 +115,16 @@ pub fn apply(window: Option<&mut Window>, cx: &mut App) {
     theme.light_theme = light;
     theme.dark_theme = dark;
     Theme::change(mode, window, cx);
+    // Putting the theme on again keeps the last size where the file has
+    // none: say it every time.
+    Theme::update(cx, |theme| {
+        let config = match theme.mode.is_dark() {
+            true => &theme.dark_theme,
+            false => &theme.light_theme,
+        };
+        theme.font_size = px(ui_font_size.or(config.font_size).unwrap_or(UI_FONT_SIZE));
+    });
 }
+
+/// gpui-component's own `rem`.
+const UI_FONT_SIZE: f32 = 16.;
