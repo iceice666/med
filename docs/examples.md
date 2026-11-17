@@ -41,6 +41,7 @@ there. Each brings its commands and its keys:
 | `tree.mlisp` | `space e` / `⌘⇧E` | not loaded by `init.mlisp`: open and focus the file tree, or from it put it away (`j k h l`, `enter`, `R` refresh, `q` put away) |
 | | `⌘B` | show/hide file tree (hidden at start) |
 | `dired.mlisp` | `space -` | not loaded by `init.mlisp`: the file's directory, as Emacs's dired |
+| | `space d` | the directory at a path typed in: whole, from `~`, or from the listing's or the file's directory |
 | | `enter` / `-` | in a listing: open the line's file or directory / go up |
 | | `i` | in a listing: edit the names, as wdired |
 | `statusline.mlisp` | | the status bar, as a layout to change: the one the window draws without it |

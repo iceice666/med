@@ -9,6 +9,9 @@
 ; dired, in the table `dired`; j k, / and the other motions stay vim's,
 ; and the text is not to be edited until i.
 ;
+; space d - asks for a directory's path, and lists it: whole, from ~, or
+; from the directory of the listing or the file.
+;
 ;   enter a o   open the file or directory on the line
 ;   - ^         the directory above        > <   the next, the last directory
 ;   g r         read the disk again        s     by name, or newest first
@@ -826,6 +829,22 @@
             ((project-root) (dired-show (project-root) nil))
             (true (message "No directory to list"))))))
 
+; A path typed in: whole, from ~, or from the directory of the listing or
+; the file.
+(defcommand "dired.goto" "List the directory at a path typed in"
+  (fn ()
+    (let ((from (or (dired-here)
+                    (and (current-file) (path-parent (current-file)))
+                    (project-root)
+                    "/")))
+      (dired-learn-env)
+      (dired-ask "List the directory:" (dired-tab-name from)
+        (fn (text)
+          (let ((dir (regex-replace "(.)/+$" (dired-expand from text) "$1")))
+            (if (dir? dir)
+                (dired-show dir nil)
+                (message dir " is not a directory"))))))))
+
 (dired-command "dired.enter" "Open the file or directory on the line"
   (fn (dir)
     (let ((entry (dired-current dir)))
@@ -1049,6 +1068,7 @@
     (set! pairs (rest (rest pairs)))))
 
 (bind 'normal "<Space>-" "dired.open")
+(bind 'normal "<Space>d" "dired.goto")
 
 (dired-bind 'dired
   '("<CR>" "dired.enter"  "a" "dired.enter"  "o" "dired.enter"

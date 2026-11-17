@@ -5050,6 +5050,35 @@ fn a_listing_marks_files_and_does_things_to_them(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn space_d_lists_the_directory_at_a_typed_path(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("dir/inner.txt", "inner\n")]);
+    let (ws, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
+    let listing = format!("{}/dir/", project.0.display());
+    let ask = |typed: &str, cx: &mut VisualTestContext| {
+        cx.simulate_keystrokes("space d");
+        cx.run_until_parked();
+        assert!(shown("dired-prompt", cx));
+        cx.simulate_input(typed);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+
+    // The prompt starts at the file's directory; what is typed goes on it.
+    ask("dir/", cx);
+    assert!(!shown("dired-prompt", cx));
+    assert_eq!(text(&ws, cx), "inner.txt\n");
+    assert_eq!(tab_titles(&ws, cx), ["a.txt", listing.as_str()]);
+
+    // From a listing, it starts at the listing's; a path to nothing is said so.
+    ask("nope", cx);
+    assert_eq!(
+        message(&ws, cx),
+        format!("{listing}nope is not a directory")
+    );
+    assert_eq!(text(&ws, cx), "inner.txt\n");
+}
+
+#[gpui::test]
 fn a_listing_says_what_ls_says(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n")]);
     let (_, cx) = open_with(&[DIRED], &project, &["a.txt"], cx);
