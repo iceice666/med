@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/iceice666/med/compare/v0.2.4...v0.2.5) - 2026-11-17
+
+### Added
+
+- *(med/lisp)* load files from GitHub
+- *(med/examples)* list a typed path in dired
+- *(med/examples)* add a structural search popup
+- *(med/lisp)* find and replace code by its shape
+- *(med/editor)* use the font options in hover popups
+- *(med/editor)* use the font options in popups and panels
+- *(med/editor)* add font options
+- *(med/vim)* act on whole closed folds by lines
+- *(med/editor)* fold by the syntax tree
+- *(med/workspace)* add three tab commands
+- *(med/examples)* make an empty file in dired
+
+### Other
+
+- *(med/workspace)* call what a pane shows a tab
+- *(med/packaging)* redraw the icon to spell med
+
 ## [0.2.4](https://github.com/iceice666/med/compare/v0.2.3...v0.2.4) - 2026-11-16
 
 ### Added

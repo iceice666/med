@@ -3969,7 +3969,7 @@ dependencies = [
 
 [[package]]
 name = "med"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "frizbee",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "med-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "ropey 1.6.1",
  "serde",
@@ -4008,7 +4008,7 @@ dependencies = [
 
 [[package]]
 name = "med-git"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "similar",
@@ -4016,11 +4016,11 @@ dependencies = [
 
 [[package]]
 name = "med-lisp"
-version = "0.2.4"
+version = "0.2.5"
 
 [[package]]
 name = "med-lsp"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "futures",
@@ -4031,7 +4031,7 @@ dependencies = [
 
 [[package]]
 name = "med-term"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4040,7 +4040,7 @@ dependencies = [
 
 [[package]]
 name = "med-vim"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "med-core",
  "regex",
