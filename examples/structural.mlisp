@@ -1,0 +1,263 @@
+; Structural search and replace: a popup to find code by its shape, as
+; IntelliJ IDEA does, and to make what is found something else.
+;
+;   (load "structural.mlisp")
+;
+; space R, or ⌘⇧R, puts it up for the language of the file being edited,
+; with what is selected, if anything is, as the pattern. A pattern is
+; code with $name$ where anything may be: `$x$.unwrap()` finds every call
+; of unwrap. $name*$ is any number of things side by side, and $_$ is
+; anything; spaces and comments do not count (see `structural-search`
+; in docs/lisp.md).
+;
+; In the popup: tab goes between the pattern and the replacement, which
+; has the pattern's $name$s in it. Each match shows what it would be
+; made. ctrl-n and ctrl-p (or the arrows) move, ctrl-t checks or unchecks
+; a match, ctrl-u all of them, ctrl-r makes the checked ones their
+; replacement, enter goes to the match, escape puts the popup away.
+
+(def structural-pattern "")      ; what is looked for
+(def structural-replacement "")  ; and what it is to be made; "" for none
+(def structural-field 'find)     ; which of the two is being typed: 'find or 'replace
+(def structural-language nil)    ; the language of the file it was put up for
+(def structural-problem nil)     ; what is wrong with the pattern or the replacement
+(def structural-items nil)       ; the matches, as `structural-search` gives them
+(def structural-off nil)         ; the matches unchecked, by where they are in the list
+(def structural-selected 0)      ; which match
+(def structural-busy false)      ; still looking
+(def structural-found-with "")   ; the replacement the matches were found with
+
+(def structural-limit 1000)      ; no more matches than this
+(def structural-row 26)          ; how tall a row is
+(def structural-rows 14)         ; and how many are on show at once
+
+; ---- looking
+
+(defn structural-show (items replacement)
+  (set! structural-items items)
+  (set! structural-found-with replacement)
+  (set! structural-off nil)
+  (set! structural-selected 0)
+  (set! structural-busy false))
+
+; The replacement, if there is one.
+(defn structural-replacing? ()
+  (not (= structural-replacement "")))
+
+; Look for the pattern again: it, the replacement or the files changed.
+(defn structural-update ()
+  (let ((pattern structural-pattern)
+        (replacement structural-replacement)
+        (language structural-language))
+    (set! structural-problem
+          (cond ((member? language '(nil "text"))
+                 "The file being edited is of no language to read a pattern in")
+                ((= (trim pattern) "") nil)
+                ((structural-replacing?)
+                 (structural-check pattern language replacement))
+                (true (structural-check pattern language))))
+    (if (or structural-problem (= (trim pattern) ""))
+        (structural-show nil replacement)
+        (let ((done (fn (places)
+                      ; Unless more was typed while these were looked for.
+                      (when (and (= pattern structural-pattern)
+                                 (= replacement structural-replacement))
+                        (structural-show places replacement)))))
+          (set! structural-busy true)
+          (if (structural-replacing?)
+              (structural-search pattern language structural-limit replacement done)
+              (structural-search pattern language structural-limit done))))))
+
+(defn structural-open ()
+  (let ((selected (selection)))
+    (set! structural-language (buffer-language))
+    (when selected
+      (set! structural-pattern (trim (get selected :text))))
+    (set! structural-field 'find)
+    (set-input 'structural 'query structural-pattern)
+    (structural-update)
+    (focus-panel 'structural)))
+
+; ---- choosing
+
+(defn structural-checked? (index)
+  (not (member? index structural-off)))
+
+(defn structural-move (delta)
+  (let ((count (length structural-items)))
+    (when (> count 0)
+      (set! structural-selected (mod (+ structural-selected delta) count)))))
+
+(defn structural-toggle ()
+  (when structural-items
+    (let ((index structural-selected))
+      (set! structural-off
+            (if (structural-checked? index)
+                (cons index structural-off)
+                (filter (fn (n) (not (= n index))) structural-off))))))
+
+; Uncheck every match, or check them all again when some are unchecked.
+(defn structural-toggle-all ()
+  (if structural-off
+      (set! structural-off nil)
+      (let ((index 0) (all nil))
+        (while (< index (length structural-items))
+          (set! all (cons index all))
+          (set! index (+ index 1)))
+        (set! structural-off all))))
+
+; Go between typing the pattern and the replacement.
+(defn structural-switch ()
+  (set! structural-field (if (= structural-field 'find) 'replace 'find))
+  (set-input 'structural 'query
+             (if (= structural-field 'find) structural-pattern structural-replacement)))
+
+; ---- doing
+
+(defn structural-go ()
+  (let ((place (nth structural-selected structural-items)))
+    (when place
+      (hide-panel 'structural)
+      (open-file (get place :path) (get place :line) (get place :col)))))
+
+(defn structural-replace-checked ()
+  (let ((index 0) (checked nil))
+    (while (< index (length structural-items))
+      (when (structural-checked? index)
+        (set! checked (cons (nth index structural-items) checked)))
+      (set! index (+ index 1)))
+    (cond
+      ((not (structural-replacing?))
+       (message "Type a replacement first: tab goes to it"))
+      ((or structural-problem (nil? checked))
+       (message "Nothing to replace"))
+      (true
+       (set! structural-busy true)
+       (structural-replace structural-pattern structural-replacement
+                           structural-language (reverse checked)
+         (fn (done)
+           (message "Replaced " (get done :changes) " in " (get done :files) " file(s)"
+                    (if (> (get done :skipped) 0)
+                        (str ", left " (get done :skipped)
+                             " that changed or would lose a comment")
+                        ""))
+           ; What is left to replace, if anything.
+           (structural-update)))))))
+
+; ---- how it looks
+
+; The first line of a text, and a mark if there is more.
+(defn structural-line (text)
+  (let ((all (lines text)))
+    (if (> (length all) 1)
+        (str (trim (first all)) " …")
+        (trim text))))
+
+(defn structural-field-row (field label value)
+  (let ((typing (= field structural-field)))
+    (row :align 'center :gap 8 :padding-x 8 :height 30 :width 'full
+         :border-bottom 1 :border-color 'border
+         :on-click (unless typing structural-switch)
+      (text label :width 64 :shrink false :size 11
+            :color (if typing 'foreground 'muted-foreground) :bold typing)
+      (if typing
+          (input 'query :grow true :mono true
+                 :placeholder (if (= field 'find)
+                                  "Code with $name$ where anything may be…"
+                                  "Code with the pattern's $name$s, or nothing to only find…")
+                 :on-change (fn (text)
+                              (if (= structural-field 'find)
+                                  (set! structural-pattern text)
+                                  (set! structural-replacement text))
+                              (structural-update))
+                 :on-submit (fn (text) (structural-go)))
+          (text (if (= value "") "—" value)
+                :grow true :mono true :clip true :color 'muted-foreground)))))
+
+(defn structural-status ()
+  (cond (structural-busy "searching…")
+        (structural-problem "")
+        (true (str (- (length structural-items) (length structural-off)) " of "
+                   (length structural-items) " checked"))))
+
+(defpanel 'structural :at 'popup :width 820
+  (fn (panel)
+    (col :width 'full
+      (row :align 'center :padding-x 8 :height 22 :gap 8
+        (text (str "Structural search · " (or structural-language "no language"))
+              :grow true :size 11 :color 'muted-foreground)
+        (text (structural-status) :size 11 :color 'muted-foreground :shrink false))
+      (structural-field-row 'find "Find" structural-pattern)
+      (structural-field-row 'replace "Replace" structural-replacement)
+      (when structural-problem
+        (text structural-problem :padding-x 8 :padding-y 4 :size 11
+              :color 'warning :clip true))
+      (rows structural-items :reveal structural-selected
+            :height (* structural-row (min structural-rows (length structural-items)))
+        (fn (place index)
+          (let ((made (get place :replacement)))
+            (row :height structural-row :width 'full :align 'center
+                 :gap 10 :padding-x 8 :nowrap true
+                 :bg (when (= index structural-selected) 'list-active)
+                 :hover (list :bg 'list-hover)
+                 :on-click (fn () (set! structural-selected index))
+              (text (if (structural-checked? index) "[x]" "[ ]")
+                    :mono true :shrink false
+                    :on-click (fn ()
+                                (set! structural-selected index)
+                                (structural-toggle)))
+              (text (str (get place :file) ":" (get place :line))
+                    :width 200 :shrink false :clip true :size 11
+                    :color 'muted-foreground)
+              (text (structural-line (get place :match))
+                    :grow true :mono true :clip true)
+              (cond
+                ((not (structural-replacing?)) nil)
+                ; Found before this replacement was typed: what each
+                ; would be is not known yet.
+                ((not (= structural-found-with structural-replacement)) nil)
+                (made (list (text "→" :shrink false :color 'muted-foreground)
+                            (text (structural-line made) :grow true :mono true
+                                  :clip true :color 'success)))
+                (true (text "left: a comment would be lost" :shrink false
+                            :size 11 :color 'warning))))))))))
+
+; ---- what it does
+
+(defcommand "structural.open" "Find code by its shape, and replace it"
+  structural-open)
+(defcommand "structural.switch" "Go between the pattern and the replacement"
+  structural-switch)
+(defcommand "structural.down" "Select the next match" (fn () (structural-move 1)))
+(defcommand "structural.up" "Select the previous match" (fn () (structural-move -1)))
+(defcommand "structural.toggle" "Check or uncheck the match" structural-toggle)
+(defcommand "structural.toggle_all" "Uncheck every match, or check them all"
+  structural-toggle-all)
+(defcommand "structural.replace" "Make the checked matches their replacement"
+  structural-replace-checked)
+(defcommand "structural.go" "Go to the match" structural-go)
+(defcommand "structural.close" "Put structural search away"
+  (fn () (hide-panel 'structural)))
+
+; What was found may not be there any more.
+(add-hook 'files-changed
+  (fn () (when (panel-shown? 'structural) (structural-update))))
+
+; ---- its keys
+
+; Only keys that are not text: the rest is typed into the pattern. The
+; input keeps ctrl-a, c, e, f, h, v, x, y and z for itself.
+(bind 'structural "<Tab>" "structural.switch")
+(bind 'structural "<C-n>" "structural.down")
+(bind 'structural "<C-j>" "structural.down")
+(bind 'structural "<Down>" "structural.down")
+(bind 'structural "<C-p>" "structural.up")
+(bind 'structural "<C-k>" "structural.up")
+(bind 'structural "<Up>" "structural.up")
+(bind 'structural "<C-t>" "structural.toggle")
+(bind 'structural "<C-u>" "structural.toggle_all")
+(bind 'structural "<C-r>" "structural.replace")
+
+(bind 'normal "<Space>R" "structural.open")
+(bind 'visual "<Space>R" "structural.open")
+(bind 'app "cmd-shift-r" "structural.open")

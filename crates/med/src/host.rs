@@ -37,6 +37,7 @@
 //!                                 ; :end-line :end-col :match :captures
 //! (structural-search "$x$.unwrap()" 'rust 500 "$x$?" (fn (places) ...))
 //!                                 ; and each one's :replacement
+//! (structural-check "$x$.unwrap(" 'rust)  ; what is wrong with it, or nil
 //! (structural-replace "$x$.unwrap()" "$x$?" nil (fn (done) ...))
 //!                                 ; (:changes :files :skipped)
 //! (structural-replace "$x$.unwrap()" "$x$?" nil places (fn (done) ...))
@@ -576,6 +577,25 @@ pub(crate) fn define_functions(interp: &mut Interp) {
         Ok(Value::Nil)
     });
 
+    // (structural-check pattern language [replacement]): nil when the
+    // pattern, and the replacement given one, can be read, or else what is
+    // wrong: for a program to show while they are being typed.
+    interp.define_native("structural-check", Arity::between(2, 3), |call, args| {
+        let cx = script::app(call)?;
+        let source = args[0].as_str()?;
+        let replacement = args.get(2).map(Value::as_str).transpose()?;
+        let problem = match lang("structural-check", &args[1], cx)? {
+            Err(problem) => Some(problem),
+            Ok(lang) => match structural::Pattern::new(source, lang) {
+                Err(problem) => Some(problem),
+                Ok(pattern) => replacement.and_then(|replacement| {
+                    structural::Replacement::new(replacement, &pattern).err()
+                }),
+            },
+        };
+        Ok(problem.map_or(Value::Nil, Value::from))
+    });
+
     // (structural-replace pattern replacement language [places] function):
     // every match of the pattern in the project made the replacement, or
     // only those of `places`, as `structural-search` gave them; in the
@@ -656,6 +676,18 @@ fn pattern(
     language: &Value,
     cx: &mut App,
 ) -> Result<structural::Pattern, Error> {
+    let lang = lang(name, language, cx)?.map_err(|problem| failed(format!("{name}: {problem}")))?;
+    structural::Pattern::new(source.as_str()?, lang)
+        .map_err(|problem| failed(format!("{name}: {problem}")))
+}
+
+/// The language a program named, or the tab up's for nil; what is wrong
+/// when there is none such.
+fn lang(
+    name: &str,
+    language: &Value,
+    cx: &mut App,
+) -> Result<Result<&'static syntax::LangInfo, String>, Error> {
     let lang = match language {
         Value::Nil => script::in_workspace(cx, |workspace, _, cx| {
             workspace.active_editor()?.read(cx).lang
@@ -666,14 +698,10 @@ fn pattern(
             syntax::lang_named(&language)
         }
     };
-    let Some(lang) = lang else {
-        return Err(failed(match language {
-            Value::Nil => format!("{name}: the tab up is of no language"),
-            other => format!("{name}: there is no such language: {other}"),
-        }));
-    };
-    structural::Pattern::new(source.as_str()?, lang)
-        .map_err(|problem| failed(format!("{name}: {problem}")))
+    Ok(lang.ok_or_else(|| match language {
+        Value::Nil => "the tab up is of no language".to_string(),
+        other => format!("there is no such language: {other}"),
+    }))
 }
 
 /// The text of each file open in a tab of the program's window.

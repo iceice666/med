@@ -60,6 +60,7 @@ cargo test --workspace
 | `keys.mlisp` | LSP 按鍵（`gd`、`gr`、`K`）、分頁、窗格、flash 風格跳躍、`space` leader 鍵、`⌘` 快捷鍵 |
 | `oil.mlisp` | 把目錄當成緩衝區來編輯，如同 oil.nvim（`space e`、`space -`） |
 | `picker.mlisp` | 模糊檔案搜尋、專案搜尋、專案符號與最近的專案（`space f`、`space /`、`space S`、`space p`） |
+| `structural.mlisp` | 像 IntelliJ IDEA 那樣的 structural search and replace：依結構找程式碼（`space R`） |
 | `git.mlisp` | lazygit 風格的 git 畫面（`space g`） |
 | `which-key.mlisp` | 停頓片刻後，列出接下來可按的鍵 |
 | `todo.mlisp` | 在 TODO/FIXME/NOTE 行旁加上標示，`]T` / `[T` |

@@ -83,6 +83,7 @@ const OIL: &str = include_str!("../../../examples/oil.mlisp");
 const STATUSLINE: &str = include_str!("../../../examples/statusline.mlisp");
 const TITLEBAR: &str = include_str!("../../../examples/titlebar.mlisp");
 const RSS: &str = include_str!("../../../examples/rss.mlisp");
+const STRUCTURAL: &str = include_str!("../../../examples/structural.mlisp");
 
 /// How tall the title bar is, which the window's other bars and panels are
 /// below.
@@ -356,6 +357,93 @@ fn programs_search_and_replace_code_by_its_shape(cx: &mut TestAppContext) {
     );
     assert_eq!(project.read("src/b.rs"), b.replace("2).unwrap()", "2)?"));
     assert_eq!(project.read("notes.md"), "one().unwrap()\n");
+}
+
+#[gpui::test]
+fn the_structural_popup_finds_and_replaces(cx: &mut TestAppContext) {
+    let project = Project::new(&[
+        (
+            "src/a.rs",
+            "fn a() {\n    one().unwrap();\n    two().unwrap();\n    three(1).unwrap();\n}\n",
+        ),
+        ("src/b.rs", "fn b() {\n    four().unwrap();\n}\n"),
+    ]);
+    let (ws, cx) = open_with(&[STRUCTURAL], &project, &["src/a.rs"], cx);
+    let settle = |cx: &mut VisualTestContext| {
+        // A search waits a moment for more to be typed.
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+    };
+
+    cx.simulate_keystrokes("space shift-r");
+    cx.run_until_parked();
+    assert!(shown("structural", cx));
+    assert_eq!(lisp("structural-language", cx), "\"rust\"");
+
+    // A pattern not yet whole says what is wrong, and finds nothing.
+    cx.simulate_input("$x$.unwrap(");
+    settle(cx);
+    assert_ne!(lisp("structural-problem", cx), "nil");
+    assert_eq!(lisp("structural-items", cx), "nil");
+    cx.simulate_input(")");
+    settle(cx);
+    assert_eq!(lisp("structural-problem", cx), "nil");
+    assert_eq!(
+        lisp("(map (fn (p) (get p :match)) structural-items)", cx),
+        r#"("one().unwrap()" "two().unwrap()" "three(1).unwrap()" "four().unwrap()")"#
+    );
+
+    // Tab goes to the replacement; each match shows what it would be,
+    // once it has been looked for with it.
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("$x$?");
+    assert_eq!(lisp("structural-found-with", cx), "\"\"");
+    settle(cx);
+    assert_eq!(lisp("structural-found-with", cx), "\"$x$?\"");
+    assert_eq!(lisp("structural-field", cx), "replace");
+    assert_eq!(lisp("structural-pattern", cx), "\"$x$.unwrap()\"");
+    assert_eq!(
+        lisp("(map (fn (p) (get p :replacement)) structural-items)", cx),
+        r#"("one()?" "two()?" "three(1)?" "four()?")"#
+    );
+
+    // Uncheck the second, and replace the rest.
+    cx.simulate_keystrokes("ctrl-n ctrl-t");
+    assert_eq!(lisp("structural-off", cx), "(1)");
+    cx.simulate_keystrokes("ctrl-r");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "Replaced 3 in 2 file(s)");
+    assert_eq!(
+        text(&ws, cx),
+        "fn a() {\n    one()?;\n    two().unwrap();\n    three(1)?;\n}\n"
+    );
+    assert_eq!(project.read("src/b.rs"), "fn b() {\n    four()?;\n}\n");
+
+    // What is left is found again; enter goes to it.
+    settle(cx);
+    assert_eq!(
+        lisp("(map (fn (p) (get p :match)) structural-items)", cx),
+        r#"("two().unwrap()")"#
+    );
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(!shown("structural", cx));
+    assert_eq!(cursor(&ws, cx), (3, 5));
+
+    // Up again, with the pattern and the replacement as they were, and
+    // ctrl-u unchecks all.
+    cx.simulate_keystrokes("space shift-r");
+    settle(cx);
+    assert_eq!(lisp("structural-field", cx), "find");
+    assert_eq!(lisp("(length structural-items)", cx), "1");
+    cx.simulate_keystrokes("ctrl-u");
+    assert_eq!(lisp("structural-off", cx), "(0)");
+    cx.simulate_keystrokes("ctrl-r");
+    cx.run_until_parked();
+    assert_eq!(message(&ws, cx), "Nothing to replace");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown("structural", cx));
 }
 
 #[gpui::test]
@@ -3002,6 +3090,7 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
         [
             "oil-confirm",
             "picker",
+            "structural",
             "git",
             "git-prompt",
             "which-key",
@@ -3078,6 +3167,7 @@ fn the_examples_load_together(cx: &mut TestAppContext) {
         [
             "oil-confirm",
             "picker",
+            "structural",
             "git",
             "git-prompt",
             "which-key",

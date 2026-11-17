@@ -33,6 +33,7 @@ there. Each brings its commands and its keys:
 | | `space /` / `⌘⇧F` | search in project |
 | | `space S` / `⌘T` | find a symbol of the project, as the language servers running know them |
 | | `space p` / `⌘⌥O` | open a project opened before, in a window of its own |
+| `structural.mlisp` | `space R` / `⌘⇧R` | find code by its shape, and replace it (below) |
 | `git.mlisp` | `space g` / `⌘⇧G` | git screen |
 | `which-key.mlisp` | | the keys that can come next, after a pause |
 | | `g ?` | in an oil listing: all of its keys at once (as `init.mlisp` sets it up) |
@@ -62,6 +63,17 @@ With `picker.mlisp`, `gr` lists the references to choose from, `space s`
 the symbols of the file, `space c i` and `space c o` the callers and
 calls of a function, and `gd`, `gy` and `gi` the places they find when
 there are several; without it, each goes to the first.
+
+With `structural.mlisp`, `space R` puts up a popup for structural search
+and replace in the language of the file being edited, as IntelliJ IDEA
+has it, with what is selected as the pattern if anything is. A pattern
+is code with `$name$` where anything may be (see [Code by its
+shape](lisp.md#code-by-its-shape)); what is wrong with it is said as it
+is typed. `tab` goes between the pattern and the replacement, and each
+match shows what it would be made. `ctrl-n` and `ctrl-p` move, `ctrl-t`
+checks or unchecks a match, `ctrl-u` all of them, `ctrl-r` makes the
+checked ones their replacement, and `enter` goes to the match. A match
+with a comment that would be lost is shown, and left as it is.
 
 With `oil.mlisp` (as oil.nvim), a directory is a tab called
 `oil:///the/directory/` with a name to a line, a directory's with `/`

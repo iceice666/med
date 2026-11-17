@@ -1,6 +1,6 @@
 ; An init file that has most of what is in this directory: the vim keys
 ; and the editor's, directories as buffers to edit (as oil.nvim), the
-; picker, the git screen, the keys that can come next, the signs on the
+; picker, structural search and replace, the git screen, the keys that can come next, the signs on the
 ; lines that say TODO, and the status and title bars. Put a line like this
 ; in your own `init.mlisp`, with the path of your checkout:
 ;
@@ -16,6 +16,7 @@
 (load "keys.mlisp")
 (load "oil.mlisp")
 (load "picker.mlisp")
+(load "structural.mlisp")
 (load "git.mlisp")
 (load "which-key.mlisp")
 (load "todo.mlisp")

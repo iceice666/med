@@ -82,6 +82,10 @@ pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
         "picker.mlisp",
         include_str!("../../../examples/picker.mlisp"),
     ),
+    (
+        "structural.mlisp",
+        include_str!("../../../examples/structural.mlisp"),
+    ),
     ("git.mlisp", include_str!("../../../examples/git.mlisp")),
     (
         "which-key.mlisp",

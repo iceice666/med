@@ -125,6 +125,7 @@
 | `(grep query limit function)` | 符合的行：`((:path :file :line :col :text)...)` |
 | `(workspace-symbols query limit function)` | 執行中的語言伺服器找到的專案符號，格式同 `grep` 的位置，`:text` 是種類和名稱 |
 | `(structural-search pattern language limit [replacement] function)` | 結構符合 pattern 的程式碼，格式同 `grep` 的位置，另有 `:end-line :end-col :match :captures`，給了 replacement 時還有 `:replacement`：見[依結構找程式碼](#依結構找程式碼) |
+| `(structural-check pattern language [replacement])` | 輸入中的 pattern 或 replacement 哪裡有問題；沒有問題時是 `nil` |
 | `(structural-replace pattern replacement language [places] function)` | 把每個符合處換成 replacement，或只換 `places` 中的那些，在分頁裡和磁碟上：`(:changes :files :skipped)` |
 | `(git what arguments... function)` | 存放庫：見 `crates/med/src/host.rs` |
 | `(bindings table [keys])` | 在模式或面板的表中，可接在 `keys` 之後的按鍵 |
@@ -170,7 +171,7 @@ replacement 是含有 pattern 中那些名稱的文字，每個名稱代表在�
   (fn (done) (message (get done :changes) " changed")))
 ```
 
-不是該語言程式碼的 pattern，以及含有 pattern 裡沒有的名稱的 replacement，都算是程式的錯誤，程式會立刻停下。
+不是該語言程式碼的 pattern，以及含有 pattern 裡沒有的名稱的 replacement，都算是程式的錯誤，程式會立刻停下；`structural-check` 則只說出哪裡有問題，不會停下。[`examples/structural.mlisp`](../examples/structural.mlisp) 就是用這些做成的彈出視窗。
 
 ### 正在輸入的按鍵
 

@@ -200,6 +200,7 @@ at once.
 | `(grep query limit function)` | matching lines: `((:path :file :line :col :text)...)` |
 | `(workspace-symbols query limit function)` | the symbols of the project the language servers running find, as `grep`'s places with the kind and name as `:text` |
 | `(structural-search pattern language limit [replacement] function)` | code that has the pattern's shape, as `grep`'s places with `:end-line :end-col :match :captures`, and `:replacement` given one: see [Code by its shape](#code-by-its-shape) |
+| `(structural-check pattern language [replacement])` | what is wrong with the pattern, or the replacement, as they are typed; `nil` for nothing |
 | `(structural-replace pattern replacement language [places] function)` | every match made the replacement, or the ones of `places`, in the tabs and on disk: `(:changes :files :skipped)` |
 | `(git what arguments... function)` | the repository: see `crates/med/src/host.rs` |
 | `(bindings table [keys])` | the keys that can come after `keys` in a mode's table or a panel's |
@@ -292,7 +293,9 @@ lose. `structural-search` gives such a match a `:replacement` of `nil`.
 
 A pattern that is not code of the language, and a replacement with a name
 the pattern does not have, are mistakes of the program, and stop it at
-once.
+once; `structural-check` says what is wrong with them without stopping.
+[`examples/structural.mlisp`](../examples/structural.mlisp) is a popup
+made of these.
 
 ### The keys being typed
 

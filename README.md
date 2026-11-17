@@ -103,6 +103,7 @@ from a checkout:
 | `keys.mlisp` | LSP keys (`gd`, `gr`, `K`), tabs, panes, flash-style jumps, `space` leader keys, `⌘` shortcuts |
 | `oil.mlisp` | directories as buffers to edit, as oil.nvim (`space e`, `space -`) |
 | `picker.mlisp` | fuzzy file finder, project search, project symbols and recent projects (`space f`, `space /`, `space S`, `space p`) |
+| `structural.mlisp` | structural search and replace, as IntelliJ IDEA has it: code found by its shape (`space R`) |
 | `git.mlisp` | lazygit-style git screen (`space g`) |
 | `which-key.mlisp` | the keys that can come next, after a pause |
 | `todo.mlisp` | signs on TODO/FIXME/NOTE lines, `]T` / `[T` |
