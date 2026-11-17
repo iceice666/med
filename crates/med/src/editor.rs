@@ -421,6 +421,10 @@ pub struct Editor {
     snippet: Option<SnippetSession>,
     /// `Tab` going through what the `:` line could be.
     cmdline_completion: Option<crate::cmdline::Completion>,
+    /// The `:` line before its cursor as last drawn, where on the window
+    /// that text starts, and the text shaped: for lining things up with a
+    /// word on it.
+    cmdline_drawn: Option<(String, Pixels, ShapedLine)>,
     /// The project's root, which a file named on the command line is
     /// relative to; set by the workspace.
     pub(crate) root: Option<PathBuf>,
@@ -992,6 +996,7 @@ impl Editor {
             completion_task: None,
             snippet: None,
             cmdline_completion: None,
+            cmdline_drawn: None,
             root: None,
             key_timeout: None,
             pending_keys: None,
@@ -2568,6 +2573,7 @@ impl Editor {
         // the command line just closed.
         if self.vim.cmdline().is_none() {
             self.cmdline_completion = None;
+            self.cmdline_drawn = None;
             self.cmdline_preedit = None;
             self.cmdline_caret = None;
         }
@@ -3742,6 +3748,25 @@ impl Editor {
             self.after_change(cx);
         }
         true
+    }
+
+    /// The `:` line's matches and the one on it, while `Tab` is going
+    /// through them; once the line is typed on, they are gone.
+    pub fn cmdline_matches(&self) -> Option<(&[String], Option<usize>)> {
+        let (_, line) = self.vim.cmdline()?;
+        let (matches, selected, _) = self.cmdline_completion.as_ref()?.menu(line)?;
+        Some((matches, selected))
+    }
+
+    /// Where on the window the `:` line's word being completed starts, as
+    /// the bar last drew it. `None` with no `(caret)` to go by.
+    pub(crate) fn cmdline_word_x(&self) -> Option<Pixels> {
+        let (_, line) = self.vim.cmdline()?;
+        let (_, _, start) = self.cmdline_completion.as_ref()?.menu(line)?;
+        let (before, left, shaped) = self.cmdline_drawn.as_ref()?;
+        // What comes before the word is as it was drawn: `Tab` changes
+        // only the word.
+        (before.get(..start)? == line.get(..start)?).then(|| *left + shaped.x_for_index(start))
     }
 
     /// Labels of the completion menu's entries, best match first.
@@ -5211,7 +5236,22 @@ impl Editor {
     /// puts its window there, and is told again when that moves. Only
     /// while `:` is typed, as the caret is forgotten when it is done.
     pub(crate) fn place_cmdline_caret(&mut self, bounds: Bounds<Pixels>, window: &mut Window) {
-        if self.vim.cmdline().is_some() && self.cmdline_caret != Some(bounds) {
+        let Some((_, line)) = self.vim.cmdline() else {
+            return;
+        };
+        // In the bar's own text style, which is what the caret sits in.
+        let at = self.vim.cmdline_cursor().unwrap_or(line.len());
+        let before = line.get(..at).unwrap_or(line).to_string();
+        let style = window.text_style();
+        let size = style.font_size.to_pixels(window.rem_size());
+        let shaped = window.text_system().shape_line(
+            before.clone().into(),
+            size,
+            &[style.to_run(before.len())],
+            None,
+        );
+        self.cmdline_drawn = Some((before, bounds.origin.x - shaped.width(), shaped));
+        if self.cmdline_caret != Some(bounds) {
             self.cmdline_caret = Some(bounds);
             window.invalidate_character_coordinates();
         }

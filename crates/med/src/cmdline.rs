@@ -3,7 +3,8 @@
 //!
 //! Matches go in place, one per `Tab`, `S-Tab` going back; past the last
 //! the line is as it was typed. A line changed since the last `Tab` is
-//! completed afresh.
+//! completed afresh. While `Tab` goes through them, the matches are listed
+//! above the status bar.
 
 use crate::commands::Commands;
 use crate::defaults::{EX_ARGS, ExArg};
@@ -63,6 +64,12 @@ impl Completion {
         }
         this.shown = shown.clone();
         Some((shown, Some(this)))
+    }
+
+    /// The matches, the one shown, and where on the line the word they
+    /// go in starts, while `line` is as `Tab` left it.
+    pub(crate) fn menu(&self, line: &str) -> Option<(&[String], Option<usize>, usize)> {
+        (self.shown == line).then_some((self.matches.as_slice(), self.selected, self.start))
     }
 }
 

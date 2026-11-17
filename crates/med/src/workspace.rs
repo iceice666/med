@@ -22,6 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// How many of the `:` line's matches show at a time.
+const CMDLINE_MENU_ROWS: usize = 10;
+
 pub struct Workspace {
     root: PathBuf,
     focus_handle: FocusHandle,
@@ -39,6 +42,8 @@ pub struct Workspace {
     user_panels: HashMap<SharedString, Entity<PanelView>>,
     /// The branch the project is on, for the status bar.
     branch: Option<SharedString>,
+    /// Where on the window the status bar starts, as last drawn.
+    status_bar_left: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
     _branch_task: Option<Task<()>>,
     /// One-line feedback shown in the status bar until the next key.
     pub(crate) message: Option<SharedString>,
@@ -351,6 +356,7 @@ impl Workspace {
             next_pane: 1,
             user_panels: HashMap::new(),
             branch: None,
+            status_bar_left: Default::default(),
             _branch_task: None,
             message: None,
             welcome_closed: false,
@@ -2510,14 +2516,105 @@ impl Workspace {
     }
 
     fn render_status_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        match self.bar_view(At::Status, cx) {
+        let bar = match self.bar_view(At::Status, cx) {
             Some(view) => div()
                 .w_full()
                 .flex_shrink_0()
                 .child(view)
                 .into_any_element(),
             None => self.render_status(cx).into_any_element(),
-        }
+        };
+        // Over the bar, whoever draws it, so a status bar of one's own
+        // has the matches too. Where the bar is is kept every frame, for
+        // the menu to be in place the first time it shows.
+        let left = self.status_bar_left.clone();
+        let measure = canvas(
+            move |bounds, _, _| left.set(Some(bounds.origin.x)),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        div()
+            .relative()
+            .w_full()
+            .flex_shrink_0()
+            .child(bar)
+            .child(measure)
+            .children(
+                self.render_cmdline_menu(cx)
+                    .map(|menu| div().absolute().top_0().left_0().child(menu)),
+            )
+            .into_any_element()
+    }
+
+    /// The `:` line's matches while `Tab` goes through them, opening up
+    /// from the bar under the word they go in, the one on the line
+    /// highlighted.
+    fn render_cmdline_menu(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        let editor = self.active_editor()?.read(cx);
+        let (matches, selected) = editor.cmdline_matches()?;
+        // The names line up with the word they go in, where the bar has a
+        // caret to tell where that is; else the menu is at the bar's left.
+        // A row's text starts its padding and the border in.
+        let x = match (editor.cmdline_word_x(), self.status_bar_left.get()) {
+            (Some(word), Some(bar)) => (word - bar - px(9.)).round(),
+            _ => px(4.),
+        };
+        let theme = cx.theme();
+        let first = selected.map_or(0, |at| (at + 1).saturating_sub(CMDLINE_MENU_ROWS));
+        let rows = matches
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(CMDLINE_MENU_ROWS)
+            .map(|(row, name)| {
+                div()
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .h(px(22.))
+                    .whitespace_nowrap()
+                    .when(Some(row) == selected, |el| el.bg(theme.list_active))
+                    .child(name.clone())
+            })
+            .collect::<Vec<_>>();
+        let count = match selected {
+            Some(at) => format!("{}/{}", at + 1, matches.len()),
+            None => format!("{}", matches.len()),
+        };
+        Some(
+            deferred(
+                anchored()
+                    .anchor(Anchor::BottomLeft)
+                    .offset(point(x.max(px(0.)), px(-2.)))
+                    .snap_to_window()
+                    .child(
+                        div()
+                            .occlude()
+                            .min_w(px(160.))
+                            .max_w(px(640.))
+                            .py_1()
+                            .bg(theme.popover)
+                            .text_color(theme.popover_foreground)
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded_md()
+                            .shadow_md()
+                            .text_size(px(12.))
+                            .font(crate::mono_font(cx))
+                            .overflow_hidden()
+                            .children(rows)
+                            .child(
+                                div()
+                                    .px_2()
+                                    .pt_1()
+                                    .text_color(theme.muted_foreground)
+                                    .child(count),
+                            ),
+                    ),
+            )
+            .with_priority(1),
+        )
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {

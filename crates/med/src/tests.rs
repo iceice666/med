@@ -5617,6 +5617,73 @@ fn a_listing_runs_every_command(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_command_line_lists_its_matches(cx: &mut TestAppContext) {
+    let project = Project::new(&[("a.txt", "a\n"), ("src/main.rs", "\n"), ("sub/x.txt", "\n")]);
+    let (ws, cx) = open(&project, &["a.txt"], cx);
+    let menu = |cx: &mut VisualTestContext| {
+        ws.read_with(cx, |ws, cx| {
+            let editor = ws.active_editor().unwrap().read(cx);
+            editor
+                .cmdline_matches()
+                .map(|(matches, selected)| (matches.to_vec(), selected))
+        })
+    };
+    let listed =
+        |selected: Option<usize>| Some((vec!["src/".to_string(), "sub/".to_string()], selected));
+
+    // None before `Tab`, then all of them, the one on the line marked.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("e s");
+    assert_eq!(menu(cx), None);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(menu(cx), listed(Some(0)));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(menu(cx), listed(Some(1)));
+    // Back to what was typed: still there, none marked.
+    cx.simulate_keystrokes("tab");
+    assert_eq!(menu(cx), listed(None));
+
+    // Typing on, or leaving the line, puts it away.
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("x");
+    assert_eq!(menu(cx), None);
+    cx.simulate_keystrokes("escape :");
+    cx.simulate_input("e s");
+    cx.simulate_keystrokes("tab escape");
+    assert_eq!(menu(cx), None);
+
+    // One match goes on the line; there is nothing to choose from.
+    cx.simulate_keystrokes(":");
+    cx.simulate_input("wr");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(menu(cx), None);
+
+    // The menu is under the word it completes, wherever the bar has the
+    // line: the same for each match, further right past `e `.
+    let word_x = |cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            ws.active_editor().unwrap().read(cx).cmdline_word_x()
+        })
+    };
+    cx.simulate_keystrokes("escape :");
+    cx.simulate_input("q");
+    cx.simulate_keystrokes("tab");
+    // Within the rounding of the bar's layout.
+    let near = |a: gpui::Pixels, b: gpui::Pixels| (a - b).abs() < px(1.);
+    let name = word_x(cx).expect("the bar has a caret");
+    cx.simulate_keystrokes("tab");
+    assert!(near(word_x(cx).unwrap(), name));
+    cx.simulate_keystrokes("escape :");
+    cx.simulate_input("e s");
+    cx.simulate_keystrokes("tab");
+    let file = word_x(cx).expect("the bar has a caret");
+    assert!(file > name, "{file:?} past {name:?}");
+    cx.simulate_keystrokes("tab");
+    assert!(near(word_x(cx).unwrap(), file));
+}
+
+#[gpui::test]
 fn tab_completes_the_command_line(cx: &mut TestAppContext) {
     let project = Project::new(&[
         ("a.txt", "a\n"),
