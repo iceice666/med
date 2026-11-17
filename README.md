@@ -86,9 +86,11 @@ turns this off.
 ## Getting started
 
 With no init file, no key is bound except `:`. Run
-`:install_default_config` to copy [`examples/`](examples) into the config
-directory and load it (`!` overwrites existing files), or load the examples
-from a checkout:
+`:install_default_config` to download [`examples/`](examples) from GitHub
+(at the tag of the running version; `:install_default_config main` for the
+latest) into the config directory and load it (`!` overwrites existing
+files). It needs the network and `curl`. Or load the examples from a
+checkout:
 
 ```lisp
 ; ~/.config/med/init.mlisp

@@ -9,10 +9,14 @@ but `:`, which opens the command line for as long as nothing at all is
 bound in normal mode. A popup over the editor says so, and what to type;
 it steps aside while the command line is open, escape or a click beside
 it puts it away, and it goes once keys are bound. There,
-`:install_default_config` writes every file of [`examples/`](../examples)
-to the configuration directory and runs its `init.mlisp`; it leaves files
-that are there already alone and says which, and
-`:install_default_config!` overwrites them.
+`:install_default_config` downloads every file of [`examples/`](../examples)
+from GitHub, at the tag of the version that is running (`v0.2.5` for
+0.2.5), writes them to the configuration directory and runs its
+`init.mlisp`. It needs the network and `curl`, and writes nothing unless
+every file came. It leaves files that are there already alone and says
+which, and `:install_default_config!` overwrites them. Given a ref, it
+takes the examples of that ref instead: `:install_default_config main`
+for the latest.
 
 The keys below are the ones of [`examples/vim.mlisp`](../examples/vim.mlisp)
 (vim's) and [`examples/keys.mlisp`](../examples/keys.mlisp) (the rest), which
@@ -237,8 +241,8 @@ named command, and keys are bound to names in tables:
   (`gd`, the `space` leader keys), the keys of flash and the `⌘`
   shortcuts.
 - `med/src/defaults.rs`: the names ex commands go by (`:w` is
-  `workspace.save`), the one table that is built in, and the copy of
-  `examples/` that `:install_default_config` writes.
+  `workspace.save`), the one table that is built in, and the names of the
+  files of `examples/` that `:install_default_config` downloads.
 
 Keys are written in vim notation (`<C-w>`, `<Space>f`, `<CR>`). Any command
 can also be run by its full name, as in `:workspace.find_file`.

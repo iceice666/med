@@ -4,7 +4,7 @@
 
 ## 按鍵
 
-med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒有任何按鍵有作用；只要 normal 模式中完全沒有綁定，`:` 就會開啟命令列。編輯器上方會出現一個彈出視窗說明這件事，以及要輸入什麼；命令列開啟時它會暫時讓開，按 escape 或點擊視窗外即可關閉，綁定按鍵後也會自動消失。在命令列中，`:install_default_config` 會把 [`examples/`](../examples) 的每個檔案寫入設定目錄，並執行其中的 `init.mlisp`；已經存在的檔案會保留不動，並列出是哪些，`:install_default_config!` 則會覆寫它們。
+med 本身不綁定任何按鍵：沒有初始化檔時，除了 `:` 之外沒有任何按鍵有作用；只要 normal 模式中完全沒有綁定，`:` 就會開啟命令列。編輯器上方會出現一個彈出視窗說明這件事，以及要輸入什麼；命令列開啟時它會暫時讓開，按 escape 或點擊視窗外即可關閉，綁定按鍵後也會自動消失。在命令列中，`:install_default_config` 會從 GitHub 下載 [`examples/`](../examples) 的每個檔案（取執行中版本的 tag，例如 0.2.5 取 `v0.2.5`），寫入設定目錄，並執行其中的 `init.mlisp`。這需要網路與 `curl`，且只有所有檔案都下載成功才會寫入。已經存在的檔案會保留不動，並列出是哪些，`:install_default_config!` 則會覆寫它們。給定一個 ref 時改取該 ref 的範例：`:install_default_config main` 取最新的。
 
 以下按鍵出自 [`examples/vim.mlisp`](../examples/vim.mlisp)（vim 的部分）與 [`examples/keys.mlisp`](../examples/keys.mlisp)（其餘部分），由初始化檔依序載入：
 
@@ -106,7 +106,7 @@ flash.nvim 的其他功能也使用同樣的標記：
 - vim 引擎的命令（`motion.word_forward`、`operator.delete`、`insert.newline`…，見 `med_vim::command_names()`）。次數、暫存器以及運算子加移動屬於語法，不論綁定的是哪些按鍵都能運作。它的標準按鍵配置是 `examples/vim.mlisp`；`med-vim/src/keymap.rs` 中的 `Keymap::vim()` 是同一張表，為測試而保留。
 - 應用程式的命令（`workspace.*`、`editor.*`），由各個 view 在 `Commands` 中註冊，以及程式定義的命令（`tree.*`、`git.*` 和 `picker.*` 屬於範例）。
 - `examples/keys.mlisp`：作用超出緩衝區的編輯器按鍵（`gd`、`space` leader 鍵）、flash 的按鍵與 `⌘` 快捷鍵。
-- `med/src/defaults.rs`：ex 命令對應的名稱（`:w` 即 `workspace.save`），這是唯一內建的表，以及 `:install_default_config` 寫出的 `examples/` 副本。
+- `med/src/defaults.rs`：ex 命令對應的名稱（`:w` 即 `workspace.save`），這是唯一內建的表，以及 `:install_default_config` 下載的 `examples/` 檔名。
 
 按鍵以 vim 記法書寫（`<C-w>`、`<Space>f`、`<CR>`）。任何命令也都能用全名執行，例如 `:workspace.find_file`。
 

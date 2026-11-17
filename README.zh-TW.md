@@ -45,7 +45,7 @@ cargo test --workspace
 
 ## 入門
 
-沒有初始化檔時，除了 `:` 以外沒有任何按鍵有綁定。執行 `:install_default_config` 會把 [`examples/`](examples) 複製到設定目錄並載入（加 `!` 會覆寫已存在的檔案），或者從原始碼目錄載入範例：
+沒有初始化檔時，除了 `:` 以外沒有任何按鍵有綁定。執行 `:install_default_config` 會從 GitHub 下載 [`examples/`](examples)（取執行中版本的 tag；`:install_default_config main` 取最新的）到設定目錄並載入（加 `!` 會覆寫已存在的檔案）。這需要網路與 `curl`。或者從原始碼目錄載入範例：
 
 ```lisp
 ; ~/.config/med/init.mlisp
