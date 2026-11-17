@@ -9,7 +9,7 @@ use crate::syntax::{LangInfo, Syntax};
 use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
 use gpui::component::ActiveTheme as _;
-use gpui::component::text::{RangeHighlight, TextView, TextViewState};
+use gpui::component::text::{RangeHighlight, TextView, TextViewState, TextViewStyle};
 use gpui::prelude::*;
 use gpui::*;
 use lsp_types as lsp;
@@ -4993,12 +4993,29 @@ impl Editor {
                         .rounded_md()
                         .shadow_md()
                         .text_size(px(12.))
-                        .child(TextView::markdown("hover-text", text)),
+                        .child(markdown_in_editor_font("hover-text", text, cx)),
                 ),
             )
             .with_priority(1),
         )
     }
+}
+
+/// Markdown whose code, in blocks and inline, is in the editor's font:
+/// its family, weight, features and fallbacks, at the view's own sizes.
+fn markdown_in_editor_font(id: &'static str, text: SharedString, cx: &App) -> TextView {
+    let font = crate::mono_font(cx);
+    let mut code = StyleRefinement::default()
+        .font_family(font.family)
+        .font_features(font.features)
+        .font_weight(font.weight);
+    code.text.font_fallbacks = font.fallbacks;
+    TextView::markdown(id, text)
+        .inline_code_style(code.clone())
+        .style(TextViewStyle {
+            code_block: code,
+            ..Default::default()
+        })
 }
 
 /// Everything one paint needs, computed during prepaint.
