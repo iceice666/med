@@ -133,8 +133,17 @@ The theme's colors are `accent` `accent-foreground` `background` `border`
 `sidebar` `sidebar-border` `sidebar-foreground` `status-bar` `success`
 `tab-bar` `title-bar` `title-bar-border` `warning`, and the theme file's
 `base.*` colors: `red` `green` `blue` `yellow` `magenta` `cyan`, each
-with a `-light` one (`'red-light`). A layout that names one follows the
-theme as it changes. A program can read them, and put its own in their
+with a `-light` one (`'red-light`). Med's own are `color-column`
+`indent-guide` `indent-guide-active` `fold` `search` `flash-target`
+`flash-label` `flash-label-foreground` `git-added` `git-modified`
+`git-deleted` `diagnostic-error` `diagnostic-warning` `diagnostic-info`
+`diagnostic-hint` `terminal-foreground` `terminal-background`
+`terminal-cursor`, and the terminal's sixteen, `terminal-black`
+`terminal-red` `terminal-green` `terminal-yellow` `terminal-blue`
+`terminal-magenta` `terminal-cyan` `terminal-white` and each with
+`bright-` (`'terminal-bright-red`); a theme file can give them too (see
+`docs/keys.md`). A layout that names one follows the theme as it
+changes. A program can read them, and put its own in their
 place:
 
 ```lisp

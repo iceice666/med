@@ -15,12 +15,29 @@
 //! whichever theme is put on, until they are taken away. When a theme put
 //! on brings other colors, programs are told with the `theme-changed`
 //! hook, as the window that is first to hear of it runs it.
+//!
+//! The editor and the terminal have colors of their own, med's
+//! ([`MED_COLORS`]): the search's, the git gutter's, the terminal's
+//! sixteen. Each is worked out from the theme's colors, as it was before
+//! there were names for them, unless the theme file says otherwise in a
+//! `"med"` section of the theme, next to its `"colors"`:
+//!
+//! ```json
+//! { "name": "Catppuccin Mocha", "mode": "dark",
+//!   "colors": { ... },
+//!   "med": { "search": "#f9e2af59", "terminal-red": "#f38ba8" } }
+//! ```
+//!
+//! gpui-component passes over what it does not know, so the file is
+//! still a theme to it. Programs name these colors as they name the
+//! theme's.
 
 use crate::Settings;
-use crate::panel::{Color, SetThemeColor, THEME_COLORS};
+use crate::panel::{Color, Named, THEME_COLORS};
 use gpui::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
 use gpui::{App, Global, Hsla, Rgba, SharedString, Window, px};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// What the `theme` option names.
@@ -38,21 +55,66 @@ pub enum ThemeChoice {
 /// Put the theme files of `dir` in the registry, so that the init file
 /// can name their themes. A file that is not a theme is passed over.
 pub fn load_dir(dir: &Path, cx: &mut App) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<_> = entries
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| path.extension().is_some_and(|e| e == "json"))
-        .collect();
-    paths.sort();
-    for path in paths {
-        if let Ok(text) = std::fs::read_to_string(&path) {
+    let paths = theme_files(dir);
+    for path in &paths {
+        if let Ok(text) = std::fs::read_to_string(path) {
             ThemeRegistry::global_mut(cx)
                 .load_themes_from_str(&text)
                 .ok();
         }
     }
+    read_med_colors(&paths, cx);
+}
+
+/// Read again the `"med"` sections of the theme files of `dir`, as they
+/// are now: after one changed.
+pub fn reload_med_colors(dir: &Path, cx: &mut App) {
+    read_med_colors(&theme_files(dir), cx);
+}
+
+/// The `.json` files of `dir`, in the order of their names.
+fn theme_files(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// What the `"med"` sections of these files say, by theme. A color that is
+/// not med's, or not a color, is passed over and the rest are kept.
+fn read_med_colors(paths: &[PathBuf], cx: &mut App) {
+    let mut by_theme: HashMap<SharedString, Vec<(usize, Hsla)>> = HashMap::new();
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(file) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let themes = file.get("themes").and_then(|t| t.as_array());
+        for theme in themes.into_iter().flatten() {
+            let (Some(name), Some(med)) = (
+                theme.get("name").and_then(|n| n.as_str()),
+                theme.get("med").and_then(|m| m.as_object()),
+            ) else {
+                continue;
+            };
+            let colors = med.iter().filter_map(|(key, value)| {
+                let index = MED_COLORS.iter().position(|(known, _)| known == key)?;
+                let color = Rgba::try_from(value.as_str()?).ok()?;
+                Some((index, color.into()))
+            });
+            by_theme
+                .entry(SharedString::from(name.to_string()))
+                .or_default()
+                .extend(colors);
+        }
+    }
+    cx.set_global(FileColors(by_theme));
 }
 
 fn find(name: &SharedString, cx: &App) -> Result<Rc<ThemeConfig>, String> {
@@ -132,18 +194,44 @@ fn put_on(window: Option<&mut Window>, cx: &mut App) {
     theme.dark_theme = dark;
     Theme::change(mode, window, cx);
     // Putting the theme on again keeps the last size where the file has
-    // none: say it every time. The programs' colors go over the file's.
-    let own = cx.default_global::<OwnColors>().0.clone();
+    // none: say it every time.
     Theme::update(cx, |theme| {
         let config = match theme.mode.is_dark() {
             true => &theme.dark_theme,
             false => &theme.light_theme,
         };
         theme.font_size = px(ui_font_size.or(config.font_size).unwrap_or(UI_FONT_SIZE));
-        for (_, set, color) in &own {
-            set(theme, color.of(theme));
-        }
     });
+    // The programs' colors go over the file's, the theme's first: med's
+    // are worked out from those, and can be named by them too.
+    let own = cx.default_global::<OwnColors>().0.clone();
+    work_out_med_colors(cx);
+    for (_, named, color) in &own {
+        if let Named::Theme(_, set) = *named {
+            let color = color.of(cx);
+            Theme::update(cx, |theme| set(theme, color));
+        }
+    }
+    work_out_med_colors(cx);
+    for (_, named, color) in &own {
+        if let Named::Med(index) = *named {
+            let color = color.of(cx);
+            cx.global_mut::<MedColors>().0[index] = color;
+        }
+    }
+}
+
+/// Med's colors, from the theme in use and what its file says of them.
+fn work_out_med_colors(cx: &mut App) {
+    let theme = Theme::global(cx);
+    let mut colors: Vec<Hsla> = MED_COLORS.iter().map(|(_, of)| of(theme)).collect();
+    let file = cx
+        .try_global::<FileColors>()
+        .and_then(|file| file.0.get(theme.theme_name()));
+    for &(index, color) in file.into_iter().flatten() {
+        colors[index] = color;
+    }
+    cx.set_global(MedColors(colors));
 }
 
 /// gpui-component's own `rem`.
@@ -153,27 +241,19 @@ const UI_FONT_SIZE: f32 = 16.;
 /// order they were given: one can be another of the theme's, as it is
 /// after those before it.
 #[derive(Default)]
-struct OwnColors(Vec<(&'static str, SetThemeColor, Color)>);
+struct OwnColors(Vec<(&'static str, Named, Color)>);
 
 impl Global for OwnColors {}
 
 /// Put `color` in place of the theme's `name`, over every theme from now
 /// on, or with `None` the theme's own back.
-pub(crate) fn set_color(
-    name: &'static str,
-    set: SetThemeColor,
-    color: Option<Color>,
-    cx: &mut App,
-) {
+pub(crate) fn set_color(name: &'static str, named: Named, color: Option<Color>, cx: &mut App) {
     let own = &mut cx.default_global::<OwnColors>().0;
     own.retain(|(known, ..)| *known != name);
-    match color {
-        Some(color) => {
-            own.push((name, set, color));
-            Theme::update(cx, |theme| set(theme, color.of(theme)));
-        }
-        None => put_on(None, cx),
+    if let Some(color) = color {
+        own.push((name, named, color));
     }
+    put_on(None, cx);
 }
 
 /// Take away every color programs put in place of the theme's, as
@@ -199,7 +279,12 @@ impl Global for Changes {}
 /// The colors a program can name, as they are now.
 fn colors(cx: &App) -> Vec<Hsla> {
     let theme = Theme::global(cx);
-    THEME_COLORS.iter().map(|(_, get, _)| get(theme)).collect()
+    let med = (0..MED_COLORS.len()).map(|index| med_color_at(index, cx));
+    THEME_COLORS
+        .iter()
+        .map(|(_, get, _)| get(theme))
+        .chain(med)
+        .collect()
 }
 
 /// A color as `"#rrggbb"`, or `"#rrggbbaa"` where it can be seen through.
@@ -215,5 +300,103 @@ pub(crate) fn hex(color: Hsla) -> String {
     match byte(rgba.a) {
         255 => rgb,
         alpha => format!("{rgb}{alpha:02x}"),
+    }
+}
+
+// ---- med's own colors ----------------------------------------------------
+
+/// Each of med's colors: its name, and how it is worked out from the
+/// theme where the theme file does not say.
+macro_rules! med_colors {
+    ($($variant:ident $name:literal $of:expr;)*) => {
+        /// One of [`MED_COLORS`].
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) enum MedColor {
+            $($variant,)*
+        }
+
+        pub(crate) const MED_COLORS: &[(&str, fn(&Theme) -> Hsla)] = &[$(($name, $of),)*];
+    };
+}
+
+med_colors! {
+    // A shade of the text over whatever is behind it: darker in a light
+    // theme, lighter in a dark one.
+    ColorColumn "color-column" |t| t.foreground.opacity(0.07);
+    IndentGuide "indent-guide" |t| t.foreground.opacity(0.12);
+    IndentGuideActive "indent-guide-active" |t| t.foreground.opacity(0.35);
+    Fold "fold" |t| t.foreground.opacity(0.1);
+    Search "search" |t| t.warning.opacity(0.35);
+    // What `motion.flash` found: the place `enter` goes to stands out
+    // among the others, and a label from everything.
+    FlashTarget "flash-target" |t| t.warning.opacity(0.7);
+    FlashLabel "flash-label" |t| t.danger;
+    FlashLabelForeground "flash-label-foreground" |t| t.background;
+    GitAdded "git-added" |t| t.green;
+    GitModified "git-modified" |t| t.blue;
+    GitDeleted "git-deleted" |t| t.red;
+    DiagnosticError "diagnostic-error" |t| t.danger;
+    DiagnosticWarning "diagnostic-warning" |t| t.warning;
+    DiagnosticInfo "diagnostic-info" |t| t.info;
+    DiagnosticHint "diagnostic-hint" |t| t.muted_foreground;
+    TerminalForeground "terminal-foreground" |t| t.foreground;
+    TerminalBackground "terminal-background" |t| t.background;
+    TerminalCursor "terminal-cursor" |t| t.foreground;
+    // xterm's, on a light background or a dark one.
+    TerminalBlack "terminal-black" |t| ansi(t, 0);
+    TerminalRed "terminal-red" |t| ansi(t, 1);
+    TerminalGreen "terminal-green" |t| ansi(t, 2);
+    TerminalYellow "terminal-yellow" |t| ansi(t, 3);
+    TerminalBlue "terminal-blue" |t| ansi(t, 4);
+    TerminalMagenta "terminal-magenta" |t| ansi(t, 5);
+    TerminalCyan "terminal-cyan" |t| ansi(t, 6);
+    TerminalWhite "terminal-white" |t| ansi(t, 7);
+    TerminalBrightBlack "terminal-bright-black" |t| ansi(t, 8);
+    TerminalBrightRed "terminal-bright-red" |t| ansi(t, 9);
+    TerminalBrightGreen "terminal-bright-green" |t| ansi(t, 10);
+    TerminalBrightYellow "terminal-bright-yellow" |t| ansi(t, 11);
+    TerminalBrightBlue "terminal-bright-blue" |t| ansi(t, 12);
+    TerminalBrightMagenta "terminal-bright-magenta" |t| ansi(t, 13);
+    TerminalBrightCyan "terminal-bright-cyan" |t| ansi(t, 14);
+    TerminalBrightWhite "terminal-bright-white" |t| ansi(t, 15);
+}
+
+/// The terminal's color `index` of the sixteen, as xterm has it.
+fn ansi(theme: &Theme, index: usize) -> Hsla {
+    let palette = match theme.is_dark() {
+        true => med_term::Palette::dark(),
+        false => med_term::Palette::light(),
+    };
+    let rgb = palette.ansi[index];
+    let channel = |v: u8| v as f32 / 255.;
+    Rgba {
+        r: channel(rgb.r),
+        g: channel(rgb.g),
+        b: channel(rgb.b),
+        a: 1.,
+    }
+    .into()
+}
+
+/// Med's colors as they are now, in the order of [`MED_COLORS`].
+struct MedColors(Vec<Hsla>);
+
+impl Global for MedColors {}
+
+/// What the theme files say of med's colors, by theme.
+struct FileColors(HashMap<SharedString, Vec<(usize, Hsla)>>);
+
+impl Global for FileColors {}
+
+/// One of med's colors, in the theme in use.
+pub(crate) fn med_color(color: MedColor, cx: &App) -> Hsla {
+    med_color_at(color as usize, cx)
+}
+
+/// The one of [`MED_COLORS`] at `index`.
+pub(crate) fn med_color_at(index: usize, cx: &App) -> Hsla {
+    match cx.try_global::<MedColors>() {
+        Some(colors) => colors.0[index],
+        None => MED_COLORS[index].1(Theme::global(cx)),
     }
 }

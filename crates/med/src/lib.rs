@@ -376,8 +376,16 @@ pub fn run() {
                 && themes.is_dir()
             {
                 theme::load_dir(&themes, cx);
-                gpui::component::ThemeRegistry::watch_dir(themes, cx, |cx| theme::apply(None, cx))
-                    .ok();
+                // The watcher reads the files again into the registry, and
+                // says nothing more: the theme is put on again from there.
+                // Putting it on never changes the registry.
+                let dir = themes.clone();
+                cx.observe_global::<gpui::component::ThemeRegistry>(move |cx| {
+                    theme::reload_med_colors(&dir, cx);
+                    theme::apply(None, cx);
+                })
+                .detach();
+                gpui::component::ThemeRegistry::watch_dir(themes, cx, |_| {}).ok();
             }
             // Not in `init`: tests must not depend on what is in $HOME.
             script::load_init(cx);

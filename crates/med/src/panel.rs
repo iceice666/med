@@ -167,15 +167,32 @@ enum Justify {
 /// A color of the theme by name, or `"#rrggbb"`.
 #[derive(Clone, Copy)]
 pub(crate) enum Color {
-    Theme(ThemeColor),
+    Named(Named),
     Fixed(Hsla),
 }
 
 impl Color {
-    pub(crate) fn of(self, theme: &Theme) -> Hsla {
+    pub(crate) fn of(self, cx: &App) -> Hsla {
         match self {
-            Color::Theme(get) => get(theme),
+            Color::Named(named) => named.of(cx),
             Color::Fixed(color) => color,
+        }
+    }
+}
+
+/// A color a program can name: one of the theme's, or one of med's own.
+#[derive(Clone, Copy)]
+pub(crate) enum Named {
+    Theme(ThemeColor, SetThemeColor),
+    /// Its place in [`crate::theme::MED_COLORS`].
+    Med(usize),
+}
+
+impl Named {
+    pub(crate) fn of(self, cx: &App) -> Hsla {
+        match self {
+            Named::Theme(get, _) => get(cx.theme()),
+            Named::Med(index) => crate::theme::med_color_at(index, cx),
         }
     }
 }
@@ -238,18 +255,20 @@ pub(crate) const THEME_COLORS: &[(&str, ThemeColor, SetThemeColor)] = theme_colo
     "yellow-light" yellow_light
 ];
 
-/// The theme's color a program names, as `key` was given it.
-pub(crate) fn theme_color(
-    key: &str,
-    value: &Value,
-) -> Result<(&'static str, ThemeColor, SetThemeColor), Error> {
+/// The theme's color a program names, or med's, as `key` was given it.
+pub(crate) fn theme_color(key: &str, value: &Value) -> Result<(&'static str, Named), Error> {
     let Some(name) = word(value) else {
         return Err(wrong(key, "a color of the theme", value));
     };
-    match THEME_COLORS.iter().find(|(known, ..)| *known == name) {
-        Some(&found) => Ok(found),
+    let med = crate::theme::MED_COLORS.iter().map(|(name, _)| *name);
+    if let Some(&(known, get, set)) = THEME_COLORS.iter().find(|(known, ..)| *known == name) {
+        return Ok((known, Named::Theme(get, set)));
+    }
+    match med.clone().position(|known| known == name) {
+        Some(index) => Ok((crate::theme::MED_COLORS[index].0, Named::Med(index))),
         None => {
-            let known: Vec<&str> = THEME_COLORS.iter().map(|(name, ..)| *name).collect();
+            let theme = THEME_COLORS.iter().map(|(name, ..)| *name);
+            let known: Vec<&str> = theme.chain(med).collect();
             Err(Error::new(
                 ErrorKind::Raised,
                 format!(
@@ -306,7 +325,7 @@ pub(crate) fn color(key: &str, value: &Value) -> Result<Color, Error> {
             Err(_) => Err(wrong(key, "a color like \"#1e1e2e\"", value)),
         };
     }
-    theme_color(key, value).map(|(_, get, _)| Color::Theme(get))
+    theme_color(key, value).map(|(_, named)| Color::Named(named))
 }
 
 /// One of `choices`, by name.
@@ -715,11 +734,7 @@ impl Vars {
 
 impl Style {
     fn apply<E: Styled>(&self, mut el: E, cx: &App) -> E {
-        let theme = cx.theme();
-        let color = |color: Color| match color {
-            Color::Theme(get) => get(theme),
-            Color::Fixed(color) => color,
-        };
+        let color = |color: Color| color.of(cx);
         match self.width {
             Some(Size::Pixels(width)) => el = el.w(px(width)),
             Some(Size::Full) => el = el.w_full(),
@@ -1066,7 +1081,7 @@ mod tests {
         assert!(matches!(row.style.width, Some(Size::Full)));
         assert_eq!(row.style.grow, Some(1.));
         assert!(matches!(row.style.bg, Some(Color::Fixed(_))));
-        assert!(matches!(row.style.color, Some(Color::Theme(_))));
+        assert!(matches!(row.style.color, Some(Color::Named(_))));
         assert!(row.hover.as_ref().is_some_and(|hover| hover.bg.is_some()));
         assert!(matches!(&row.on_click, Some(Click::Command(name)) if name == "tree.open"));
         let children = inside(&row);

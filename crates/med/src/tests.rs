@@ -1692,6 +1692,62 @@ fn the_theme_option_picks_colors(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_editor_and_terminal_colors_go_by_the_theme(cx: &mut TestAppContext) {
+    let theme = r##"{ "name": "Test", "themes": [{
+        "name": "Test Dark", "mode": "dark",
+        "colors": { "background": "#101010", "foreground": "#e0e0e0",
+                    "warning.background": "#d0a000" },
+        "med": { "search": "#00ff0080", "terminal-red": "#ff0000",
+                 "git-added": "green", "no-such": "#ffffff" } }] }"##;
+    let project = Project::new(&[("a.txt", "a\n"), ("themes/test.json", theme)]);
+    let (_ws, cx) = open(&project, &["a.txt"], cx);
+    cx.update(|_, cx| crate::theme::load_dir(&project.path("themes"), cx));
+    let run = |source: &str, cx: &mut VisualTestContext| {
+        let said = lisp(source, cx);
+        cx.run_until_parked();
+        said
+    };
+    // gpui-component takes the file for a theme, "med" and all.
+    run(r#"(set-option 'theme "Test Dark")"#, cx);
+    assert_eq!(run("(theme-color 'background)", cx), r##""#101010""##);
+
+    // What the file does not say is as it was before there were names
+    // for it: a shade of the text, the theme's warning seen through.
+    assert_eq!(run("(theme-color 'color-column)", cx), r##""#e0e0e012""##);
+    assert_eq!(
+        run("(theme-color 'indent-guide-active)", cx),
+        r##""#e0e0e059""##
+    );
+    assert_eq!(
+        run("(theme-color 'git-added)", cx),
+        run("(theme-color 'green)", cx)
+    );
+    // And what it says goes over that.
+    assert_eq!(run("(theme-color 'search)", cx), r##""#00ff0080""##);
+    let palette = |cx: &mut VisualTestContext| cx.update(|_, cx| crate::terminal::palette(cx));
+    let ansi = palette(cx).ansi;
+    assert_eq!((ansi[1].r, ansi[1].g, ansi[1].b), (0xff, 0, 0));
+    assert_eq!((ansi[2].r, ansi[2].g, ansi[2].b), (0x0d, 0xbc, 0x79));
+    assert_eq!(palette(cx).background.r, 0x10);
+
+    // Worked out from the theme's colors after a program's: a warning of
+    // its own moves the flash's.
+    run(r##"(set-theme-color 'warning "#0000ff")"##, cx);
+    assert!(run("(theme-color 'flash-target)", cx).starts_with(r##""#0000ff"##));
+    // A program's goes over the file's, and nil gives the file's back.
+    run(r##"(set-theme-color 'search "#123456")"##, cx);
+    assert_eq!(run("(theme-color 'search)", cx), r##""#123456""##);
+    run("(set-theme-color 'search nil)", cx);
+    assert_eq!(run("(theme-color 'search)", cx), r##""#00ff0080""##);
+    // One of med's can be another of them, and is drawn by its name.
+    run("(set-theme-color 'git-modified 'terminal-red)", cx);
+    assert_eq!(run("(theme-color 'git-modified)", cx), r##""#ff0000""##);
+    let named = crate::panel::color("bg", &med_lisp::Value::symbol("git-modified")).ok();
+    let drawn = cx.update(|_, cx| crate::theme::hex(named.unwrap().of(cx)));
+    assert_eq!(drawn, "#ff0000");
+}
+
+#[gpui::test]
 fn programs_read_and_change_the_theme_colors(cx: &mut TestAppContext) {
     let project = Project::new(&[("a.txt", "a\n")]);
     let (ws, cx) = open(&project, &["a.txt"], cx);
@@ -1709,7 +1765,7 @@ fn programs_read_and_change_the_theme_colors(cx: &mut TestAppContext) {
     assert_eq!(run("(theme-color :cyan-light)", cx), r##""#89dceb""##);
     assert_eq!(run("(theme-color 'selection)", cx), r##""#9399b24d""##);
     let hex = |color: Option<crate::panel::Color>, cx: &mut VisualTestContext| {
-        cx.update(|_, cx| crate::theme::hex(color.unwrap().of(gpui::component::Theme::global(cx))))
+        cx.update(|_, cx| crate::theme::hex(color.unwrap().of(cx)))
     };
     let selection = run("(theme-color 'selection)", cx);
     let parsed =

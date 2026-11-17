@@ -669,17 +669,35 @@ fn rgb_of(color: Hsla) -> Rgb {
     Rgb::new(byte(c.r), byte(c.g), byte(c.b))
 }
 
-/// The terminal's colors, after the theme's.
-fn palette(cx: &App) -> Palette {
-    let theme = cx.theme();
-    let mut palette = match theme.is_dark() {
-        true => Palette::dark(),
-        false => Palette::light(),
-    };
-    palette.foreground = rgb_of(theme.foreground);
-    palette.background = rgb_of(theme.background);
-    palette.cursor = rgb_of(theme.foreground);
-    palette
+/// The terminal's colors: med's, which go by the theme.
+pub(crate) fn palette(cx: &App) -> Palette {
+    use crate::theme::{MedColor, med_color};
+    use MedColor::*;
+    let rgb = |color: MedColor| rgb_of(med_color(color, cx));
+    Palette {
+        foreground: rgb(TerminalForeground),
+        background: rgb(TerminalBackground),
+        cursor: rgb(TerminalCursor),
+        ansi: [
+            TerminalBlack,
+            TerminalRed,
+            TerminalGreen,
+            TerminalYellow,
+            TerminalBlue,
+            TerminalMagenta,
+            TerminalCyan,
+            TerminalWhite,
+            TerminalBrightBlack,
+            TerminalBrightRed,
+            TerminalBrightGreen,
+            TerminalBrightYellow,
+            TerminalBrightBlue,
+            TerminalBrightMagenta,
+            TerminalBrightCyan,
+            TerminalBrightWhite,
+        ]
+        .map(rgb),
+    }
 }
 
 /// What the terminal draws, worked out before it is drawn.

@@ -1923,9 +1923,10 @@ fn define_functions(interp: &mut Interp) {
     // (theme-color name): a color of the theme in use, as "#rrggbb", or
     // "#rrggbbaa" where it can be seen through. A layout can ask too.
     interp.define_native("theme-color", 1, |call, args| {
-        let (_, get, _) = crate::panel::theme_color("theme-color", &args[0])?;
-        let theme = gpui::component::Theme::global(call.host::<App>()?);
-        Ok(Value::from(crate::theme::hex(get(theme))))
+        let (_, named) = crate::panel::theme_color("theme-color", &args[0])?;
+        Ok(Value::from(crate::theme::hex(
+            named.of(call.host::<App>()?),
+        )))
     });
 
     // (set-theme-color name color): put a color, "#rrggbb" or another of
@@ -1933,12 +1934,12 @@ fn define_functions(interp: &mut Interp) {
     // on; nil for the theme's own again.
     interp.define_native("set-theme-color", 2, |call, args| {
         let key = "set-theme-color";
-        let (name, _, set) = crate::panel::theme_color(key, &args[0])?;
+        let (name, named) = crate::panel::theme_color(key, &args[0])?;
         let color = match &args[1] {
             Value::Nil => None,
             color => Some(crate::panel::color(key, color)?),
         };
-        crate::theme::set_color(name, set, color, app(call)?);
+        crate::theme::set_color(name, named, color, app(call)?);
         Ok(Value::Nil)
     });
 

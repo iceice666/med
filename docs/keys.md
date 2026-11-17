@@ -205,6 +205,20 @@ Catppuccin's Latte and Mocha, made from its palette
 (<https://github.com/catppuccin/palette>, MIT licence), and
 `:install_default_config` writes it there.
 
+The editor's and the terminal's own colors are worked out from the
+theme's: the color column and the indent guides are shades of the text,
+a search is the theme's warning seen through, the git gutter is its
+green, blue and red, and the terminal has xterm's sixteen. A theme can
+say otherwise in a `"med"` section next to its `"colors"`, by the names
+a program gives them (see `docs/lisp.md`); a name med does not have, or
+a color it cannot read, is passed over:
+
+```json
+{ "name": "Catppuccin Mocha", "mode": "dark",
+  "colors": { "background": "#1e1e2e" },
+  "med": { "search": "#f9e2af59", "terminal-red": "#f38ba8" } }
+```
+
 `(set-option 'undo-file true)` keeps each file's undo history when it is
 saved, as vim's `undofile`, and opening the file again, in this run or
 another, takes it up: `u` goes back past the save, through the last 1000

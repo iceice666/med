@@ -6,6 +6,7 @@ use crate::lsp::{
     LspEvent, LspStore, Place, SemanticAnswer, SemanticTokens, ServerName, uri_to_path,
 };
 use crate::syntax::{LangInfo, Syntax};
+use crate::theme::MedColor;
 use crate::{Settings, VimGlobal};
 use anyhow::Context as _;
 use gpui::component::ActiveTheme as _;
@@ -3970,27 +3971,38 @@ impl Editor {
             .style
             .editor_active_line
             .unwrap_or(theme.secondary.opacity(0.5));
-        // A shade of the text over whatever is behind, the cursor's line
-        // too: darker in a light theme, lighter in a dark one.
-        let color_column_bg = fg.opacity(0.07);
-        let (guide_color, block_guide_color) = (fg.opacity(0.12), fg.opacity(0.35));
+        // Med's own colors: theme.rs works them out.
+        let med = |color: MedColor| crate::theme::med_color(color, cx);
+        let color_column_bg = med(MedColor::ColorColumn);
+        let guide_color = med(MedColor::IndentGuide);
+        let block_guide_color = med(MedColor::IndentGuideActive);
         // A closed fold: behind the count of its lines, and its sign.
-        let fold_bg = fg.opacity(0.1);
+        let fold_bg = med(MedColor::Fold);
         let fold_sign = SharedString::new_static("▸");
         let indent_guides = self.indent_guides(cx);
         let sticky_scroll = self.sticky_scroll(cx);
         let sticky_edge_color = theme.border;
-        let diag_colors = [theme.danger, theme.warning, theme.info, muted];
-        let (git_added, git_modified, git_deleted) = (theme.green, theme.blue, theme.red);
+        let diag_colors = [
+            med(MedColor::DiagnosticError),
+            med(MedColor::DiagnosticWarning),
+            med(MedColor::DiagnosticInfo),
+            med(MedColor::DiagnosticHint),
+        ];
+        let git_added = med(MedColor::GitAdded);
+        let git_modified = med(MedColor::GitModified);
+        let git_deleted = med(MedColor::GitDeleted);
         let git_hunks = match self.git_gutter(cx) {
             true => self.git_hunks.clone(),
             false => Vec::new(),
         };
-        let search_bg = theme.warning.opacity(0.35);
+        let search_bg = med(MedColor::Search);
         // What `motion.flash` found: the place `enter` goes to stands out
         // among the others, and a label from everything.
-        let flash_target_bg = theme.warning.opacity(0.7);
-        let (label_bg, label_fg) = (theme.danger, theme.background);
+        let flash_target_bg = med(MedColor::FlashTarget);
+        let (label_bg, label_fg) = (
+            med(MedColor::FlashLabel),
+            med(MedColor::FlashLabelForeground),
+        );
         let scrollbar_color = theme.scrollbar_thumb;
         let base_font = settings.editor_font(&theme.mono_font_family);
         let font_size = px(settings.font_size);
@@ -4165,8 +4177,8 @@ impl Editor {
                 whole_line: d.whole_line,
                 sign: d.sign.clone(),
                 text: d.text.clone(),
-                bg: d.bg.map(|color| color.of(theme)),
-                color: d.color.map(|color| color.of(theme)),
+                bg: d.bg.map(|color| color.of(cx)),
+                color: d.color.map(|color| color.of(cx)),
             })
             .collect();
         // The places of a snippet still to fill in: the one the cursor is
