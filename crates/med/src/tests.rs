@@ -71,6 +71,11 @@ impl Drop for Project {
     }
 }
 
+/// `examples/`, to install the default configuration from with no network.
+fn examples() -> crate::defaults::Source {
+    crate::defaults::Source::Dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"))
+}
+
 const VIM: &str = include_str!("../../../examples/vim.mlisp");
 const KEYS: &str = include_str!("../../../examples/keys.mlisp");
 const TREE: &str = include_str!("../../../examples/tree.mlisp");
@@ -3063,7 +3068,7 @@ fn the_popup_goes_once_keys_are_bound(cx: &mut TestAppContext) {
     assert!(shown(&ws, cx));
     let config = project.path("config");
     ws.update_in(cx, |ws, window, cx| {
-        ws.install_default_config(&config, false, window, cx)
+        ws.install_default_config(&config, examples(), false, window, cx)
     });
     cx.run_until_parked();
     assert!(!shown(&ws, cx));
@@ -3093,7 +3098,7 @@ fn installs_keys_into_an_editor_that_has_none(cx: &mut TestAppContext) {
 
     let config = project.path("config");
     ws.update_in(cx, |ws, window, cx| {
-        ws.install_default_config(&config, false, window, cx)
+        ws.install_default_config(&config, examples(), false, window, cx)
     });
     cx.run_until_parked();
     assert_eq!(
@@ -3107,7 +3112,7 @@ fn installs_keys_into_an_editor_that_has_none(cx: &mut TestAppContext) {
     // A second time, nothing is overwritten unless asked.
     fs::write(config.join("keys.mlisp"), "; mine\n").unwrap();
     ws.update_in(cx, |ws, window, cx| {
-        ws.install_default_config(&config, false, window, cx)
+        ws.install_default_config(&config, examples(), false, window, cx)
     });
     let said = ws.read_with(cx, |ws, _| ws.message.clone()).unwrap();
     assert!(said.contains(":install_default_config!"), "{said}");

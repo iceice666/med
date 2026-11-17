@@ -4,16 +4,19 @@
 //! is `examples/vim.mlisp`, and the keys that reach beyond the buffer, the
 //! ones of flash and the app shortcuts are `examples/keys.mlisp`. A panel's
 //! keys, and the keys that bring it up, are bound by the program that
-//! defines the panel. Those files are in the binary as well, for
-//! `:install_default_config` to write where an init file is looked for.
+//! defines the panel. Those files are not in the binary: their names are,
+//! for `:install_default_config` to download them from GitHub, at the tag
+//! of this version, and write them where an init file is looked for.
 
 use crate::VimGlobal;
 use crate::commands::Commands;
+use crate::github::GitHubFile;
 use crate::keymap::PanelKeymaps;
 use gpui::App;
 use med_vim::MapMode;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Ex command names: what can be typed after `:`, and the command it runs.
 /// (Line ranges, `:s`, `:d`, `:y`, `:>`, `:<` and `:noh` are the engine's.)
@@ -71,42 +74,45 @@ pub const EX_ARGS: &[(&str, ExArg)] = &[
 
 /// The configuration `:install_default_config` writes: every file of
 /// `examples/`, by its name there, `init.mlisp` loading the others, and
-/// the theme files of `examples/themes/`.
-pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
-    ("init.mlisp", include_str!("../../../examples/init.mlisp")),
-    ("vim.mlisp", include_str!("../../../examples/vim.mlisp")),
-    ("keys.mlisp", include_str!("../../../examples/keys.mlisp")),
-    ("oil.mlisp", include_str!("../../../examples/oil.mlisp")),
-    ("tree.mlisp", include_str!("../../../examples/tree.mlisp")),
-    (
-        "picker.mlisp",
-        include_str!("../../../examples/picker.mlisp"),
-    ),
-    (
-        "structural.mlisp",
-        include_str!("../../../examples/structural.mlisp"),
-    ),
-    ("git.mlisp", include_str!("../../../examples/git.mlisp")),
-    (
-        "which-key.mlisp",
-        include_str!("../../../examples/which-key.mlisp"),
-    ),
-    ("todo.mlisp", include_str!("../../../examples/todo.mlisp")),
-    ("dired.mlisp", include_str!("../../../examples/dired.mlisp")),
-    (
-        "statusline.mlisp",
-        include_str!("../../../examples/statusline.mlisp"),
-    ),
-    (
-        "titlebar.mlisp",
-        include_str!("../../../examples/titlebar.mlisp"),
-    ),
-    ("rss.mlisp", include_str!("../../../examples/rss.mlisp")),
-    (
-        "themes/catppuccin.json",
-        include_str!("../../../examples/themes/catppuccin.json"),
-    ),
+/// the theme files of `examples/themes/`. Only the names are in the
+/// binary; the files are downloaded from [`REPOSITORY`].
+pub const DEFAULT_CONFIG: &[&str] = &[
+    "init.mlisp",
+    "vim.mlisp",
+    "keys.mlisp",
+    "oil.mlisp",
+    "tree.mlisp",
+    "picker.mlisp",
+    "structural.mlisp",
+    "git.mlisp",
+    "which-key.mlisp",
+    "todo.mlisp",
+    "dired.mlisp",
+    "statusline.mlisp",
+    "titlebar.mlisp",
+    "rss.mlisp",
+    "themes/catppuccin.json",
 ];
+
+/// The GitHub repository [`DEFAULT_CONFIG`] is downloaded from, the files
+/// in its `examples/`.
+pub const REPOSITORY: &str = "iceice666/med";
+
+/// The ref the examples are downloaded at unless another is given: the
+/// tag of this version, so they are the ones it was made with.
+pub fn release_ref() -> String {
+    format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Where the files of [`DEFAULT_CONFIG`] come from.
+#[derive(Clone, Debug)]
+pub enum Source {
+    /// [`REPOSITORY`] at this ref.
+    GitHub(String),
+    /// A directory laid out as `examples/` is, for the tests.
+    #[cfg(test)]
+    Dir(PathBuf),
+}
 
 /// Why the default configuration was not written.
 #[derive(Debug)]
@@ -114,28 +120,95 @@ pub enum InstallError {
     /// These files are there already, and were not to be overwritten.
     Exists(Vec<&'static str>),
     Io(PathBuf, io::Error),
+    /// A file could not be downloaded: what went wrong.
+    Download(String),
 }
 
-/// Write [`DEFAULT_CONFIG`] into `dir`, made if it is not there. Unless
-/// `overwrite`, nothing is written while any of its files is there
-/// already, by its name or by the `.lisp` one it had before. Other files
-/// in `dir` are left as they are.
-pub fn install_default_config(dir: &Path, overwrite: bool) -> Result<(), InstallError> {
-    if !overwrite {
-        let there: Vec<&str> = DEFAULT_CONFIG
+/// Unless `overwrite`, the files of [`DEFAULT_CONFIG`] that are in `dir`
+/// already, by their name or by the `.lisp` one they had before.
+pub fn check_existing(dir: &Path, overwrite: bool) -> Result<(), InstallError> {
+    if overwrite {
+        return Ok(());
+    }
+    let there: Vec<&str> = DEFAULT_CONFIG
+        .iter()
+        .copied()
+        .filter(|name| {
+            let path = dir.join(name);
+            path.exists() || path.with_extension("lisp").exists()
+        })
+        .collect();
+    if there.is_empty() {
+        Ok(())
+    } else {
+        Err(InstallError::Exists(there))
+    }
+}
+
+/// The text of every file of [`DEFAULT_CONFIG`], in its order. They are
+/// downloaded all at once, with `curl`, and it is all of them or an error.
+/// This waits on the network: keep it off the main thread.
+pub fn fetch(source: &Source) -> Result<Vec<(&'static str, String)>, InstallError> {
+    match source {
+        Source::GitHub(git_ref) => download(git_ref),
+        #[cfg(test)]
+        Source::Dir(from) => DEFAULT_CONFIG
             .iter()
-            .map(|(name, _)| *name)
-            .filter(|name| {
-                let path = dir.join(name);
-                path.exists() || path.with_extension("lisp").exists()
+            .map(|name| {
+                let path = from.join(name);
+                std::fs::read_to_string(&path)
+                    .map(|text| (*name, text))
+                    .map_err(|error| InstallError::Io(path, error))
+            })
+            .collect(),
+    }
+}
+
+/// Every file of [`DEFAULT_CONFIG`] from [`REPOSITORY`] at `git_ref`, one
+/// `curl` each, at the same time, by way of a directory of their own.
+fn download(git_ref: &str) -> Result<Vec<(&'static str, String)>, InstallError> {
+    let files = DEFAULT_CONFIG
+        .iter()
+        .map(|name| {
+            GitHubFile::parse(&format!("{REPOSITORY}/examples/{name}@{git_ref}"))
+                .map(|file| (*name, file))
+                .map_err(InstallError::Download)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    static DOWNLOADS: AtomicUsize = AtomicUsize::new(0);
+    let staging = std::env::temp_dir().join(format!(
+        "med-default-config-{}-{}",
+        std::process::id(),
+        DOWNLOADS.fetch_add(1, Ordering::Relaxed)
+    ));
+    let fetched = std::thread::scope(|scope| {
+        let downloads: Vec<_> = files
+            .iter()
+            .map(|(name, file)| {
+                let to = staging.join(name);
+                scope.spawn(move || {
+                    file.fetch(&to).map_err(InstallError::Download)?;
+                    std::fs::read_to_string(&to)
+                        .map(|text| (*name, text))
+                        .map_err(|error| InstallError::Io(to, error))
+                })
             })
             .collect();
-        if !there.is_empty() {
-            return Err(InstallError::Exists(there));
-        }
-    }
+        downloads
+            .into_iter()
+            .map(|download| download.join().expect("a download panicked"))
+            .collect::<Result<Vec<_>, _>>()
+    });
+    let _ = std::fs::remove_dir_all(&staging);
+    fetched
+}
+
+/// Write `files` into `dir`, made if it is not there, over what is there
+/// by those names. Other files in `dir` are left as they are.
+pub fn write(dir: &Path, files: &[(&str, String)]) -> Result<(), InstallError> {
     std::fs::create_dir_all(dir).map_err(|error| InstallError::Io(dir.to_path_buf(), error))?;
-    for (name, text) in DEFAULT_CONFIG {
+    for (name, text) in files {
         let path = dir.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -144,6 +217,20 @@ pub fn install_default_config(dir: &Path, overwrite: bool) -> Result<(), Install
         std::fs::write(&path, text).map_err(|error| InstallError::Io(path, error))?;
     }
     Ok(())
+}
+
+/// Write [`DEFAULT_CONFIG`] from `source` into `dir`. Unless `overwrite`,
+/// nothing is written while any of its files is there already; nothing is
+/// written either unless every file could be had. This waits on the
+/// network: keep it off the main thread.
+pub fn install_default_config(
+    dir: &Path,
+    source: &Source,
+    overwrite: bool,
+) -> Result<(), InstallError> {
+    check_existing(dir, overwrite)?;
+    let files = fetch(source)?;
+    write(dir, &files)
 }
 
 /// What to say while nothing is bound in normal mode: that an editor with
@@ -250,7 +337,7 @@ mod tests {
         let mut names = files("", ".mlisp");
         names.extend(files("themes", ".json"));
         names.sort();
-        let mut installed: Vec<&str> = DEFAULT_CONFIG.iter().map(|(name, _)| *name).collect();
+        let mut installed: Vec<&str> = DEFAULT_CONFIG.to_vec();
         installed.sort();
         assert_eq!(names, installed);
 
@@ -260,21 +347,25 @@ mod tests {
         // An init file by the name it had before counts as being there.
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(config.join("init.lisp"), "; mine\n").unwrap();
-        match install_default_config(&config, false) {
+        let source = Source::Dir(examples.clone());
+        match install_default_config(&config, &source, false) {
             Err(InstallError::Exists(there)) => assert_eq!(there, ["init.mlisp"]),
             other => panic!("{other:?}"),
         }
         std::fs::remove_file(config.join("init.lisp")).unwrap();
-        install_default_config(&config, false).unwrap();
-        for (name, text) in DEFAULT_CONFIG {
-            assert_eq!(std::fs::read_to_string(config.join(name)).unwrap(), *text);
+        install_default_config(&config, &source, false).unwrap();
+        for name in DEFAULT_CONFIG {
+            assert_eq!(
+                std::fs::read_to_string(config.join(name)).unwrap(),
+                std::fs::read_to_string(examples.join(name)).unwrap()
+            );
         }
 
         // What is there already is kept, unless it is to be overwritten;
         // what is not one of them is kept either way.
         std::fs::write(config.join("keys.mlisp"), "; mine\n").unwrap();
         std::fs::write(config.join("notes.mlisp"), "; mine\n").unwrap();
-        match install_default_config(&config, false) {
+        match install_default_config(&config, &source, false) {
             Err(InstallError::Exists(there)) => assert_eq!(there.len(), DEFAULT_CONFIG.len()),
             other => panic!("{other:?}"),
         }
@@ -282,7 +373,7 @@ mod tests {
             std::fs::read_to_string(config.join("keys.mlisp")).unwrap(),
             "; mine\n"
         );
-        install_default_config(&config, true).unwrap();
+        install_default_config(&config, &source, true).unwrap();
         assert_ne!(
             std::fs::read_to_string(config.join("keys.mlisp")).unwrap(),
             "; mine\n"
@@ -297,6 +388,45 @@ mod tests {
             assert_eq!(no_keys_hint(cx), None);
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The files are downloaded from med's repository, at the tag of this
+    /// version, and nothing is written when one cannot be had.
+    #[test]
+    fn the_examples_are_downloaded_at_this_version() {
+        assert_eq!(release_ref(), concat!("v", env!("CARGO_PKG_VERSION")));
+        let file = GitHubFile::parse(&format!(
+            "{REPOSITORY}/examples/{}@{}",
+            DEFAULT_CONFIG[0],
+            release_ref()
+        ))
+        .unwrap();
+        assert_eq!(
+            file.to_string(),
+            format!("gh:iceice666/med/examples/init.mlisp@{}", release_ref())
+        );
+
+        let dir = std::env::temp_dir().join(format!("med-install-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = Source::GitHub("a b".to_string());
+        match install_default_config(&dir, &source, false) {
+            Err(InstallError::Download(why)) => assert!(why.contains("is not a ref"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!dir.exists());
+    }
+
+    /// What `:install_default_config` downloads is there at this version's
+    /// tag. Needs the network and a released version:
+    /// `cargo test -p med -- --ignored downloads`.
+    #[test]
+    #[ignore = "downloads from GitHub"]
+    fn downloads_the_examples() {
+        let files = fetch(&Source::GitHub(release_ref())).unwrap();
+        assert_eq!(files.len(), DEFAULT_CONFIG.len());
+        for (name, text) in files {
+            assert!(!text.is_empty(), "{name}");
+        }
     }
 
     /// `examples/vim.mlisp` is the engine's stock layout, binding for

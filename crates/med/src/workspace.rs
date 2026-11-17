@@ -2,7 +2,7 @@
 //! programs define, and the ex commands that act on them.
 
 use crate::commands::{Args, Commands, Handler, RunCommand};
-use crate::defaults::{self, InstallError};
+use crate::defaults::{self, InstallError, Source};
 use crate::editor::{Editor, EditorEvent, Scratch};
 use crate::env::{self, EnvCell, ProjectEnv};
 use crate::lsp::{LspEvent, LspStore, uri_to_path};
@@ -45,6 +45,8 @@ pub struct Workspace {
     /// Where on the window the status bar starts, as last drawn.
     status_bar_left: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
     _branch_task: Option<Task<()>>,
+    /// The example configuration being downloaded.
+    _install_task: Option<Task<()>>,
     /// One-line feedback shown in the status bar until the next key.
     pub(crate) message: Option<SharedString>,
     /// The popup that says how to get keys, put away by escape or a click.
@@ -358,6 +360,7 @@ impl Workspace {
             branch: None,
             status_bar_left: Default::default(),
             _branch_task: None,
+            _install_task: None,
             message: None,
             welcome_closed: false,
             jumps: Vec::new(),
@@ -470,38 +473,86 @@ impl Workspace {
 
     /// Files may have changed underneath us (another program, a git
     /// command): reload clean buffers, and tell the panels.
-    /// Write the example configuration into `dir` and run its init file,
-    /// as `:install_default_config` does with the configuration directory.
-    /// Files that are there already are only overwritten if `overwrite`.
+    /// Download the example configuration from `source` into `dir`, and
+    /// run its init file once it is there, as `:install_default_config`
+    /// does with the configuration directory. Files that are there already
+    /// are only overwritten if `overwrite`.
     pub(crate) fn install_default_config(
         &mut self,
         dir: &Path,
+        source: Source,
         overwrite: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match defaults::install_default_config(dir, overwrite) {
-            Ok(()) => {
-                script::run_init(&dir.join("init.mlisp"), cx);
-                let message = script::take_message(cx).unwrap_or_else(|| {
-                    format!("Wrote the example configuration to {}", dir.display())
-                });
-                self.set_message(message, cx);
-                // The panels it defined have a project to show.
-                script::run_hook("opened", Vec::new(), window, cx);
-            }
-            Err(InstallError::Exists(names)) => self.set_message(
+        // Refused before anything is downloaded.
+        if let Err(error) = defaults::check_existing(dir, overwrite) {
+            self.install_failed(dir, &source, overwrite, error, cx);
+            return;
+        }
+        match &source {
+            Source::GitHub(git_ref) => self.set_message(
                 format!(
-                    "{} has {} already: :install_default_config! to overwrite",
-                    dir.display(),
-                    names.join(" ")
+                    "Downloading the example configuration from github.com/{}@{git_ref}",
+                    defaults::REPOSITORY
                 ),
                 cx,
             ),
-            Err(InstallError::Io(path, error)) => {
-                self.set_message(format!("{}: {error}", path.display()), cx)
-            }
+            #[cfg(test)]
+            Source::Dir(_) => {}
         }
+        let dir = dir.to_path_buf();
+        let install = cx.background_spawn({
+            let (dir, source) = (dir.clone(), source.clone());
+            async move { defaults::install_default_config(&dir, &source, overwrite) }
+        });
+        self._install_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let installed = install.await;
+            this.update_in(cx, |this, window, cx| match installed {
+                Ok(()) => {
+                    script::run_init(&dir.join("init.mlisp"), cx);
+                    let message = script::take_message(cx).unwrap_or_else(|| {
+                        format!("Wrote the example configuration to {}", dir.display())
+                    });
+                    this.set_message(message, cx);
+                    // The panels it defined have a project to show.
+                    script::run_hook("opened", Vec::new(), window, cx);
+                }
+                Err(error) => this.install_failed(&dir, &source, overwrite, error, cx),
+            })
+            .ok();
+        }));
+    }
+
+    fn install_failed(
+        &mut self,
+        dir: &Path,
+        source: &Source,
+        overwrite: bool,
+        error: InstallError,
+        cx: &mut Context<Self>,
+    ) {
+        let message = match error {
+            InstallError::Exists(names) => format!(
+                "{} has {} already: :install_default_config! to overwrite",
+                dir.display(),
+                names.join(" ")
+            ),
+            InstallError::Io(path, error) => format!("{}: {error}", path.display()),
+            // Not there at that ref: a build ahead of its release.
+            InstallError::Download(why) if why.contains("404") => match source {
+                Source::GitHub(git_ref) => {
+                    let bang = if overwrite { "!" } else { "" };
+                    format!(
+                        "{why} (not in {git_ref}: :install_default_config{bang} main for the latest)"
+                    )
+                }
+                #[cfg(test)]
+                Source::Dir(_) => why,
+            },
+            InstallError::Download(why) => why,
+        };
+        self.set_message(message, cx);
     }
 
     fn sync_with_disk(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -2486,7 +2537,7 @@ impl Workspace {
                             .font(crate::mono_font(cx))
                             .child(":install_default_config"),
                     )
-                    .child("It writes the example configuration there, vim's keys and the rest, and runs it."),
+                    .child("It downloads the example configuration from GitHub, vim's keys and the rest, writes it there, and runs it."),
             )
             .child(
                 div()
@@ -3271,9 +3322,14 @@ pub(crate) fn register(commands: &mut Commands) {
     );
     commands.register(
         "workspace.install_default_config",
-        "Write the example configuration where the init file is looked for, and run it (! to overwrite)",
+        "Download the example configuration from GitHub, at this version's tag or the ref given, write it where the init file is looked for, and run it (! to overwrite)",
         W(|ws, args, window, cx| match crate::config_dir() {
-            Some(dir) => ws.install_default_config(&dir, args.bang, window, cx),
+            Some(dir) => {
+                let git_ref = Some(args.arg.trim())
+                    .filter(|arg| !arg.is_empty())
+                    .map_or_else(defaults::release_ref, str::to_string);
+                ws.install_default_config(&dir, Source::GitHub(git_ref), args.bang, window, cx)
+            }
             None => ws.set_message("There is no configuration directory: set MED_CONFIG_DIR", cx),
         }),
     );
