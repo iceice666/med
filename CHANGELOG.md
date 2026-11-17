@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/iceice666/med/compare/v0.2.5...v0.2.6) - 2026-11-17
+
+### Added
+
+- *(med/theme)* name the last colors the editor worked out itself
+- *(med/theme)* name the editor's and terminal's own colors
+- *(med/theme)* let programs read and set the theme's colors
+- *(med/theme)* add ui-font-size and size the preview by font-size
+- *(med/config)* download the default config from GitHub
+- *(med/cmdline)* list the matches tab goes through
+
+### Other
+
+- *(med/packaging)* depend on curl in the deb
+
 ## [0.2.5](https://github.com/iceice666/med/compare/v0.2.4...v0.2.5) - 2026-11-17
 
 ### Added
